@@ -154,7 +154,9 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
             const decision = ctx.requestApproval
               ? await (judge ? ctx.requestApproval(card, { judge }) : ctx.requestApproval(card))
               : { approved: false } // fail-safe: no channel → auto-deny
-            if (decision.approved !== true) {
+            // Fix round 2 (defence in depth): Stop always beats a late approval — whatever a channel
+            // returned, a run already stopped never executes the call.
+            if (decision.approved !== true || hooks.signal.aborted) {
               const summary = `denied: ${t.name}`
               const result = { denied: true }
               publishActivity({ type: 'tool', name: t.name, summary })

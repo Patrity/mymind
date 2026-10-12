@@ -30,7 +30,11 @@ export const APPROVAL_WITHDRAWN = 'withdrawn'
 const DEFAULT_POLL_MS = 5_000
 
 type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired'
-type Channel = (req: ApprovalRequest, opts?: ApprovalOptions) => Promise<{ approved: boolean }>
+/** Fix round 2: `decidedBy` says who ended a prompt — Tony (a tapback), `timeout` (no answer), or
+ *  `system` (Stop, withdrawn, iMessage unavailable, the send failed). A mirrored prompt (a workstream
+ *  card's away prompt) forwards only Tony's answer as his decision. */
+export type ImessageApprovalResult = { approved: boolean; decidedBy?: 'tony' | 'timeout' | 'system' | 'judge' }
+type Channel = (req: ApprovalRequest, opts?: ApprovalOptions) => Promise<ImessageApprovalResult>
 
 export interface ApprovalChannelDeps {
   client?: BlueBubblesClient | null
@@ -179,6 +183,7 @@ type WaitResult = ApprovalStatus | 'withdrawn'
 function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
   return new Promise((resolve) => {
     let done = false
+    let withdrawing = false
     const finish = (s: WaitResult) => {
       if (done) return
       done = true
@@ -196,6 +201,7 @@ function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSi
     // background: denied, even over an `approved` that 👍 wrote first (nothing ran).
     const onAbort = () => {
       if (signal?.reason === APPROVAL_WITHDRAWN) {
+        withdrawing = true
         // Fix round 1 (I1): a withdrawal is NOT decided synchronously — a 👍/👎 may already be
         // committed (resolveTapback writes the row before it wakes this waiter). The guarded write
         // decides: if it lost, whatever the row says is the outcome (the DB wins). A tapback that
@@ -216,6 +222,9 @@ function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSi
     const poll = setInterval(() => {
       statusOf(id).then((s) => {
         if (s === null) finish('denied') // row gone (its run was deleted): nothing can approve it
+        // Fix round 2: while a withdrawal is in flight, an `expired` the poll sees may be that
+        // withdrawal's OWN write — its settle() decides (withdrawn vs. a real expiry), not the poll.
+        else if (s === 'expired' && withdrawing) return
         else if (s !== 'pending') finish(s)
       }).catch(err => console.warn(`[channels] approval ${id} poll failed:`, err instanceof Error ? err.message : err))
     }, pollMs)
@@ -253,21 +262,23 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
     if (deps.signal?.aborted) {
       logOutcome(runId, req, 'denied', 'aborted')
       judge?.settle('cancelled', 'system')
-      return { approved: false }
+      return { approved: false, decidedBy: 'system' }
     }
     const db = useDb()
     const client = deps.client !== undefined ? deps.client : await imessageClient()
     const unavailable = !client ? 'imessage-not-configured' : lastHealth().privateApi === false ? 'private-api-off' : null
     const [row] = await db.insert(channelApprovals).values({
       runId, request: req, chatGuid,
-      expiresAt: new Date(Date.now() + timeoutMs),
+      // Provisional: covers the verdict wait. Reset to send + timeoutMs once the prompt is out
+      // (fix round 2), so a tapback is accepted for the prompt's whole life.
+      expiresAt: new Date(Date.now() + verdictWaitMs + timeoutMs),
       ...(unavailable ? { status: 'denied', resolvedAt: new Date() } : {})
     }).returning({ id: channelApprovals.id })
     const id = row!.id
     if (unavailable || !client) {
       logOutcome(runId, req, 'denied', unavailable ?? undefined)
       judge?.settle('cancelled', 'system') // nobody could be asked: not Tony's "no"
-      return { approved: false }
+      return { approved: false, decidedBy: 'system' }
     }
 
     // Smart Approvals (cycle 84): the judge approving withdraws the prompt (row `expired`) — a 👍/👎
@@ -275,6 +286,9 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
     const withdraw = new AbortController()
     const onStop = () => withdraw.abort(deps.signal?.reason)
     deps.signal?.addEventListener('abort', onStop, { once: true })
+    // Fix round 2: a Stop that landed while the client was resolved or the row inserted (after the
+    // check above) fired before this listener existed — honour it now.
+    if (deps.signal?.aborted) onStop()
     let judgeAsked = false
     // C4: our own judge starts first and the text waits ≤ verdictWaitMs for its verdict, so the
     // prompt usually carries it ("⚖ pending" otherwise). If the judge approves inside that wait,
@@ -304,12 +318,12 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
       if (judgeAsked && !deps.signal?.aborted && await settle(id, 'expired')) {
         logOutcome(runId, req, 'approved', 'judge')
         judge!.settle('auto', 'judge')
-        return { approved: true }
+        return { approved: true, decidedBy: 'judge' }
       }
       await denyOnAbort(id).catch(() => {})
       logOutcome(runId, req, 'denied', 'aborted')
       judge?.settle('cancelled', 'system')
-      return { approved: false }
+      return { approved: false, decidedBy: 'system' }
     }
 
     let promptGuid: string | null = null
@@ -324,18 +338,20 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
       await settle(id, 'denied')
       logOutcome(runId, req, 'denied', 'prompt-send-failed')
       judge?.settle('cancelled', 'system')
-      return { approved: false }
+      return { approved: false, decidedBy: 'system' }
     }
-    await db.update(channelApprovals).set({ promptGuid }).where(eq(channelApprovals.id, id))
+    await db.update(channelApprovals).set({ promptGuid, expiresAt: new Date(Date.now() + timeoutMs) }).where(eq(channelApprovals.id, id))
 
     const status = await waitFor(id, pollMs, timeoutMs, withdraw.signal)
     cleanup()
-    const stopped = deps.signal?.aborted === true
+    // Stopped = the run's own Stop (/clear, drain). A WITHDRAWN abort is the card answering first: the
+    // committed row status still reports what Tony said (the caller ignores it).
+    const stopped = deps.signal?.aborted === true && deps.signal.reason !== APPROVAL_WITHDRAWN
     // M5: only the judge's OWN committed withdrawal is an auto-approval — never a timeout.
     if (judge && judgeAsked && status === 'withdrawn' && !stopped) {
       logOutcome(runId, req, 'approved', 'judge')
       judge.settle('auto', 'judge')
-      return { approved: true }
+      return { approved: true, decidedBy: 'judge' }
     }
     const shown = status === 'withdrawn' ? 'expired' : status
     logOutcome(runId, req, shown, stopped ? 'aborted' : undefined)
@@ -345,7 +361,9 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
       else if (status === 'expired') judge.settle('timeout', 'timeout')
       else judge.settle('denied', 'tony')
     }
-    return { approved: status === 'approved' }
+    // Stop always beats a 👍 (fix round 2): a stopped wait is never an approval.
+    const decidedBy = stopped || status === 'withdrawn' ? 'system' : status === 'expired' ? 'timeout' : 'tony'
+    return { approved: status === 'approved' && !stopped, decidedBy }
   }
 }
 
@@ -360,7 +378,7 @@ export function replyToApprovalChannel(runId: string, deps: ApprovalChannelDeps 
     const r = fresh?.replyTo as { channel?: unknown; chatGuid?: unknown } | null | undefined
     if (r?.channel !== 'imessage' || typeof r.chatGuid !== 'string' || !r.chatGuid) {
       opts?.judge?.settle('cancelled', 'system')
-      return { approved: false }
+      return { approved: false, decidedBy: 'system' }
     }
     return imessageApprovalChannel(runId, r.chatGuid, deps)(req, opts)
   }

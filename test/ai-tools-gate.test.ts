@@ -74,4 +74,15 @@ describe('buildAiTools dangerous-tool gate', () => {
     expect(requestApproval).not.toHaveBeenCalled()
     expect(res).toBe('pong')
   })
+
+  it('cycle 84 fix round 2: Stop beats a late approval — a run stopped while the card waited never executes the call', async () => {
+    const handler = vi.fn(async () => ({ result: { ran: true }, summary: 'ran' }))
+    const t = dangerTool(); t.handler = handler as never
+    const ac = new AbortController()
+    // A channel that (wrongly) still answers approved after the run was stopped.
+    const requestApproval = vi.fn(async () => { ac.abort(); return { approved: true } })
+    const set = buildAiTools([t], { signal: ac.signal, onEvent: () => {}, requestApproval })
+    expect(await exec(set, { command: 'echo hi' })).toEqual({ denied: true })
+    expect(handler).not.toHaveBeenCalled()
+  })
 })

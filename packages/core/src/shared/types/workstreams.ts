@@ -44,6 +44,9 @@ export interface WorkstreamAttention {
   /** Cycle 83 final fix wave (M4): a child's approval / escalated question was listed in a text to
    *  Tony (its tree's grouped away iMessage, or its own interactive approval prompt). */
   awaySent?: true
+  /** Cycle 84 fix round 2: approval parked by a drain — the OTHER calls that were still being judged
+   *  then (they died with the run too; the approval-lost note names every one). */
+  alsoParked?: StoredApprovalRequest[]
   /** Cycle 84: approval — the judge's state for the card (kept current as the verdict lands). Model
    *  output: render as escaped text only. */
   judge?: ApprovalVerdictDTO

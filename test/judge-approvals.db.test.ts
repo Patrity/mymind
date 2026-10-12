@@ -300,3 +300,38 @@ describe('fix round 1 (C2, C3, M2)', () => {
     expect((await getWorkstream(ws.id))!.stateDetail).toBeNull()
   })
 })
+
+describe('fix round 2', () => {
+  it('a drain parks EVERY call still being judged; the approval-lost note names them all', async () => {
+    const { ws } = await newWorkstream('drain-two')
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn('rsvp', true) })
+    await until(async () => verdicts.length === 2)
+    stopClaiming()
+    try { expect(await waitForInFlight(10_000)).toBe(true) } finally { _resumeClaimingForTests() }
+    const att = (await getWorkstream(ws.id))!.attention as WorkstreamAttention
+    const parked = [att.request, ...(att.alsoParked ?? [])].map(r => r!.command).sort()
+    expect(parked).toEqual(['rsvp retro', 'rsvp standup'])
+    expect(await restoreParkedApprovals({ onlyConversations: [ws.conversationId] })).toBe(1)
+    const queued = (await useDb().select().from(agentRuns).where(and(eq(agentRuns.conversationId, ws.conversationId), eq(agentRuns.status, 'queued'))))[0]!
+    const note = (queued.input as { text: string }).text
+    expect(note).toContain('rsvp standup')
+    expect(note).toContain('rsvp retro')
+    expect(note).toContain('None of those actions ran')
+    expect(ran).toEqual([])
+  })
+
+  it.each([
+    ['iMessage unavailable / send failed / expired', { approved: false, decidedBy: 'system' as const }, 'cancelled', 'system'],
+    ['Tony\'s 👎 on the phone', { approved: false, decidedBy: 'tony' as const }, 'denied', 'tony']
+  ])('the mirrored away prompt: %s → the card ends %s / %s', async (_label, answer, decision, by) => {
+    workstreamNotifyDeps.imessageApproval = async () => answer
+    const { ws } = await newWorkstream(`mirror-${by}`)
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn('cancel') })   // rule high: Tony asked at once
+    release({ ...APPROVE, recommendation: 'review' })
+    expect(await waitForInFlight(15_000)).toBe(true)
+    expect(ran).toEqual([])
+    const run = (await segRun(ws.conversationId))!
+    await until(async () => (await verdictRows(run.id))[0]?.decision ? true : null)
+    expect((await verdictRows(run.id))[0]).toMatchObject({ decision, decidedBy: by })
+  })
+})

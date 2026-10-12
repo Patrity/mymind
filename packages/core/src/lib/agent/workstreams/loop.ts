@@ -35,7 +35,7 @@ import { abortRun } from '../runtime/aborts'
 import { drainCoordinatorFor, drainReportsFor, drainSteerFor, pushSteer } from '../runtime/inbox'
 import { busApprovalChannel, cancelBusApproval, decideBusApproval, pendingBusApprovals } from '../runtime/bus-approvals'
 import { createRunEventWriter, type HubFrame, type RunEventWriter } from '../../bus/events'
-import { APPROVAL_WITHDRAWN } from '../../channels/approvals'
+import { APPROVAL_WITHDRAWN, type ImessageApprovalResult } from '../../channels/approvals'
 import { parseToolsetIds } from '../toolsets'
 import type { ApprovalOptions, ApprovalRequest } from '../types'
 import type { ApprovalVerdictDTO } from '../judge/types'
@@ -398,10 +398,23 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
       // C2: a drain while the judge is still deciding parks the request exactly like a card waiting on
       // Tony — kept on the row (attention {approval}) so the next worker withdraws it and resumes with
       // a `segment:approval-lost` note. No notification: nobody has been asked yet.
+      // Fix round 2: EVERY call in flight is recorded — the first as the parked request (unless a card
+      // waiting on Tony already is), the rest in `alsoParked`.
+      const judged = [...evaluating]
       if (!waiting.size) {
-        const [requestId, req] = [...evaluating][0]!
-        const attention: ParkedAttention = { kind: 'approval', text: approvalText(req), requestId, runId: run.id, notifiedAt: Date.now(), request: storedRequest(req) }
+        const [requestId, req] = judged[0]!
+        const rest = judged.slice(1)
+        const attention: ParkedAttention = {
+          kind: 'approval', text: approvalText(req), requestId, runId: run.id, notifiedAt: Date.now(), request: storedRequest(req),
+          ...(rest.length ? { alsoParked: rest.map(([, r]) => storedRequest(r)) } : {})
+        }
         void serial(() => patchWorkstream(ws.id, { state: 'attention', attention, stateDetail: null }, ['running', 'attention']))
+      } else if (judged.length) {
+        void serial(async () => {
+          const att = attentionOf((await getWorkstream(ws.id)) ?? { attention: null })
+          if (att?.kind !== 'approval') return
+          await patchWorkstream(ws.id, { attention: { ...att, alsoParked: [...(att.alsoParked ?? []), ...judged.map(([, r]) => storedRequest(r))] }, stateDetail: null }, ['attention'])
+        })
       }
       for (const r of waiting.values()) r.abort(APPROVAL_WITHDRAWN)
       abortRun(run.id)
@@ -440,10 +453,18 @@ async function childAwayApproval(parentId: string, childId: string, runId: strin
     if ((await (await coordinator()).announceTreeAway(parentId, { approvalOf: childId })) !== 'interactive' || signal.aborted) return
     const r = await workstreamNotifyDeps.imessageApproval(runId, req, signal, verdict)
     if (!r || signal.aborted) return
-    decideBusApproval({ requestId, approved: r.approved })
+    forwardAwayAnswer(requestId, r)
   } catch (err) {
     console.error('[workstreams] iMessage approval failed:', err)
   }
+}
+
+/** Fix round 2: the mirrored iMessage prompt's outcome reaches the card. Tony's 👍/👎 is his decision;
+ *  a prompt that could not ask him (iMessage unavailable, the send failed) or expired unanswered
+ *  ends the card as cancelled / system — never recorded as his "no". */
+function forwardAwayAnswer(requestId: string, r: ImessageApprovalResult): void {
+  if (r.approved || r.decidedBy === undefined || r.decidedBy === 'tony') decideBusApproval({ requestId, approved: r.approved })
+  else cancelBusApproval(requestId)
 }
 
 async function startAwayApproval(runId: string, requestId: string, req: ApprovalRequest, signal: AbortSignal, verdict?: () => ApprovalVerdictDTO | null): Promise<void> {
@@ -452,7 +473,7 @@ async function startAwayApproval(runId: string, requestId: string, req: Approval
     const r = await workstreamNotifyDeps.imessageApproval(runId, req, signal, verdict)
     // Withdrawn because the card decided first: nothing to do (decideBusApproval would be a no-op).
     if (!r || signal.aborted) return
-    decideBusApproval({ requestId, approved: r.approved })
+    forwardAwayAnswer(requestId, r)
   } catch (err) {
     console.error('[workstreams] iMessage approval failed:', err)
   }
@@ -1127,9 +1148,14 @@ export async function restoreParkedApprovals(opts: { onlyConversations?: string[
     await releaseParked(ws)
     const row = await patchWorkstream(ws.id, { state: 'running', attention: null }, ['attention'])
     if (!row) continue
-    const what = att.request ? `${att.request.tool} — ${att.request.logSummary ?? att.request.command}` : att.text
+    // Fix round 2: every action that died with the run is named (a drain may park several).
+    const parked = [att.request, ...(att.alsoParked ?? [])].filter((r): r is StoredApprovalRequest => !!r)
+    const what = parked.length ? parked.map(r => `${r.tool} — ${r.logSummary ?? r.command}`).join('; ') : att.text
+    const several = parked.length > 1
     const runId = await enqueueSegment(row, {
-      text: `The agent worker restarted while this was waiting for Tony's approval (${what}). That action did NOT run and its approval request is gone. If it is still needed, make the call again — Tony will be asked to approve it again.`,
+      text: several
+        ? `The agent worker restarted while these were waiting for approval (${what}). None of those actions ran and their approval requests are gone. If they are still needed, make the calls again — Tony will be asked to approve them again.`
+        : `The agent worker restarted while this was waiting for Tony's approval (${what}). That action did NOT run and its approval request is gone. If it is still needed, make the call again — Tony will be asked to approve it again.`,
       eventOrigin: 'segment:approval-lost'
     })
     if (runId) n++

@@ -149,7 +149,7 @@ describe('imessageApprovalChannel', () => {
     expect(sent).toHaveLength(1)
     expect(sent[0]).toMatchObject({ kind: 'text', chatGuid: CHAT, message: 'Run `ls -la /tmp`?\n👍 to approve · 👎 to deny', guid: promptGuid })
     expect(await resolveTapback(tapback(promptGuid))).toBe(true)
-    expect(await p).toEqual({ approved: true })
+    expect(await p).toMatchObject({ approved: true })
     const [row] = await rowsFor(run)
     expect(row).toMatchObject({ id, status: 'approved', chatGuid: CHAT })
     expect(row!.resolvedAt).not.toBeNull()
@@ -168,7 +168,7 @@ describe('imessageApprovalChannel', () => {
     expect(cmd.endsWith('…')).toBe(true)
     expect(long.startsWith(cmd.slice(0, 299))).toBe(true)
     await resolveTapback(tapback(promptGuid, { tapback: 'dislike' }))
-    expect(await p).toEqual({ approved: false })
+    expect(await p).toMatchObject({ approved: false })
   })
 
   it('a love tapback approves too', async () => {
@@ -176,7 +176,7 @@ describe('imessageApprovalChannel', () => {
     const p = imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(REQ)
     const { promptGuid } = await promptFor(run)
     await resolveTapback(tapback(promptGuid, { tapback: 'love' }))
-    expect(await p).toEqual({ approved: true })
+    expect(await p).toMatchObject({ approved: true })
   })
 
   it('a dislike tapback denies', async () => {
@@ -184,14 +184,14 @@ describe('imessageApprovalChannel', () => {
     const p = imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(REQ)
     const { promptGuid } = await promptFor(run)
     await resolveTapback(tapback(promptGuid, { tapback: 'dislike' }))
-    expect(await p).toEqual({ approved: false })
+    expect(await p).toMatchObject({ approved: false })
     expect((await rowsFor(run))[0]!.status).toBe('denied')
   })
 
   it('no tapback → expired and denied', async () => {
     const run = await newRun()
     const t0 = Date.now()
-    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(REQ)).toEqual({ approved: false })
+    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(REQ)).toMatchObject({ approved: false })
     expect(Date.now() - t0).toBeGreaterThanOrEqual(450)
     const [row] = await rowsFor(run)
     expect(row!.status).toBe('expired')
@@ -217,7 +217,7 @@ describe('imessageApprovalChannel', () => {
     const p = imessageApprovalChannel(run, chat, { client: bb, ...FAST })(REQ)
     const { promptGuid } = await promptFor(run)
     await resolveTapback(tapback(promptGuid, { chatGuid: chat, ...over(promptGuid) }))
-    expect(await p).toEqual({ approved: false })
+    expect(await p).toMatchObject({ approved: false })
     expect((await rowsFor(run))[0]!.status).toBe('expired')
   })
 
@@ -228,7 +228,7 @@ describe('imessageApprovalChannel', () => {
     _dropWaiters()
     const t0 = Date.now()
     await resolveTapback(tapback(promptGuid))
-    expect(await p).toEqual({ approved: true })
+    expect(await p).toMatchObject({ approved: true })
     expect(Date.now() - t0).toBeLessThan(2_000) // the poll, not the timeout
   })
 
@@ -240,7 +240,7 @@ describe('imessageApprovalChannel', () => {
       expect(lastHealth().privateApi).toBe(false)
       const run = await newRun()
       const t0 = Date.now()
-      expect(await imessageApprovalChannel(run, CHAT, { client: offClient, ...FAST })(REQ)).toEqual({ approved: false })
+      expect(await imessageApprovalChannel(run, CHAT, { client: offClient, ...FAST })(REQ)).toMatchObject({ approved: false })
       expect(Date.now() - t0).toBeLessThan(400)
       expect(offFake.sent).toHaveLength(0)
       const [row] = await rowsFor(run)
@@ -253,7 +253,7 @@ describe('imessageApprovalChannel', () => {
 
   it('no client (iMessage not configured) → immediate deny', async () => {
     const run = await newRun()
-    expect(await imessageApprovalChannel(run, CHAT, { client: null, ...FAST })(REQ)).toEqual({ approved: false })
+    expect(await imessageApprovalChannel(run, CHAT, { client: null, ...FAST })(REQ)).toMatchObject({ approved: false })
     expect((await rowsFor(run))[0]!.status).toBe('denied')
   })
 
@@ -261,7 +261,7 @@ describe('imessageApprovalChannel', () => {
     const run = await newRun()
     const failClient = blueBubblesClient({ serverUrl: failFake.url, password: failFake.password, privateApi: true })
     const t0 = Date.now()
-    expect(await imessageApprovalChannel(run, CHAT, { client: failClient, ...FAST })(REQ)).toEqual({ approved: false })
+    expect(await imessageApprovalChannel(run, CHAT, { client: failClient, ...FAST })(REQ)).toMatchObject({ approved: false })
     expect(Date.now() - t0).toBeLessThan(400)
     const [row] = await rowsFor(run)
     expect(row!.status).toBe('denied')
@@ -277,7 +277,7 @@ describe('abort (final review I1): Stop / /clear unwinds an iMessage approval wa
     const { promptGuid } = await promptFor(run)
     const t0 = Date.now()
     ac.abort()
-    expect(await p).toEqual({ approved: false })
+    expect(await p).toMatchObject({ approved: false })
     expect(Date.now() - t0).toBeLessThan(1_000) // the abort, not the 60 s timeout or poll
     expect(await statusOnce(run, 'denied')).toBe('denied')
     await resolveTapback(tapback(promptGuid))
@@ -293,7 +293,7 @@ describe('abort (final review I1): Stop / /clear unwinds an iMessage approval wa
     const p = imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 60_000, timeoutMs: 60_000, signal: ac.signal })(REQ)
     await promptFor(run)
     ac.abort(APPROVAL_WITHDRAWN)
-    expect(await p).toEqual({ approved: false })
+    expect(await p).toMatchObject({ approved: false })
     expect(await statusOnce(run, 'expired')).toBe('expired')
   })
 
@@ -302,7 +302,7 @@ describe('abort (final review I1): Stop / /clear unwinds an iMessage approval wa
     const ac = new AbortController()
     ac.abort()
     const sentBefore = fake.sent.length
-    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST, signal: ac.signal })(REQ)).toEqual({ approved: false })
+    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST, signal: ac.signal })(REQ)).toMatchObject({ approved: false })
     expect(fake.sent.length).toBe(sentBefore)
     expect(await rowsFor(run)).toHaveLength(0)
   })
@@ -317,7 +317,7 @@ describe('abort (final review I1): Stop / /clear unwinds an iMessage approval wa
       proposedPattern: '',
       logSummary: 'gmail_send: account=work draftId=d1 to=ann@a.com subjectChars=5'
     }
-    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST, signal: ac.signal })(req)).toEqual({ approved: false })
+    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST, signal: ac.signal })(req)).toMatchObject({ approved: false })
     const ev = events.find(e => e.name === 'exec:approval' && e.meta?.runId === run)
     expect(ev?.meta?.command).toBe(req.logSummary)
     expect(JSON.stringify(ev?.meta)).not.toContain('secret draft body')
@@ -329,7 +329,7 @@ describe('abort (final review I1): Stop / /clear unwinds an iMessage approval wa
     const p = replyToApprovalChannel(run, { client: bb, pollMs: 60_000, timeoutMs: 60_000, signal: ac.signal })(REQ)
     await promptFor(run)
     ac.abort()
-    expect(await p).toEqual({ approved: false })
+    expect(await p).toMatchObject({ approved: false })
     expect(await statusOnce(run, 'denied')).toBe('denied')
   })
 })
@@ -427,7 +427,7 @@ describe('expiry vs tapback race', () => {
     const { id, promptGuid } = await promptFor(run)
     expect(await expireApprovals(new Date(Date.now() + 10_000), { onlyIds: [id] })).toBe(1)
     await resolveTapback(tapback(promptGuid))
-    expect(await p).toEqual({ approved: false })
+    expect(await p).toMatchObject({ approved: false })
     expect((await rowsFor(run))[0]!.status).toBe('expired')
   })
 
@@ -437,7 +437,7 @@ describe('expiry vs tapback race', () => {
     const { id, promptGuid } = await promptFor(run)
     await resolveTapback(tapback(promptGuid))
     expect(await expireApprovals(new Date(Date.now() + 10_000), { onlyIds: [id] })).toBe(0)
-    expect(await p).toEqual({ approved: true })
+    expect(await p).toMatchObject({ approved: true })
     expect((await rowsFor(run))[0]!.status).toBe('approved')
   })
 
@@ -447,7 +447,7 @@ describe('expiry vs tapback race', () => {
     const { promptGuid } = await promptFor(run)
     _dropWaiters() // neither the map nor the (slow) poll can deliver it: only the timer's re-read
     await resolveTapback(tapback(promptGuid))
-    expect(await p).toEqual({ approved: true })
+    expect(await p).toMatchObject({ approved: true })
     expect((await rowsFor(run))[0]!.status).toBe('approved')
   })
 
@@ -479,7 +479,7 @@ describe('replyToApprovalChannel (runner wiring)', () => {
     const run = await newRun(null)
     const ch = replyToApprovalChannel(run, { client: bb, ...FAST })
     const sentBefore = fake.sent.length
-    expect(await ch(REQ)).toEqual({ approved: false })
+    expect(await ch(REQ)).toMatchObject({ approved: false })
     expect(fake.sent.length).toBe(sentBefore)
     expect(await rowsFor(run)).toHaveLength(0)
 
@@ -488,7 +488,7 @@ describe('replyToApprovalChannel (runner wiring)', () => {
     const { promptGuid, chatGuid } = await promptFor(run)
     expect(chatGuid).toBe(CHAT)
     await resolveTapback(tapback(promptGuid))
-    expect(await p).toEqual({ approved: true })
+    expect(await p).toMatchObject({ approved: true })
   })
 })
 
@@ -526,7 +526,7 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     const { promptGuid } = await promptFor(run)
     expect(fake.sent.slice(sentBefore)[0]!.message).toBe('Send RSVP?\n\nRSVP accepted\n\n⚖ low/approve — routine\n👍 to approve · 👎 to deny')
     await resolveTapback(tapback(promptGuid))
-    expect(await p).toEqual({ approved: true })
+    expect(await p).toMatchObject({ approved: true })
     await judge.writes()
     expect(decisions).toEqual([['approved', 'tony']])
   })
@@ -536,7 +536,7 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     const { judge, decisions, release } = judgeFor(true)
     release(APPROVE)
     const sentBefore = fake.sent.length
-    expect(await imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 50, timeoutMs: 5_000 })(RSVP, { judge })).toEqual({ approved: true })
+    expect(await imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 50, timeoutMs: 5_000 })(RSVP, { judge })).toMatchObject({ approved: true })
     expect(fake.sent.length).toBe(sentBefore)
     expect((await rowsFor(run))[0]!.status).toBe('expired')
     await judge.writes()
@@ -551,7 +551,7 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     await promptFor(run)
     expect(fake.sent.slice(sentBefore)[0]!.message).toBe('Send RSVP?\n\nRSVP accepted\n\n⚖ pending\n👍 to approve · 👎 to deny')
     release(APPROVE)
-    expect(await p).toEqual({ approved: true })
+    expect(await p).toMatchObject({ approved: true })
     expect((await rowsFor(run))[0]!.status).toBe('expired')
     await judge.writes()
     expect(decisions).toEqual([['auto', 'judge']])
@@ -565,7 +565,7 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     // resolveTapback's first half: the guarded write commits `denied` — the waiter is not woken yet.
     await db().update(channelApprovals).set({ status: 'denied', resolvedAt: new Date() }).where(eq(channelApprovals.id, id))
     release(APPROVE)                                            // the judge withdraws in that window
-    expect(await p).toEqual({ approved: false })
+    expect(await p).toMatchObject({ approved: false })
     expect((await rowsFor(run))[0]!.status).toBe('denied')
     await judge.writes()
     expect(decisions).toEqual([['denied', 'tony']])
@@ -575,7 +575,7 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     const run = await newRun()
     const { judge, decisions, release } = judgeFor(true)
     release({ ...APPROVE, recommendation: 'review' })
-    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(RSVP, { judge })).toEqual({ approved: false })
+    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(RSVP, { judge })).toMatchObject({ approved: false })
     expect((await rowsFor(run))[0]!.status).toBe('expired')
     await judge.writes()
     expect(decisions).toEqual([['timeout', 'timeout']])
@@ -589,7 +589,7 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     // The expiry committed first (catch-up housekeeping) — the waiter is not woken yet.
     await db().update(channelApprovals).set({ status: 'expired', resolvedAt: new Date() }).where(eq(channelApprovals.id, id))
     release(APPROVE)                                            // the judge's withdrawal loses to it
-    expect(await p).toEqual({ approved: false })
+    expect(await p).toMatchObject({ approved: false })
     await judge.writes()
     expect(decisions).toEqual([['timeout', 'timeout']])
   })
@@ -601,9 +601,73 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     const p = imessageApprovalChannel(run, CHAT, { ...SLOW, client: bb, signal: ac.signal })(RSVP, { judge })
     await promptFor(run)
     ac.abort()
-    expect(await p).toEqual({ approved: false })
+    expect(await p).toMatchObject({ approved: false })
     await judge.writes()
     expect(decisions).toEqual([['cancelled', 'system']])
+  })
+
+  // Fix round 2 (Important): Stop beats a 👍 even when it lands before the prompt is texted.
+  const recorded: string[] = []
+  const rsvpTool: AgentTool = {
+    name: 'calendar_rsvp', description: 'rsvp', kind: 'create', toolset: 'calendar', dangerous: true, schema: {},
+    describeApproval: () => RSVP, handler: async () => { recorded.push('ran'); return { result: { ok: true }, summary: 'rsvp sent' } }
+  }
+
+  it('Stop that fires before the Stop listener exists (during the insert) → nothing texted, the tool never runs', async () => {
+    const run = await newRun()
+    recorded.length = 0
+    // The run is stopped while the client/row are being set up: its `abort` event fired before the
+    // channel listened (a no-op addEventListener), so only the re-check after registering can see it.
+    let reads = 0
+    const stoppedLate = { get aborted() { return reads++ > 0 }, reason: undefined, addEventListener() {}, removeEventListener() {} } as unknown as AbortSignal
+    const sentBefore = fake.sent.length
+    const set = buildAiTools([rsvpTool], { signal: new AbortController().signal, onEvent: () => {}, requestApproval: imessageApprovalChannel(run, CHAT, { client: bb, ...FAST, signal: stoppedLate }) })
+    const out = await (set.calendar_rsvp!.execute as (i: unknown, o: { toolCallId: string }) => Promise<unknown>)({}, { toolCallId: 'c' })
+    expect(out).toEqual({ denied: true })
+    expect(fake.sent.length).toBe(sentBefore)                  // no prompt to 👍
+    expect(recorded).toEqual([])
+    expect((await rowsFor(run))[0]!.status).toBe('denied')
+  })
+
+  it('Stop while the prompt is being texted, then a 👍 → denied, the tool never runs', async () => {
+    const run = await newRun()
+    recorded.length = 0
+    const ac = new AbortController()
+    const stopOnSend: BlueBubblesClient = { ...bb, sendText: async (...a: Parameters<BlueBubblesClient['sendText']>) => { const r = await bb.sendText(...a); ac.abort(); return r } }
+    const set = buildAiTools([rsvpTool], { signal: new AbortController().signal, onEvent: () => {}, requestApproval: imessageApprovalChannel(run, CHAT, { client: stopOnSend, ...FAST, signal: ac.signal }) })
+    const p = (set.calendar_rsvp!.execute as (i: unknown, o: { toolCallId: string }) => Promise<unknown>)({}, { toolCallId: 'c' })
+    const { promptGuid } = await promptFor(run)
+    await resolveTapback(tapback(promptGuid))                  // a 👍 after Stop
+    expect(await p).toEqual({ denied: true })
+    expect(recorded).toEqual([])
+  })
+
+  it('fix round 2: expires_at counts from the SEND, not from before the verdict wait', async () => {
+    const run = await newRun()
+    const { judge, release } = judgeFor(false)
+    const p = imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 50, timeoutMs: 5_000, verdictWaitMs: 3_000 })(RSVP, { judge })
+    await new Promise(r => setTimeout(r, 300))
+    release({ ...APPROVE, recommendation: 'review' })          // the text goes out ~300 ms in
+    const { promptGuid } = await promptFor(run)
+    const [row] = await rowsFor(run)
+    const ms = row!.expiresAt.getTime() - row!.createdAt.getTime()
+    expect(ms).toBeGreaterThanOrEqual(5_000 + 250)              // send + timeout, not insert + timeout
+    expect(ms).toBeLessThan(5_000 + 2_000)                      // not the provisional insert + wait + timeout
+    await resolveTapback(tapback(promptGuid, { tapback: 'dislike' }))
+    await p
+  })
+
+  it('fix round 2: a fast poll never reads the judge\'s own withdrawal as a timeout', async () => {
+    for (let i = 0; i < 4; i++) {
+      const run = await newRun()
+      const { judge, decisions, release } = judgeFor(true)
+      const p = imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 1, timeoutMs: 5_000, verdictWaitMs: 20 })(RSVP, { judge })
+      await promptFor(run)
+      release(APPROVE)
+      expect(await p).toMatchObject({ approved: true, decidedBy: 'judge' })
+      await judge.writes()
+      expect(decisions).toEqual([['auto', 'judge']])
+    }
   })
 
   it('a judge that is off adds no line', async () => {
@@ -616,7 +680,7 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     const { promptGuid } = await promptFor(run)
     expect(fake.sent.slice(sentBefore)[0]!.message).toBe('Run `ls -la /tmp`?\n👍 to approve · 👎 to deny')
     await resolveTapback(tapback(promptGuid, { tapback: 'dislike' }))
-    expect(await p).toEqual({ approved: false })
+    expect(await p).toMatchObject({ approved: false })
   })
 
   it('a mirrored prompt (a workstream card judged elsewhere) texts that card\'s current verdict', async () => {
@@ -639,7 +703,7 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     const { id } = await promptFor(run)
     await db().update(channelApprovals).set({ status: 'approved', resolvedAt: new Date() }).where(eq(channelApprovals.id, id))
     ac.abort(APPROVAL_WITHDRAWN)
-    expect(await p).toEqual({ approved: true })
+    expect(await p).toMatchObject({ approved: true })
     expect((await rowsFor(run))[0]!.status).toBe('approved')
   })
 })
