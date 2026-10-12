@@ -289,6 +289,14 @@ describe('C1: a workstream stays tainted for its whole life', () => {
     expect(ran).toEqual([])
   }, 60_000)
 
+  it('a row tainted before the sources were stored (tainted, no sources) seeds as a mail read', async () => {
+    const ws = await newWorkstream('legacy row')
+    await patchWorkstream(ws.id, { tainted: true })
+    const { seen, runFn } = harness(() => [[...text('ok'), call('fin', 'finish_workstream', { summary: 'x' }), finish('tool-calls')], [...text('done'), finish('stop')]])
+    await driveSegment(ws.conversationId, runFn, ws.id)
+    expect(seen[0]!.initial).toEqual(['mail'])
+  }, 30_000)
+
   it('control: an untainted workstream with the same stubs DOES auto-run gmail_send (the test above is not vacuous)', async () => {
     const ws = await newWorkstream('clean control')
     const { seen, runFn } = harness(() => [
