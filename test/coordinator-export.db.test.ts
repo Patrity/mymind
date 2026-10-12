@@ -179,4 +179,37 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
     expect(two.exitCode).toBe(3)
     expect((await call('bash', { command: 'ls from 2>/dev/null | wc -l' })).stdout.trim()).toBe('0')
   }, 180_000)
+
+  it('fix 3: an owner NAME with spaces cannot shift the size field (the reviewer\'s bypass) — and more than 20,000 entries are refused', async () => {
+    const coord = await workstream('T83X coordinator 6')
+    const coordWs = await ensureWorkstreamWorkspace(coord.id)
+    as = { workspaceId: coordWs.id, workstreamId: coord.id }
+    const mk = await call('bash', { command: [
+      'mkdir -p /tmp/o && cd /tmp/o && truncate -s 1G big && truncate -s 50M mid',
+      // The bypass: with a spaced owner, `tar -tv` lists "a 1 2 3/g 1073741824 …" and $3 is a digit of the NAME.
+      "tar --owner='a 1 2 3:1000' --group='g:1000' -cSzf - big | base64 -w0 > /tmp/own-big.b64",
+      "tar --owner='a 1 2 3:1000' --group='g:1000' -cSzf - mid | base64 -w0 > /tmp/own-mid.b64",
+      "tar --owner='a 1 2 3:1000' --group='g:1000' -tvf <(base64 -d /tmp/own-big.b64 | gzip -dc) | awk '{print $3}' > /tmp/plain-field3",
+      'mkdir -p /tmp/many && cd /tmp/many && for i in $(seq 1 20001); do : > f$i; done && tar -czf - . | base64 -w0 > /tmp/many.b64',
+      'echo ok'
+    ].join(' && ') })
+    expect(mk.stdout).toContain('ok')
+    // The bypass is real without --numeric-owner: field 3 is part of the owner name, not the size.
+    const field3 = (await call('bash', { command: 'cat /tmp/plain-field3' })).stdout.trim()
+    expect(field3).not.toBe('1073741824')
+    expect(Number(field3)).toBeLessThan(10)
+    const b64 = async (f: string) => (await call('bash', { command: `cat ${f}` })).stdout as string
+    const m = rt.manager
+    // 1 GiB listed against a 5 MB limit: refused on the size (the reviewer's exact case extracted it).
+    const big = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/big', 5 * 1024 * 1024), { input: await b64('/tmp/own-big.b64'), timeoutSec: 60 })
+    expect(big.exitCode).toBe(3)
+    // 50 MB under a 100 MB limit, but sparse: refused as sparse.
+    const mid = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/mid', 100 * 1024 * 1024), { input: await b64('/tmp/own-mid.b64'), timeoutSec: 60 })
+    expect(mid.exitCode).toBe(5)
+    // (267 KB of base64: read past the bash tool's 64 KB output cap.)
+    const manyB64 = (await m.exec(coordWs.id, 'cat /tmp/many.b64', { capBytes: 1024 * 1024 })).stdout
+    const many = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/many', 100 * 1024 * 1024), { input: manyB64, timeoutSec: 120 })
+    expect(many.exitCode).toBe(6)
+    expect((await call('bash', { command: 'ls from 2>/dev/null | wc -l' })).stdout.trim()).toBe('0')
+  }, 300_000)
 })

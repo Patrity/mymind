@@ -539,6 +539,8 @@ export const EXPORT_DIR = 'from'
 /** Fix round 1 (M4): at most this much unpacked per export (and never past the destination's quota). */
 export const EXPORT_MAX_UNPACKED_BYTES = 200 * 1024 * 1024
 const EXPORT_TOO_LARGE = '__mm_export_too_large__'
+/** Fix round 3: members per export. */
+export const EXPORT_MAX_ENTRIES = 20_000
 
 /** The unpack, run INSIDE the destination sandbox with the base64 archive on stdin: decompression is
  *  cut at `limit` bytes (exit 3), an archive holding anything but plain files and directories is
@@ -548,11 +550,16 @@ export function exportUnpackCommand(dir: string, limit: number): string {
     't=$(mktemp) || exit 1',
     `base64 -d | gzip -dc | head -c ${limit + 1} > "$t"`,
     `if [ "$(wc -c < "$t")" -gt ${limit} ]; then rm -f "$t"; echo "${EXPORT_TOO_LARGE}" >&2; exit 3; fi`,
-    `if tar -tvf "$t" | grep -q '^[^-d]'; then rm -f "$t"; echo "the archive holds links or special files" >&2; exit 4; fi`,
+    // Fix round 3: at most EXPORT_MAX_ENTRIES members (thousands of empty dirs/files cost far more
+    // on disk than they list), and every listing below is --numeric-owner: an owner NAME is the
+    // archive's own text and may hold spaces, which would shift the size out of field 3.
+    `c=$(tar -tf "$t" | wc -l)`,
+    `if [ "$c" -gt ${EXPORT_MAX_ENTRIES} ]; then rm -f "$t"; echo "the archive has more than ${EXPORT_MAX_ENTRIES} entries" >&2; exit 6; fi`,
+    `if tar --numeric-owner -tvf "$t" | grep -q '^[^-d]'; then rm -f "$t"; echo "the archive holds links or special files" >&2; exit 4; fi`,
     // Fix round 2: the members' LISTED sizes count too — a sparse member lists far more than the
     // archive holds (2 GB from a few KB) and extracts to that apparent size. A plain archive always
     // holds every byte it lists, so listing more than the archive's own size means sparse: refused.
-    `n=$(tar -tvf "$t" | awk '{s+=$3} END {printf "%d", s}')`,
+    `n=$(tar --numeric-owner -tvf "$t" | awk '{s+=$3} END {printf "%d", s}')`,
     `if [ "$n" -gt ${limit} ]; then rm -f "$t"; echo "${EXPORT_TOO_LARGE}" >&2; exit 3; fi`,
     `if [ "$n" -gt "$(wc -c < "$t")" ]; then rm -f "$t"; echo "the archive holds sparse files" >&2; exit 5; fi`,
     `mkdir -p ${dir} && tar -xf "$t" -C ${dir} --no-same-owner --no-same-permissions --no-overwrite-dir; s=$?; rm -f "$t"; exit $s`

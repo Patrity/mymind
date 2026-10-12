@@ -437,9 +437,10 @@ export async function enqueueWhy(ws: WorkstreamRow, why: SegmentWhy, detail?: st
   return enqueueSegment(ws, { text: segmentText(why, ws, detail), eventOrigin: segmentOrigin(why) })
 }
 
-/** Imported at call time, as elsewhere in this file (load order). */
-async function appendEvent(conversationId: string, content: string, origin: string): Promise<void> {
-  await (await import('../../../services/conversations')).appendEvent(conversationId, content, origin)
+/** Imported at call time, as elsewhere in this file (load order). With `tx`: written inside that
+ *  transaction (the caller publishes after its commit). */
+async function appendEvent(conversationId: string, content: string, origin: string, o: { tx?: Tx } = {}): Promise<void> {
+  await (await import('../../../services/conversations')).appendEvent(conversationId, content, origin, o as never)
 }
 
 /** Tony's words into the segment that is queued and not yet claimed: they replace a system
@@ -451,7 +452,7 @@ async function foldIntoQueued(ws: WorkstreamRow, text: string): Promise<string |
   return withQueuedSegment(ws.conversationId, async (run, tx) => {
     const input = run.input as RunInput
     if (input.eventOrigin === 'segment:children' || input.eventOrigin === 'segment:watch') {
-      await appendEvent(ws.conversationId, input.text, input.eventOrigin)
+      await appendEvent(ws.conversationId, input.text, input.eventOrigin, { tx })
       const { eventOrigin: _drop, ...rest } = input
       await tx.update(agentRuns).set({ input: { ...rest, text } }).where(eq(agentRuns.id, run.id))
     } else if (input.eventOrigin) {
@@ -469,7 +470,10 @@ async function foldIntoQueued(ws: WorkstreamRow, text: string): Promise<string |
  * so a row `fn` appends to the thread lands before the turn reads its leaf. Null when none is queued.
  */
 export async function withQueuedSegment(conversationId: string, fn: (run: AgentRun, tx: Tx) => Promise<void>): Promise<string | null> {
-  return useDb().transaction(async (tx) => {
+  // Fix round 3: everything `fn` writes goes through `tx` — ONE connection. A second pool connection
+  // while this holds the claim lock and the run's row lock could wait on a lock this transaction
+  // holds (a thread delete cascading to the run), a cycle Postgres cannot see.
+  const id = await useDb().transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext('mymind:agent_runs:claim'))`)
     const [run] = await tx.select().from(agentRuns)
       .where(and(eq(agentRuns.conversationId, conversationId), eq(agentRuns.kind, 'workstream'), eq(agentRuns.status, 'queued'))).limit(1).for('update')
@@ -477,6 +481,8 @@ export async function withQueuedSegment(conversationId: string, fn: (run: AgentR
     await fn(run, tx)
     return run.id
   })
+  if (id) publishChange({ resource: 'conversation', action: 'updated', id: conversationId })
+  return id
 }
 type Tx = Parameters<Parameters<ReturnType<typeof useDb>['transaction']>[0]>[0]
 
@@ -593,7 +599,7 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   const ws = await workstreamForConversation(run.conversationId)
   // S1: a coordinator's child lifecycle notes that waited for this segment to end land now — before
   // anything below queues the next segment.
-  if (ws) await appendLeftoverReports(run, ws)
+  const leftoverReports = ws ? await appendLeftoverReports(run, ws) : 0
   if (ws?.treeBudget) await (await coordinator()).flushChildNotes(ws.id).catch(err => console.error('[workstreams] child notes failed:', err))
   if (!ws || isTerminal(ws.state) || seg?.skip) {
     if (ws && seg?.skip && ws.cancelRequested) await cancelNow(ws)
@@ -649,6 +655,9 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
     const unread = await drainSteerFor(run.id)
     await patchWorkstream(ws.id, { failures: 0, lastOutcome: 'wait' })
     if (unread.length) return enqueueSegment(current, { text: unread.join('\n\n') })
+    // Fix round 3: child reports were steered in but never read (the segment stopped on this very
+    // wait) — they are in the thread now, and their questions count as shown: never park on them.
+    if (leftoverReports) return enqueueWhy(current, 'children', 'Child reports arrived after you called wait_for_workstreams — they are above.')
     // M6: a watch that already fired is delivered first (the model can wait again after reading it).
     if (await workstreamHasWatchResults(ws.id)) {
       const next = await enqueueWatchResults(current)
@@ -691,11 +700,22 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
 }
 
 /** Cycle 83 fix round 2: child reports steered into this segment that it ended before reading are
- *  written to the thread as their event rows (no segment runs now) — never dropped, never Tony's. */
-async function appendLeftoverReports(run: AgentRun, ws: WorkstreamRow): Promise<void> {
+ *  written to the thread as their event rows (no segment runs now) — never dropped, never Tony's.
+ *  Fix round 3: taken and written in ONE transaction — a failed append leaves them unconsumed (the
+ *  next attempt, or recovery, writes them). Returns how many were written. */
+export async function appendLeftoverReports(run: Pick<AgentRun, 'id'>, ws: Pick<WorkstreamRow, 'conversationId'>): Promise<number> {
   try {
-    for (const text of await drainReportsFor(run.id)) await appendEvent(ws.conversationId, text, 'segment:children')
-  } catch (err) { console.error('[workstreams] leftover child reports failed:', err) }
+    const n = await useDb().transaction(async (tx) => {
+      const texts = await drainReportsFor(run.id, { tx })
+      for (const text of texts) await appendEvent(ws.conversationId, text, 'segment:children', { tx })
+      return texts.length
+    })
+    if (n) publishChange({ resource: 'conversation', action: 'updated', id: ws.conversationId })
+    return n
+  } catch (err) {
+    console.error('[workstreams] leftover child reports failed:', err)
+    return 0
+  }
 }
 
 /** What a segment waiting on a watch shows (its Resume continues now). */

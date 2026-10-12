@@ -56,8 +56,8 @@ export async function drainInboxFor(runId: string): Promise<InboxItem[]> {
 }
 
 /** Reports a segment never read (it ended first) — the loop appends them to the thread as event rows. */
-export async function drainReportsFor(runId: string): Promise<string[]> {
-  const rows = await useDb().update(agentInbox).set({ consumedAt: sql`now()` })
+export async function drainReportsFor(runId: string, o: { tx?: Parameters<Parameters<ReturnType<typeof useDb>['transaction']>[0]>[0] } = {}): Promise<string[]> {
+  const rows = await (o.tx ?? useDb()).update(agentInbox).set({ consumedAt: sql`now()` })
     .where(and(eq(agentInbox.runId, runId), isNull(agentInbox.consumedAt), eq(agentInbox.source, 'report')))
     .returning({ content: agentInbox.content, createdAt: agentInbox.createdAt })
   return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).map(r => r.content)

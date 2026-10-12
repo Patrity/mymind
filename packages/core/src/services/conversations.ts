@@ -141,11 +141,16 @@ export async function appendMessages(
   conversationId: string,
   msgs: NewConvMessage[],
   parentId?: string | null,
-  opts: { inTx?: (tx: DbTx, ids: string[]) => Promise<void> } = {}
+  opts: {
+    inTx?: (tx: DbTx, ids: string[]) => Promise<void>
+    /** Cycle 83 fix round 3: append INSIDE the caller's transaction (same connection) — e.g. while
+     *  it holds the claim lock: a second pool connection could deadlock against it. */
+    tx?: DbTx
+  } = {}
 ): Promise<string[]> {
   if (!msgs.length) return []
 
-  const db = useDb()
+  const db = opts.tx ?? useDb()
 
   // The parent is the ACTIVE LEAF, not the newest row. Once a branch exists those differ, and
   // chaining from the newest row would graft this turn onto whichever branch was written last
@@ -167,7 +172,7 @@ export async function appendMessages(
   // failure mode this cycle introduces: before the leaf existed, the flat read still showed
   // them. Atomicity only — nothing here takes a lock or serializes concurrent appends.
   const ids: string[] = []
-  await db.transaction(async (tx) => {
+  const body = async (tx: DbTx) => {
     // Insert each message in order, chaining parentId linearly
     for (const msg of msgs) {
       const [inserted] = await tx
@@ -204,14 +209,17 @@ export async function appendMessages(
       .where(eq(conversations.id, conversationId))
 
     if (opts.inTx) await opts.inTx(tx, [...ids])
-  })
+  }
+  if (opts.tx) await body(opts.tx)
+  else await useDb().transaction(body)
   return ids
 }
 
-/** One event row on the active path — a wake, an approval note, a restart note. */
-export async function appendEvent(conversationId: string, content: string, origin: string): Promise<void> {
-  await appendMessages(conversationId, [{ role: 'event', content, modality: 'text', origin }])
-  publishChange({ resource: 'conversation', action: 'updated', id: conversationId })
+/** One event row on the active path — a wake, an approval note, a restart note. With `tx` it is
+ *  written inside the caller's transaction, and the caller publishes the change after its commit. */
+export async function appendEvent(conversationId: string, content: string, origin: string, o: { tx?: DbTx } = {}): Promise<void> {
+  await appendMessages(conversationId, [{ role: 'event', content, modality: 'text', origin }], undefined, o.tx ? { tx: o.tx } : {})
+  if (!o.tx) publishChange({ resource: 'conversation', action: 'updated', id: conversationId })
 }
 
 /**

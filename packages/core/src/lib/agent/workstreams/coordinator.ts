@@ -350,7 +350,7 @@ export async function wakeCoordinatorIfReady(coordinatorId: string, o: { now?: n
   // the thread now — before that segment's turn reads it; or, with one RUNNING, it is steered in
   // (spliced and persisted as an event row). Questions count as shown only once it is in.
   const runId = (await enqueueWhy(won.row, 'children', text))
-    ?? (await withQueuedSegment(won.row.conversationId, async () => { await (await import('../../../services/conversations')).appendEvent(won.row.conversationId, text, 'segment:children') }))
+    ?? (await withQueuedSegment(won.row.conversationId, async (_run, tx) => { await (await import('../../../services/conversations')).appendEvent(won.row.conversationId, text, 'segment:children', { tx: tx as never }) }))
     ?? (await steerReport(won.row.conversationId, text))
   if (runId) await markReported(listed)
   return runId
