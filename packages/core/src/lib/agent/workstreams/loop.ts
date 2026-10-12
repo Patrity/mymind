@@ -30,6 +30,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentRuns, channelApprovals, conversationMessages, conversations, workstreamQuestionTags, workstreams, type AgentRun } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
+import { recordEvent } from '../../observability/record'
 import { createRun } from '../runtime/runs'
 import { abortRun } from '../runtime/aborts'
 import { drainCoordinatorFor, drainReportsFor, drainSteerFor, pushSteer } from '../runtime/inbox'
@@ -459,12 +460,16 @@ async function childAwayApproval(parentId: string, childId: string, runId: strin
   }
 }
 
-/** Fix round 2: the mirrored iMessage prompt's outcome reaches the card. Tony's 👍/👎 is his decision;
- *  a prompt that could not ask him (iMessage unavailable, the send failed) or expired unanswered
- *  ends the card as cancelled / system — never recorded as his "no". */
+/** The mirrored iMessage prompt's outcome reaches the card (fix round 2, corrected):
+ *  - Tony's 👍/👎 is his decision;
+ *  - the prompt expired unanswered (30 days) → the card closes as cancelled / system;
+ *  - the prompt could not ask him (iMessage unavailable, the send failed) → NOTHING is decided: a
+ *    workstream approval waits without a timeout, so the web card stays open for Tony to answer in
+ *    the app. Only an activity note records the failed prompt. */
 function forwardAwayAnswer(requestId: string, r: ImessageApprovalResult): void {
   if (r.approved || r.decidedBy === undefined || r.decidedBy === 'tony') decideBusApproval({ requestId, approved: r.approved })
-  else cancelBusApproval(requestId)
+  else if (r.decidedBy === 'timeout') cancelBusApproval(requestId)
+  else recordEvent({ kind: 'tool', name: 'workstream:away-prompt-failed', severity: 'warn', meta: { requestId, decidedBy: r.decidedBy } })
 }
 
 async function startAwayApproval(runId: string, requestId: string, req: ApprovalRequest, signal: AbortSignal, verdict?: () => ApprovalVerdictDTO | null): Promise<void> {

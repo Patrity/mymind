@@ -321,7 +321,7 @@ describe('fix round 2', () => {
   })
 
   it.each([
-    ['iMessage unavailable / send failed / expired', { approved: false, decidedBy: 'system' as const }, 'cancelled', 'system'],
+    ['expired unanswered (30 days)', { approved: false, decidedBy: 'timeout' as const }, 'cancelled', 'system'],
     ['Tony\'s 👎 on the phone', { approved: false, decidedBy: 'tony' as const }, 'denied', 'tony']
   ])('the mirrored away prompt: %s → the card ends %s / %s', async (_label, answer, decision, by) => {
     workstreamNotifyDeps.imessageApproval = async () => answer
@@ -333,5 +333,25 @@ describe('fix round 2', () => {
     const run = (await segRun(ws.conversationId))!
     await until(async () => (await verdictRows(run.id))[0]?.decision ? true : null)
     expect((await verdictRows(run.id))[0]).toMatchObject({ decision, decidedBy: by })
+  })
+
+  it('a mirrored prompt that could not be sent leaves the card OPEN — a later approve in the app executes the call', async () => {
+    workstreamNotifyDeps.imessageApproval = async () => ({ approved: false, decidedBy: 'system' })   // send failed
+    const { ws } = await newWorkstream('mirror-send-failed')
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn('cancel') })   // rule high: Tony asked at once
+    const row = await until(async () => { const r = await getWorkstream(ws.id); return (r?.attention as WorkstreamAttention | null)?.kind === 'approval' ? r : null })
+    const requestId = (row.attention as WorkstreamAttention).requestId!
+    release({ ...APPROVE, recommendation: 'review' })
+    await sleep(150)                                            // the failed prompt has come back
+    expect(pendingBusApprovals()).toContain(requestId)           // still waiting on the web card
+    expect((await getWorkstream(ws.id))!.state).toBe('attention')
+    expect(ran).toEqual([])
+    const run = (await segRun(ws.conversationId))!
+    expect((await verdictRows(run.id))[0]?.decision).toBeNull()
+    expect(decideBusApproval({ requestId, approved: true })).toBe(true)
+    expect(await waitForInFlight(15_000)).toBe(true)
+    expect(ran).toEqual(['cancel:standup'])
+    await until(async () => (await verdictRows(run.id))[0]?.decision ? true : null)
+    expect((await verdictRows(run.id))[0]).toMatchObject({ decision: 'approved', decidedBy: 'tony' })
   })
 })
