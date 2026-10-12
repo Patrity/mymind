@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addApproval, approvalFor, canApprove, headerState, orphanApprovals, removeApproval, resolveApproval, setApprovalVerdict, type PendingApprovals } from './approvals'
+import { addApproval, approvalFor, canApprove, headerState, pruneAutoApprovals, orphanApprovals, removeApproval, resolveApproval, setApprovalVerdict, type PendingApprovals } from './approvals'
 import { mapServerMessage } from '../voice/messages'
 
 const frame = (requestId: string, command: string) =>
@@ -154,5 +154,36 @@ describe('headerState (fix round 0, C3: an auto-approved card is not "Awaiting A
     expect(headerState('approval-requested', d)).toBe('approval-requested')
     expect(headerState('approval-requested', null)).toBe('approval-requested')
     expect(headerState('output-available', { ...d, auto: { decidedBy: 'judge', confidence: 0.95, reason: null } })).toBe('output-available')
+  })
+})
+
+describe('pruneAutoApprovals (fix round 1, M3)', () => {
+  const note = { decidedBy: 'judge' as const, confidence: 0.95, reason: null }
+  const d = (requestId: string, auto = true) => ({ requestId, tool: 'calendar_rsvp', command: 'x', proposedPattern: '', ...(auto ? { auto: note } : {}) })
+  const part = (id: string, state: string) => ({ type: 'dynamic-tool', state, approval: { id } })
+  it('drops an auto card once its call reached an output state; keeps it while it still waits or is not on screen', () => {
+    const s: PendingApprovals = { a: d('a'), b: d('b'), c: d('c'), x: d('x') }
+    const out = pruneAutoApprovals(s, [{ parts: [part('a', 'output-available'), part('b', 'approval-requested'), part('x', 'output-error')] }])
+    expect(Object.keys(out).sort()).toEqual(['b', 'c'])
+    expect(pruneAutoApprovals(s, [{ parts: [part('d', 'output-denied')] }])).toBe(s)
+  })
+  it('never touches a card Tony still has to answer, even if a part with its id is settled', () => {
+    const s: PendingApprovals = { a: d('a', false) }
+    expect(pruneAutoApprovals(s, [{ parts: [part('a', 'output-available')] }])).toBe(s)
+  })
+  it('a denied part counts as settled too', () => {
+    expect(pruneAutoApprovals({ a: d('a') }, [{ parts: [part('a', 'output-denied')] }])).toEqual({})
+  })
+})
+
+describe('approval-verdict taint shape (fix round 1, M4)', () => {
+  const card = { type: 'approval', requestId: 'r1', tool: 'web_fetch', command: 'u', proposedPattern: '', allowlistable: false }
+  const judge = { rule: null, verdict: null, pending: true, autoPossible: false }
+  it('a list of names passes; a string, a number or a mixed list drops the frame', () => {
+    const s0 = apply({}, card)
+    expect(approvalFor(apply(s0, { type: 'approval-verdict', requestId: 'r1', judge: { ...judge, taint: ['flagged'] } }), 'r1')?.judge?.taint).toEqual(['flagged'])
+    for (const taint of ['flagged', 3, ['mail', 1], { 0: 'mail' }]) {
+      expect(apply(s0, { type: 'approval-verdict', requestId: 'r1', judge: { ...judge, taint } })).toBe(s0)
+    }
   })
 })

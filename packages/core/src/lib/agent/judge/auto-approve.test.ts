@@ -2,7 +2,7 @@
 // straight from the global constraint:
 //   settings.judge.enabled ∧ surfaceEnabled ∧ verdict.recommendation==='approve'
 //   ∧ verdict.confidence ≥ settings.judge.confidence ∧ !verdict.error ∧ ruleFloor ∉ {high, critical, deny}
-//   ∧ !(tool.outbound ∧ runTainted) ∧ nonce unchanged ∧ verdict.risk ∈ {low, medium} ∧ !verdict.lenient;
+//   ∧ !runTainted (R-taint, Task 4 fix round 1: replaces !(outbound ∧ runTainted)) ∧ nonce unchanged ∧ verdict.risk ∈ {low, medium} ∧ !verdict.lenient;
 //   headless never.  (risk/lenient: fix round 1 rulings.)
 import { describe, it, expect } from 'vitest'
 import { autoApprovePredicate, autoApproveBlocker, type AutoApproveInput } from './auto-approve'
@@ -29,16 +29,16 @@ function oracle(i: AutoApproveInput): boolean {
   const surfaceEnabled = i.surface === 'workstream' ? s.smartApprovals.workstreams : i.surface === 'chat' ? s.smartApprovals.chat : false
   const v = i.verdict
   return s.enabled && surfaceEnabled && !!v && v.recommendation === 'approve' && v.confidence >= s.confidence
-    && !v.error && !v.lenient && (v.risk === 'low' || v.risk === 'medium') && i.ruleFloor !== 'high' && i.ruleFloor !== 'critical' && i.ruleFloor !== 'deny' && !(i.outbound && i.runTainted) && i.nonceUnchanged
+    && !v.error && !v.lenient && (v.risk === 'low' || v.risk === 'medium') && i.ruleFloor !== 'high' && i.ruleFloor !== 'critical' && i.ruleFloor !== 'deny' && !i.runTainted && i.nonceUnchanged
 }
 
 function* allInputs(): Generator<[string, AutoApproveInput]> {
   for (const enabled of B) for (const workstreams of B) for (const chat of B) for (const confidence of [0.9, 0.95]) {
     const settings: JudgeSettings = { enabled, smartApprovals: { workstreams, chat }, confidence }
     for (const surface of SURFACES) for (const [vName, verdict] of VERDICTS) for (const ruleFloor of RULE_FLOORS)
-      for (const outbound of B) for (const runTainted of B) for (const nonceUnchanged of B) {
-        const name = `enabled=${enabled} ws=${workstreams} chat=${chat} conf≥${confidence} ${surface} verdict=${vName} floor=${ruleFloor} outbound=${outbound} tainted=${runTainted} nonceOk=${nonceUnchanged}`
-        yield [name, { settings, surface, verdict, ruleFloor, outbound, runTainted, nonceUnchanged }]
+      for (const runTainted of B) for (const nonceUnchanged of B) {
+        const name = `enabled=${enabled} ws=${workstreams} chat=${chat} conf≥${confidence} ${surface} verdict=${vName} floor=${ruleFloor} tainted=${runTainted} nonceOk=${nonceUnchanged}`
+        yield [name, { settings, surface, verdict, ruleFloor, runTainted, nonceUnchanged }]
       }
   }
 }
@@ -46,8 +46,8 @@ function* allInputs(): Generator<[string, AutoApproveInput]> {
 describe('autoApprovePredicate — full truth table', () => {
   const rows = [...allInputs()]
 
-  it('covers every combination (2·2·2·2 settings × 3 surfaces × 10 verdicts × 5 floors × 2·2·2)', () => {
-    expect(rows).toHaveLength(16 * 3 * 10 * 5 * 8)
+  it('covers every combination (2·2·2·2 settings × 3 surfaces × 10 verdicts × 5 floors × 2·2)', () => {
+    expect(rows).toHaveLength(16 * 3 * 10 * 5 * 4)
   })
 
   it('matches the spec formula on every row', () => {
@@ -66,7 +66,7 @@ describe('autoApprovePredicate — each exclusion on its own (spec §2.4)', () =
   const ok: AutoApproveInput = {
     settings: { enabled: true, smartApprovals: { workstreams: true, chat: false }, confidence: 0.9 },
     surface: 'workstream', verdict: { ...base, recommendation: 'approve', confidence: 0.94 },
-    ruleFloor: 'review', outbound: false, runTainted: false, nonceUnchanged: true
+    ruleFloor: 'review', runTainted: false, nonceUnchanged: true
   }
 
   it('the baseline auto-approves', () => {
@@ -83,7 +83,7 @@ describe('autoApprovePredicate — each exclusion on its own (spec §2.4)', () =
     ['rule floor high (spec D6: no rule flag)', { ruleFloor: 'high' }, 'rule-floor'],
     ['rule floor critical', { ruleFloor: 'critical' }, 'rule-floor'],
     ['rule floor deny', { ruleFloor: 'deny' }, 'rule-floor'],
-    ['outbound in a tainted run', { outbound: true, runTainted: true }, 'tainted-outbound'],
+    ['any call in a tainted run (R-taint)', { runTainted: true }, 'tainted-run'],
     ['no verdict yet', { verdict: null }, 'no-verdict'],
     ['judge error / timeout', { verdict: { ...base, recommendation: 'approve', confidence: 0.99, error: 'judge timed out' } }, 'verdict-error'],
     ['judge error with an empty message', { verdict: { ...base, recommendation: 'approve', confidence: 0.99, error: '' } }, 'verdict-error'],
@@ -103,9 +103,8 @@ describe('autoApprovePredicate — each exclusion on its own (spec §2.4)', () =
     ['a lenient (text-fallback) verdict', { verdict: { ...base, recommendation: 'approve', confidence: 0.99, lenient: true } }, 'lenient-verdict'],
     ['an unknown rule floor', { ruleFloor: 'weird' as never }, 'rule-floor'],
     ['an undefined rule floor', { ruleFloor: undefined as never }, 'rule-floor'],
-    ['outbound undefined in a tainted run', { outbound: undefined as never, runTainted: true }, 'tainted-outbound'],
-    ['tainted undefined on an outbound call', { outbound: true, runTainted: undefined as never }, 'tainted-outbound'],
-    ['both undefined', { outbound: undefined as never, runTainted: undefined as never }, 'tainted-outbound'],
+    ['tainted undefined (fail closed)', { runTainted: undefined as never }, 'tainted-run'],
+    ['tainted a truthy non-boolean', { runTainted: 'no' as never }, 'tainted-run'],
     ['nonceUnchanged undefined', { nonceUnchanged: undefined as never }, 'nonce-changed'],
     ['smartApprovals missing', { settings: { enabled: true, confidence: 0.9 } as never }, 'surface-disabled'],
     ['settings missing', { settings: undefined as never }, 'judge-disabled'],
@@ -129,9 +128,10 @@ describe('autoApprovePredicate — each exclusion on its own (spec §2.4)', () =
     expect(autoApprovePredicate(undefined as never)).toBe(false)
   })
 
-  it('outbound in an untainted run, a tainted non-outbound call and a low floor stay auto-approvable', () => {
-    expect(autoApprovePredicate({ ...ok, outbound: true })).toBe(true)
-    expect(autoApprovePredicate({ ...ok, runTainted: true })).toBe(true)
+  it('R-taint: a tainted run blocks every surface and verdict; an untainted run and a low floor stay auto-approvable', () => {
+    expect(autoApprovePredicate({ ...ok, runTainted: true })).toBe(false)
+    expect(autoApprovePredicate({ ...ok, runTainted: true, surface: 'chat', settings: { ...ok.settings, smartApprovals: { workstreams: true, chat: true } }, verdict: { ...base, recommendation: 'approve', confidence: 1 } })).toBe(false)
+    expect(autoApprovePredicate({ ...ok, runTainted: false })).toBe(true)
     expect(autoApprovePredicate({ ...ok, ruleFloor: 'low' })).toBe(true)
   })
 })

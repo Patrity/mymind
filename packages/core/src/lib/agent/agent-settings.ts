@@ -74,6 +74,41 @@ export function readAgentSettings(raw: unknown): AgentSettings {
   }
 }
 
+/**
+ * Task 4 fix round 1 (M1): which stored fields readAgentSettings had to fail closed on — empty when the
+ * row is missing or valid. The settings page shows this ("Smart Approvals is off") instead of letting
+ * a corrupt row look like a deliberate "off".
+ */
+export function agentSettingsProblems(raw: unknown): string[] {
+  if (raw === undefined || raw === null) return []
+  if (typeof raw !== 'object' || Array.isArray(raw)) return ['the settings document']
+  const j = (raw as { judge?: unknown }).judge
+  if (j === undefined) return []
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return ['judge']
+  const o = j as Record<string, unknown>
+  const out: string[] = []
+  if (o.enabled !== undefined && typeof o.enabled !== 'boolean') out.push('judge.enabled')
+  const sa = o.smartApprovals
+  if (sa !== undefined) {
+    if (sa === null || typeof sa !== 'object' || Array.isArray(sa)) out.push('judge.smartApprovals')
+    else {
+      for (const k of ['workstreams', 'chat'] as const) {
+        const v = (sa as Record<string, unknown>)[k]
+        if (v !== undefined && typeof v !== 'boolean') out.push(`judge.smartApprovals.${k}`)
+      }
+    }
+  }
+  if (o.confidence !== undefined && !confidenceSchema.safeParse(o.confidence).success) out.push('judge.confidence')
+  return out
+}
+
+/** GET /api/settings/agent-settings: the settings as the worker reads them, plus any stored field it
+ *  had to fail closed on (read fresh, so a repaired row shows at once). */
+export async function readAgentSettingsWithProblems(): Promise<AgentSettings & { problems: string[] }> {
+  const [row] = await useDb().select().from(settings).where(eq(settings.key, AGENT_SETTINGS_KEY)).limit(1)
+  return { ...readAgentSettings(row?.value), problems: agentSettingsProblems(row?.value) }
+}
+
 /** Pure: apply a validated patch. */
 export function mergeAgentSettings(current: AgentSettings, patch: AgentSettingsPatch): AgentSettings {
   const j = patch.judge ?? {}

@@ -24,7 +24,7 @@ in untrusted tool results and taints the run. Outcome judging (did the work meet
 | D3 | Judge context = the exact nonce-bound call args (as on the card), the tool's description, the run/workstream goal, the last ~20 messages trimmed; untrusted content stays fenced | full history |
 | D4 | **Rule tier** (instant) gives a floor: `critical`/`deny`/`review`/`low` per tool; rule `high`/`critical`/`deny` is **never** auto-approvable (amended 2026-10-12, see §2.4) | LLM only |
 | D5 | Verdict = risk `low|medium|high|critical`, recommendation `approve|review|deny`, confidence 0–1, 1–3 short reasons; shown on the web card (progressively), workstream attention, and one line in the iMessage approval prompt | — |
-| D6 | **Smart Approvals**: Settings toggle, **on for workstreams, off for chat** by default; auto-approve only when recommendation `approve` ∧ confidence ≥ **0.9** ∧ no rule flag ∧ **not (outbound ∧ tainted run)**; judge error/timeout → human | always-human; auto in tainted outbound |
+| D6 | **Smart Approvals**: Settings toggle, **on for workstreams, off for chat** by default; auto-approve only when recommendation `approve` ∧ confidence ≥ **0.9** ∧ no rule flag ∧ **not (outbound ∧ tainted run)** — *amended 2026-10-12 (R-taint): ∧ **not tainted run** (any tool)*; judge error/timeout → human | always-human; auto in tainted outbound |
 | D7 | Audit: `approval_verdicts` table (verdict, rule floor, human decision or `auto`, latency); thread shows "⚖ auto-approved (0.94): reason" | activity_log only |
 | D8 | **Output guard** scans untrusted results: web_fetch / web_search / research_web, Gmail + calendar reads, workspace `bash` / `read_file` / `bash_output`, `read_workstream` + child reports | all tool results |
 | D9 | Guard = heuristic patterns always; **synchronous** LLM classification (`judge` usage, 15 s timeout) only when heuristics are suspicious or the content is web-sourced and > 2 KB | async (too late — the next tool call already ran) |
@@ -80,7 +80,8 @@ Stored in the existing agent settings doc; `invalidate` command on save. Headles
 keep today's gate classes (propose/deny) — the judge annotates proposals but never auto-runs them.
 
 ### 2.4 Never auto-approved
-Rule floor `high`/`critical`/`deny`; `outbound` in a tainted run; judge error/timeout/malformed; confidence
+Rule floor `high`/`critical`/`deny`; `outbound` in a tainted run (now: **any** call in a tainted run — see the
+R-taint amendment below); judge error/timeout/malformed; confidence
 below threshold; recommendation ≠ `approve`; any call whose approval nonce changed (existing binding).
 
 > **Amendment 2026-10-12 (Task 1 fix round 1):** auto-approval also requires the judge's risk to be
@@ -89,6 +90,14 @@ below threshold; recommendation ≠ `approve`; any call whose approval nonce cha
 > always floored `high` (§2.1).
 
 > **Amendment 2026-10-12 (Task 1 review, coordinator ruling):** a `high` rule floor also blocks auto-approval — D6's "no rule flag" takes precedence over the earlier `critical`/`deny`-only wording. Only `low`/`review` floors are auto-approvable.
+
+> **Amendment 2026-10-12 (Task 4 fix round 1, ruling R-taint):** a **tainted run never auto-approves
+> anything**. The predicate blocks on `runTainted` alone, replacing `!(outbound ∧ runTainted)`. Reason:
+> gmail_send and calendar_rsvp are dangerous but not `outbound`, so a run steered by planted content
+> could still auto-send mail to a known correspondent with only the judge in the way. Cost: no Smart
+> Approvals for the rest of a run that read mail/calendar, flagged content or a tainted workspace —
+> intended. The judge prompt no longer states a trusted "outbound yes/no"; its tainted-run rule covers
+> any action that sends data, contacts people or sets up later work.
 
 ### 2.5 Audit + UI
 `approval_verdicts(id, approval_id/nonce, run_id, workstream_id null, tool, rule_floor, rule_reasons,
@@ -129,7 +138,7 @@ tool, per cycle 82); an `output_warning` run event renders a chip on that tool p
   (false-positive budget: 0 on the benign set); verdict schema parsing + error handling; the
   auto-approve predicate truth table (every §2.4 exclusion).
 - DB/integration (fake judge model): approval with verdict persisted; Smart Approvals auto-resolves a
-  workstream approval and records `auto`; chat stays manual by default; tainted outbound never auto;
+  workstream approval and records `auto`; chat stays manual by default; tainted outbound never auto (R-taint: nothing in a tainted run auto-runs);
   judge timeout → human; verdict arriving after Tony decided is recorded but changes nothing;
   guard taints the run and gates the next outbound call.
 - Load: guard latency on the live model for 10 real web pages (recorded).

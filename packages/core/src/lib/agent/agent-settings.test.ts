@@ -67,3 +67,25 @@ describe('agent settings — judge fields', () => {
     expect(mergeAgentSettings(cur, agentSettingsPatchSchema.parse({}))).toEqual(cur)
   })
 })
+
+describe('agentSettingsProblems (Task 4 fix round 1, M1)', () => {
+  it('a missing or valid row has none', async () => {
+    const { agentSettingsProblems } = await import('./agent-settings')
+    expect(agentSettingsProblems(undefined)).toEqual([])
+    expect(agentSettingsProblems(null)).toEqual([])
+    expect(agentSettingsProblems({ other: 1 })).toEqual([])
+    expect(agentSettingsProblems({ judge: { enabled: false, smartApprovals: { workstreams: true, chat: false }, confidence: 0.95 } })).toEqual([])
+    expect(agentSettingsProblems({ judge: { enabled: true } })).toEqual([])
+  })
+  it('names every field read fail-closed', async () => {
+    const { agentSettingsProblems } = await import('./agent-settings')
+    expect(agentSettingsProblems('x')).toEqual(['the settings document'])
+    expect(agentSettingsProblems([1])).toEqual(['the settings document'])
+    expect(agentSettingsProblems({ judge: 'on' })).toEqual(['judge'])
+    expect(agentSettingsProblems({ judge: null })).toEqual(['judge'])
+    expect(agentSettingsProblems({ judge: { enabled: 'yes', smartApprovals: { workstreams: 1, chat: true }, confidence: 2 } }))
+      .toEqual(['judge.enabled', 'judge.smartApprovals.workstreams', 'judge.confidence'])
+    expect(agentSettingsProblems({ judge: { smartApprovals: [] } })).toEqual(['judge.smartApprovals'])
+    expect(agentSettingsProblems({ judge: { smartApprovals: { chat: 'no' } } })).toEqual(['judge.smartApprovals.chat'])
+  })
+})

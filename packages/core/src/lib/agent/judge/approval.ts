@@ -17,8 +17,8 @@
 // the decision write waits for the row).
 //
 // Never auto-approved, whatever the verdict: `humanOnly` tools (decide_review — "Tony confirms every
-// call"), headless runs, a surface whose Smart Approvals switch is off, an outbound call in a tainted
-// run, a rule floor of high/critical/deny, a gmail_send whose pinned draft is not the revision the
+// call"), headless runs, a surface whose Smart Approvals switch is off, ANY call in a tainted run
+// (R-taint), a rule floor of high/critical/deny, a gmail_send whose pinned draft is not the revision the
 // rule checked (nonce binding), an error/lenient/low-confidence verdict (the predicate's own list).
 import type { AgentTool, ApprovalRequest } from '../types'
 import { getJudgeSettings, readJudgeSettingsFresh } from '../agent-settings'
@@ -199,7 +199,7 @@ export function createApprovalJudge(init: ApprovalJudgeInit, deps: ApprovalJudge
     const s = settings
     const could = tool.humanOnly !== true && autoApproveBlocker({
       settings: s, surface: init.surface, verdict: IDEAL, ruleFloor: 'low',
-      outbound: tool.outbound === true, runTainted: init.isTainted(), nonceUnchanged: true
+      runTainted: init.isTainted(), nonceUnchanged: true
     }) === null
     view = { rule: null, verdict: null, pending: true, autoPossible: could, ...taintView() }
     emit()
@@ -238,7 +238,7 @@ export function createApprovalJudge(init: ApprovalJudgeInit, deps: ApprovalJudge
         tool: tool.name, description: tool.description,
         call: [init.req.title, init.req.command].filter(Boolean).join('\n'),
         goal: init.goal ?? null, recentMessages: init.recentMessages, rule: ruleForPrompt, signal: init.signal,
-        outbound: tool.outbound === true, taint: currentTaint()
+        taint: currentTaint()
       }).catch((err: unknown) => errorVerdict(`judge failed: ${err instanceof Error ? err.message.slice(0, 200) : 'error'}`, Date.now() - verdictStarted)),
       deps.verdictTimeoutMs, () => errorVerdict('judge timed out', Date.now() - verdictStarted)
     )
@@ -258,7 +258,7 @@ export function createApprovalJudge(init: ApprovalJudgeInit, deps: ApprovalJudge
       const pinned = gmail ? deps.pinnedSendMessageId(nonce) : undefined
       blocker = autoApproveBlocker({
         settings: sNow, surface: init.surface, verdict, ruleFloor: rule.floor,
-        outbound: tool.outbound === true, runTainted: init.isTainted(),
+        runTainted: init.isTainted(),
         nonceUnchanged: !gmail || (!!pinned && pinned === rule.boundMessageId)
       })
     }

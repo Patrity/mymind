@@ -94,7 +94,7 @@ const view = computed(() => verdictView(props.judge))
         icon="i-lucide-biohazard"
         :label="view.taint"
       />
-      <span>Bridget read untrusted content in this run; anything it sends out needs you.</span>
+      <span>This run read untrusted content, so Smart Approvals is off for it — every approval waits for you.</span>
     </div>
     <div
       v-if="view.rule"

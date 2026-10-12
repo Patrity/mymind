@@ -134,12 +134,23 @@ describe('agent settings doc (DB)', () => {
     const out = await put({ ...session, body: { judge: { enabled: true, smartApprovals: { workstreams: false } } } }) as { judge: { smartApprovals: { workstreams: boolean } } }
     expect(out.judge.smartApprovals.workstreams).toBe(false)
     expect(invalidate).toHaveBeenCalledWith('agent-settings')
-    expect(await get(session)).toEqual(out)
+    expect(await get(session)).toEqual({ ...out, problems: [] })
 
     invalidate.mockClear()
     await expect(put({ ...session, body: { judge: { confidence: 2 } } })).rejects.toMatchObject({ statusCode: 400, data: expect.stringContaining('judge.confidence') })
     expect(invalidate).not.toHaveBeenCalled()
     await expect(put({ context: { client: { type: 'api-token' } }, body: {} })).rejects.toMatchObject({ statusCode: 403 })
     await expect(get({ context: {} })).rejects.toMatchObject({ statusCode: 403 })
+  })
+
+  it('fix round 1 (M1): GET names a corrupt stored field (read fail-closed); a PUT repairs the row', async () => {
+    const get = (await import('../server/api/settings/agent-settings.get')).default as H
+    const put = (await import('../server/api/settings/agent-settings.put')).default as H
+    await useDb().insert(settings).values({ key: AGENT_SETTINGS_KEY, value: { judge: { enabled: 'yes', confidence: 7 } }, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: settings.key, set: { value: { judge: { enabled: 'yes', confidence: 7 } }, updatedAt: new Date() } })
+    invalidateAgentSettings()
+    expect(await get(session)).toMatchObject({ judge: { enabled: false, confidence: 0.99 }, problems: ['judge.enabled', 'judge.confidence'] })
+    await put({ ...session, body: { judge: { enabled: true, smartApprovals: { workstreams: true, chat: false }, confidence: 0.9 } } })
+    expect(await get(session)).toMatchObject({ judge: { enabled: true, confidence: 0.9 }, problems: [] })
   })
 })

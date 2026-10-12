@@ -2,12 +2,15 @@
 // explicit — the only place that decides whether a call may run without Tony. Exactly:
 //   settings.enabled ∧ surfaceEnabled ∧ verdict.recommendation==='approve'
 //   ∧ verdict.confidence ≥ settings.confidence ∧ !verdict.error ∧ ruleFloor ∉ {high, critical, deny}
-//   ∧ !(outbound ∧ runTainted) ∧ nonceUnchanged
+//   ∧ !runTainted ∧ nonceUnchanged
 // plus (fix round 1 rulings): verdict.risk ∈ {low, medium}, and a verdict parsed by the lenient text
 // fallback never auto-approves.
 // where surfaceEnabled is smartApprovals.workstreams for a workstream, smartApprovals.chat for chat,
 // and always false for a headless run (jobs / wakes never auto-run).
 // Amended 2026-10-12 (coordinator ruling on spec D6 "no rule flag"): a `high` rule floor blocks too.
+// Amended 2026-10-12 (Task 4 fix round 1, ruling R-taint): a TAINTED run never auto-approves anything —
+// `!runTainted` replaces `!(outbound ∧ runTainted)`. gmail_send / calendar_rsvp are not `outbound`, and
+// once a run has read untrusted content the judge is not a sufficient gate for any of them.
 import { JUDGE_CONFIDENCE_LIMITS, type ApprovalSurface, type JudgeSettings, type JudgeVerdict, type RuleFloor } from './types'
 
 export interface AutoApproveInput {
@@ -16,9 +19,8 @@ export interface AutoApproveInput {
   /** null = the judge has not answered (yet). */
   verdict: JudgeVerdict | null
   ruleFloor: RuleFloor
-  /** The tool is `outbound`. */
-  outbound: boolean
-  /** The run is tainted (read untrusted Google / flagged content). */
+  /** The run is tainted (read mail / calendar, guard-flagged content, or a tainted workspace).
+   *  R-taint: any taint blocks, whatever the tool. */
   runTainted: boolean
   /** The approval nonce the verdict was produced for is still the pending request's nonce. */
   nonceUnchanged: boolean
@@ -26,7 +28,7 @@ export interface AutoApproveInput {
 
 export type AutoApproveBlocker =
   | 'judge-disabled' | 'surface-disabled' | 'no-verdict' | 'verdict-error' | 'lenient-verdict' | 'not-approve'
-  | 'risk-too-high' | 'low-confidence' | 'rule-floor' | 'tainted-outbound' | 'nonce-changed'
+  | 'risk-too-high' | 'low-confidence' | 'rule-floor' | 'tainted-run' | 'nonce-changed'
 
 /** Rule floors a call may be auto-approved at (an allow-list, so an unknown value blocks). */
 const AUTO_FLOORS: ReadonlySet<string> = new Set(['low', 'review'])
@@ -49,7 +51,7 @@ export function autoApproveBlocker(i: AutoApproveInput): AutoApproveBlocker | nu
   if (!surfaceEnabled) return 'surface-disabled'
   if (i.nonceUnchanged !== true) return 'nonce-changed'
   if (!AUTO_FLOORS.has(i.ruleFloor)) return 'rule-floor'
-  if (!(i.outbound === false || i.runTainted === false)) return 'tainted-outbound'
+  if (i.runTainted !== false) return 'tainted-run'
   const v = i.verdict
   if (!v) return 'no-verdict'
   if (v.error !== undefined) return 'verdict-error'

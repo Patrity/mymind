@@ -252,6 +252,8 @@ function isVerdictDTO(v: unknown): v is ApprovalVerdictDTO {
   return typeof o.pending === 'boolean' && typeof o.autoPossible === 'boolean'
     && (o.verdict === null || (typeof o.verdict === 'object' && Array.isArray((o.verdict as { reasons?: unknown }).reasons)))
     && (o.rule === null || (typeof o.rule === 'object' && Array.isArray((o.rule as { reasons?: unknown }).reasons)))
+    // M4: `taint` (fix round 0) is absent or a list of source names — never a string to substring-match.
+    && (o.taint === undefined || (Array.isArray(o.taint) && o.taint.every(t => typeof t === 'string')))
 }
 function isApprovalNote(v: unknown): v is ToolApprovalNote {
   if (!v || typeof v !== 'object') return false

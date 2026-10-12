@@ -33,8 +33,9 @@ defineProps<{ warning: OutputWarningDTO }>()
         data-testid="output-warning-details"
       >
         <p class="text-muted">
-          Found in {{ guardSourceLabel(warning.source) }}. Bridget was told to treat it as data, and
-          this run now needs your approval for anything that sends data out.
+          Found in {{ guardSourceLabel(warning.source) }}. Bridget was told to treat it as data. For the
+          rest of this run, web requests and background work need your approval, and Smart Approvals
+          won't approve anything on its own.
           <span v-if="warning.llm">Classifier confidence {{ formatConfidence(warning.llm.confidence) }}.</span>
         </p>
         <ul

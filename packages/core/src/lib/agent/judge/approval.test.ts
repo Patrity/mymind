@@ -182,11 +182,15 @@ describe('approval judge on the bus channel', () => {
     expect(s.verdictFrames().at(-1)!.judge.autoPossible).toBe(false)
   })
 
-  it('a tool that is NOT outbound (outbound undefined) may still auto-run in a tainted run (outbound: tool.outbound === true)', async () => {
+  it('R-taint: a tool that is NOT outbound (calendar_rsvp) never auto-runs in a tainted run either', async () => {
     const s = setup({ tool: { name: 'calendar_rsvp', description: 'rsvp' }, tainted: true })
     await flush()
-    s.verdict.resolve(APPROVE)
-    expect(await s.p).toEqual({ approved: true })
+    expect(s.evals).toEqual([])
+    s.verdict.resolve({ ...APPROVE, confidence: 1 })
+    await flush()
+    expect(s.settled()).toBeUndefined()
+    expect(s.waits).toEqual([true])
+    expect(s.verdictFrames().at(-1)!.judge.autoPossible).toBe(false)
   })
 
   it.each([['critical'], ['high'], ['deny']] as const)('a rule floor of %s never auto-runs — Tony is asked as soon as the rule lands, before the verdict', async (floor) => {
@@ -347,7 +351,7 @@ describe('approval judge on the bus channel', () => {
     await flush()
     expect(s.settled()).toBeUndefined()
     expect(s.waits).toEqual([true])
-    expect(judgeEvents()).toMatchObject([{ name: 'judge:verdict', meta: { auto: false, blocker: 'tainted-outbound' } }])
+    expect(judgeEvents()).toMatchObject([{ name: 'judge:verdict', meta: { auto: false, blocker: 'tainted-run' } }])
   })
 
   it('M1: Smart Approvals switched off while the card was judged → no auto (settings re-read at decision)', async () => {

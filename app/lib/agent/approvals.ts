@@ -63,6 +63,31 @@ export function resolveApproval(
   return removeApproval(state, requestId)
 }
 
+/**
+ * Task 4 fix round 1 (M3): drop auto-approved cards whose call's RESULT has landed (its part, which
+ * keeps its `approval`, reached an output state) — they were kept only to show "⚖ auto-approved"
+ * until then. Positive evidence only: a card whose part is not on screen yet (a resume still
+ * rebuilding the transcript) is kept. Same object when there is nothing to drop.
+ */
+const SETTLED_PART = new Set(['output-available', 'output-error', 'output-denied'])
+export function pruneAutoApprovals(
+  state: PendingApprovals,
+  messages: ReadonlyArray<{ parts: ReadonlyArray<{ type: string; state?: string; approval?: { id: string } }> }>
+): PendingApprovals {
+  if (!Object.values(state).some(a => a.auto)) return state
+  const done = new Set<string>()
+  for (const m of messages) {
+    for (const p of m.parts) {
+      if (p.type === 'dynamic-tool' && p.approval && SETTLED_PART.has(p.state ?? '')) done.add(p.approval.id)
+    }
+  }
+  const gone = Object.values(state).filter(a => a.auto && done.has(a.requestId))
+  if (!gone.length) return state
+  const out = { ...state }
+  for (const a of gone) delete out[a.requestId]
+  return out
+}
+
 /** The details belonging to ONE card (its part's approval.id), or null. */
 export function approvalFor(state: PendingApprovals | null | undefined, requestId: string | undefined): PendingApprovalDetails | null {
   if (!state || !requestId) return null
