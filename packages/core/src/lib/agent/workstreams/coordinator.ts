@@ -27,15 +27,16 @@
 import { createHash } from 'node:crypto'
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
-import { agentRuns, conversations, workspaces, workstreams } from '../../../db/schema'
+import { agentRuns, conversations, workstreams } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
 import {
   BUDGET_LIMITS, DEFAULT_CHILD_BUDGET, DEFAULT_TREE_BUDGET, MAX_SPAWN_PER_CALL, TERMINAL_WORKSTREAM_STATES, ZERO_USED,
   committedOf as committedOfMembers, type ChildWait, type TreeBudget, type TreeMember, type WorkspaceMode, type WorkstreamAttention, type WorkstreamBudget
 } from '../../../shared/types/workstreams'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
-import { budgetOf, childrenOf, getWorkstream, patchWorkstream, publishWorkstream, rollupTree, treeBudgetOf, usedOf, type WorkstreamRow } from './store'
+import { addWorkstreamTaint, storedTaintSources, budgetOf, childrenOf, getWorkstream, patchWorkstream, publishWorkstream, rollupTree, treeBudgetOf, usedOf, workstreamWorkspaceTainted, type WorkstreamRow } from './store'
 import { guardOutput, type GuardDeps } from '../judge/guard'
+import { TAINT_SOURCES, type TaintSource } from '../judge/types'
 import { recordEvent } from '../../observability/record'
 import { cancelWorkstream, childTitle, enqueueWhy, kick, questionNote, tagQuestion, threadTitle, tonyFacing, withQueuedSegment } from './loop'
 import { pushSteer } from '../runtime/inbox'
@@ -123,7 +124,13 @@ export interface SpawnedChild { id: string; goal: string; budget: WorkstreamBudg
  * step budget reserved out of the tree — all or nothing. `labels` is the configured `subagents` labels
  * (listSubagentModels); the tool passes them, tests pin them.
  */
-export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o: { labels: string[]; kick?: boolean; /** test seam: awaited after the check, before the insert */ _afterCheck?: () => Promise<void> }): Promise<{ children: SpawnedChild[]; tree: { budget: TreeBudget; remaining: TreeBudget } }> {
+export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o: {
+  labels: string[]; kick?: boolean
+  /** Final fix wave (I1): the spawning run's taint — every child starts tainted with it (and with the
+   *  coordinator's own stored taint): Tony approving a brief never pre-approves what it leads to. */
+  taint?: readonly TaintSource[]
+  /** test seam: awaited after the check, before the insert */ _afterCheck?: () => Promise<void>
+}): Promise<{ children: SpawnedChild[]; tree: { budget: TreeBudget; remaining: TreeBudget } }> {
   if (!specs.length) throw new CoordinatorError('give at least one child')
   if (specs.length > MAX_SPAWN_PER_CALL) throw new CoordinatorError(`at most ${MAX_SPAWN_PER_CALL} children per call (got ${specs.length}) — spawn the rest in another call`)
   const prepared = specs.map((c, i) => {
@@ -156,11 +163,14 @@ export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o
     await o._afterCheck?.()
     if (!p.treeBudget) await tx.update(workstreams).set({ treeBudget: tree }).where(eq(workstreams.id, p.id))
     const rows: WorkstreamRow[] = []
+    // I1: inherited at row creation — the child's first segment is seeded from it (C1).
+    const inherited = TAINT_SOURCES.filter(x => (o.taint ?? []).includes(x) || storedTaintSources(p).includes(x))
     for (const c of prepared) {
       const [conv] = await tx.insert(conversations).values({ title: threadTitle(c.goal) }).returning({ id: conversations.id })
       const [row] = await tx.insert(workstreams).values({
         conversationId: conv!.id, originConversationId: p.conversationId, goal: c.goal, state: 'queued', used: ZERO_USED,
-        toolsets: c.toolsets, budget: c.budget, parentId: p.id, isChild: true, modelLabel: c.model, workspaceMode: c.workspace
+        toolsets: c.toolsets, budget: c.budget, parentId: p.id, isChild: true, modelLabel: c.model, workspaceMode: c.workspace,
+        ...(inherited.length ? { tainted: true, taintSources: inherited } : {})
       }).returning()
       rows.push(row!)
     }
@@ -199,12 +209,7 @@ export async function liveChildren(coordinatorId: string): Promise<WorkstreamRow
  *  or the coordinator's it shares) is tainted. Unreadable → tainted (fail closed). */
 export async function childTainted(c: WorkstreamRow): Promise<boolean> {
   if (c.tainted) return true
-  try {
-    const wsId = c.workspaceMode === 'shared' ? c.parentId : c.id
-    if (!wsId) return false
-    const [row] = await useDb().select({ tainted: workspaces.tainted }).from(workspaces).where(eq(workspaces.workstreamId, wsId)).limit(1)
-    return row?.tainted ?? false
-  } catch { return true }
+  return workstreamWorkspaceTainted(c)
 }
 
 /** The child needs its coordinator: a question it has not been shown, or a pause (not a watch wait). */
@@ -382,7 +387,7 @@ async function checkChild(k: WorkstreamRow, deps?: GuardDeps): Promise<ChildChec
   if (g.by === 'fail-closed') { remember(key, 'unchecked'); return 'unchecked' }
   recordEvent({ kind: 'tool', name: 'judge:output-warning', severity: 'warn', meta: { tool: 'wake_report', source: 'child', workstreamId: k.id, by: g.by, score: g.score, labels: g.labels, latencyMs: g.latencyMs } })
   try {
-    await patchWorkstream(k.id, { tainted: true })
+    await addWorkstreamTaint(k.id, ['flagged'])
   } catch (err) {
     recordEvent({ kind: 'tool', name: 'judge:child-taint-failed', severity: 'error', meta: { workstreamId: k.id, error: (err as Error).message.slice(0, 300) } })
   }

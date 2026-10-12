@@ -395,6 +395,15 @@ describe('guardDeliveredText (M4: watch output delivered as an event)', () => {
     expect(taint).toHaveBeenCalledWith('ws-1')
   })
 
+  it('I5: a fail-closed flag (the classifier timed out / errored) warns but does NOT taint the workspace', async () => {
+    const taint = vi.fn(async (_id: string) => {})
+    const failing = vi.fn<Call>(async () => { throw new Error('429 too many requests') })
+    const r = await guardDeliveredText(SUSPICIOUS, { tool: 'watch', source: 'workspace', workspaceId: 'ws-1', deps: deps(failing), taintWorkspace: taint })
+    expect(r.verdict).toMatchObject({ flagged: true, by: 'fail-closed' })
+    expect(r.text.startsWith('⚠ This content appears to contain instructions aimed at you (')).toBe(true)
+    expect(taint).not.toHaveBeenCalled()
+  })
+
   it('a workspace taint that fails does not lose the warning', async () => {
     const r = await guardDeliveredText(SUSPICIOUS, { tool: 'watch', source: 'workspace', workspaceId: 'ws-1', deps: deps(says(true, 0.9)), taintWorkspace: async () => { throw new Error('docker down') } })
     expect(r.verdict.flagged).toBe(true)

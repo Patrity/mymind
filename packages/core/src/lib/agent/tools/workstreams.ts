@@ -10,7 +10,8 @@ import { z } from 'zod'
 import { eq } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentRuns } from '../../../db/schema'
-import type { AgentTool } from '../types'
+import type { AgentTool, ToolContext } from '../types'
+import type { TaintSource } from '../judge/types'
 import { ON_DEMAND_TOOLSETS, type ToolsetId } from '../toolsets'
 import { getWorkstream, patchWorkstream } from '../workstreams/store'
 import { BUDGET_LIMITS, DEFAULT_TREE_BUDGET, TREE_BUDGET_LIMITS, workstreamPath } from '../../../shared/types/workstreams'
@@ -21,6 +22,14 @@ const fail = (name: string, err: unknown) => {
 }
 
 const NOT_IN_WORKSTREAM = 'only works inside a workstream'
+
+/** Final fix wave (I1): the calling run's taint sources — inherited by work it starts. A run that
+ *  reports tainted without reasons reads as a mail read (the 79b meaning). */
+export function runTaintSources(ctx: Pick<ToolContext, 'isTainted' | 'taint'>): TaintSource[] {
+  const sources = ctx.taint?.().sources ?? []
+  if (sources.length) return [...sources]
+  return ctx.isTainted?.() ? ['mail'] : []
+}
 
 // The loop and the notifier are imported at CALL time: this module is loaded by profile.ts, and the
 // loop's own imports reach back to profile (notify → channels → queue → runner → profile) — a static
@@ -63,7 +72,9 @@ export const startWorkstreamTool: AgentTool = {
         toolsets: a.toolsets as string[] | undefined,
         budget: a.budget as { maxSteps?: number; maxWallMs?: number } | undefined,
         treeBudget: a.treeBudget as { maxSteps?: number } | undefined,
-        originConversationId: origin
+        originConversationId: origin,
+        // Final fix wave (I1): work started from a tainted run starts tainted.
+        taint: runTaintSources(ctx)
       })
       return {
         result: { ok: true, id: ws.id, link: workstreamPath(ws.id), conversationId: ws.conversationId, state: ws.state, budget: ws.budget, ...(ws.treeBudget ? { treeBudget: ws.treeBudget } : {}) },
@@ -97,7 +108,7 @@ export const finishWorkstreamTool: AgentTool = {
       }
       const summary = (a.summary as string).trim()
       // M7: the taint bit is on the row before the work can end (a coordinator reads this summary).
-      if (ctx.isTainted?.()) seg.markTainted()
+      if (ctx.isTainted?.()) seg.markTainted(ctx.taint?.().sources)
       await seg.taintSettled()
       const ws = await patchWorkstream(seg.workstreamId, { state: 'done', summary, attention: null, finishedAt: new Date() }, ['running', 'attention'])
       if (!ws) return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'finish_workstream: not running' }
@@ -124,7 +135,7 @@ export const askTonyTool: AgentTool = {
       if (!seg) return { result: { ok: false, error: `ask_tony ${NOT_IN_WORKSTREAM}` }, summary: 'ask_tony: not a workstream' }
       const question = (a.question as string).trim()
       // M7: the taint bit lands before the question reaches the coordinator.
-      if (ctx.isTainted?.()) seg.markTainted()
+      if (ctx.isTainted?.()) seg.markTainted(ctx.taint?.().sources)
       await seg.taintSettled()
       const ws = await patchWorkstream(seg.workstreamId, { state: 'attention', attention: { kind: 'question', text: question, notifiedAt: Date.now() } }, ['running', 'attention'])
       if (!ws) return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'ask_tony: not running' }

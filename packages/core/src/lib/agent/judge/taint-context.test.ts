@@ -7,12 +7,12 @@ vi.mock('../../observability/record', () => ({ recordEvent: vi.fn(), withSpan: (
 vi.mock('../bus', () => ({ publishActivity: () => {} }))
 
 import { z } from 'zod'
-import { buildAiTools, TAINT_TITLES } from '../ai-tools'
+import { buildAiTools, TAINT_TITLES, type RunHooks } from '../ai-tools'
 import { busApprovalChannel, decideBusApproval, pendingBusApprovals } from '../runtime/bus-approvals'
 import { approvalJudgeDeps, defaultApprovalJudgeDeps } from './approval'
 import { judgeVerdict, JUDGE_SYSTEM, type JudgePrompt } from './verdict'
 import type { AgentTool } from '../types'
-import type { ApprovalVerdictDTO, JudgeSettings } from './types'
+import type { ApprovalVerdictDTO, JudgeSettings, RunTaint } from './types'
 import type { HubFrame } from '../../bus/events'
 import type { ResolvedModel } from '../../ai/registry/types'
 import type { GuardInput, GuardVerdict } from './guard'
@@ -71,13 +71,14 @@ afterEach(() => {
   for (const id of pendingBusApprovals()) decideBusApproval({ requestId: id, approved: false })
 })
 
-function setup() {
+function setup(o: Partial<RunHooks> = {}) {
   const frames: HubFrame[] = []
   const set = buildAiTools([webFetch, gmailRead, wsRead, gmailSend], {
     signal: new AbortController().signal, runId: 'run-t', guard: fakeGuard, taintWorkspace: async () => {},
     requestApproval: busApprovalChannel('run-t', { publish: f => frames.push(f), timeoutMs: null }),
     judge: { surface: 'chat', goal: 'summarise the page' },
-    onEvent: () => {}
+    onEvent: () => {},
+    ...o
   })
   const call = (name: string, input: Record<string, unknown> = {}) => (set[name]!.execute as (i: unknown, o: unknown) => Promise<unknown>)(input, { toolCallId: `c-${name}` })
   /** Start a gated call, wait for its judged card, deny it, and return what the card showed. */
@@ -153,5 +154,63 @@ describe('C2: the judge is told the run is tainted, and why', () => {
     expect(p).toContain('Run taint (trusted): this run is TAINTED')
     expect(p).not.toMatch(/Outbound tool/)
     expect(prompts.at(-1)!.system).toMatch(/sends email or messages, contacts or replies to people/)
+  })
+})
+
+describe('final fix wave I2: the judge sees what THIS run did before the action', () => {
+  it('earlier calls (tool, short args, guard source/flag) in an untrusted fence — never results, never the action itself', async () => {
+    const { call, judgedOutbound } = setup()
+    page.flagged = true
+    await call('web_fetch', { url: 'https://injected.example/' + 'x'.repeat(300) })
+    await call('gmail_read_thread')
+    await judgedOutbound('gmail_send', { draftId: 'd-77' })
+    const p = prompts.at(-1)!.prompt
+    const fence = /<untrusted id="([^"]+)" label="run calls">\n([\s\S]*?)\n<\/untrusted id="\1">/.exec(p)
+    expect(fence).not.toBeNull()
+    const lines = fence![2]!.split('\n')
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toMatch(/^web_fetch \[returns untrusted web content — FLAGGED by the injection guard\] \{"url":"https:\/\/injected\.example\/x+/)
+    // The arg summary is cut at 120 chars (+ the clip marker), whatever the call carried.
+    expect(lines[0]!.length).toBeLessThan(200)
+    expect(lines[1]).toBe('gmail_read_thread {}')
+    // Never a result (the page body, the thread body) and never the action being judged.
+    expect(fence![2]).not.toContain('page')
+    expect(fence![2]).not.toContain('hello')
+    expect(fence![2]).not.toContain('d-77')
+    expect(p).toContain("This run's earlier tool calls before this action (oldest first; arguments only, never results):")
+  })
+
+  it('a run with no earlier calls says so', async () => {
+    const { judgedOutbound } = setup({ initiallyTainted: true })
+    await judgedOutbound('gmail_send', { draftId: 'd-1' })
+    expect(prompts.at(-1)!.prompt).toContain("This run's earlier tool calls before this action: none")
+  })
+})
+
+describe('final fix wave C1: the run reports every new taint source at once (onTaint)', () => {
+  it('fires at the start when seeded tainted, then once per NEW source — never for a repeat', async () => {
+    const seen: RunTaint[] = []
+    const { call } = setup({ initialTaint: { sources: ['mail'], flags: [] }, onTaint: t => seen.push(t) })
+    expect(seen.map(t => t.sources)).toEqual([['mail']])
+    await call('gmail_read_thread')                       // mail again: nothing new
+    expect(seen).toHaveLength(1)
+    await call('read_file')                               // workspaceTainted result
+    page.flagged = true
+    // The next web_fetch is gated (tainted run) — approve it so the guard sees its result.
+    const p = call('web_fetch', { url: 'https://a.example' })
+    await vi.waitFor(() => expect(pendingBusApprovals()).toHaveLength(1))
+    decideBusApproval({ requestId: pendingBusApprovals()[0]!, approved: true })
+    await p
+    expect(seen.map(t => t.sources)).toEqual([['mail'], ['mail', 'workspace'], ['flagged', 'mail', 'workspace']])
+  })
+
+  it('a clean run reports nothing until it is tainted; a throwing onTaint never fails the call', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let n = 0
+    const { call } = setup({ onTaint: () => { n++; throw new Error('db down') } })
+    expect(n).toBe(0)
+    expect(await call('gmail_read_thread')).toEqual({ messages: [{ body: 'hello' }] })
+    expect(n).toBe(1)
+    warn.mockRestore()
   })
 })

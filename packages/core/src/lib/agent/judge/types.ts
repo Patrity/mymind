@@ -141,3 +141,9 @@ export interface TaintFlag { tool: string; source: GuardSource; reasons: string[
 
 /** The run's taint as the judge reads it. Empty `sources` = clean. */
 export interface RunTaint { sources: TaintSource[]; flags: TaintFlag[] }
+
+/** Final fix wave (I2): one earlier tool call of THIS run, as the judge reads it — never its result.
+ *  `args` is a short (≤ RUN_CALL_ARGS_CHARS) summary of the masked args: model-chosen text, fenced as
+ *  untrusted. `guard`: the call returns untrusted content of this kind; `flagged`: the guard flagged it. */
+export interface RunCall { tool: string; args: string; guard?: GuardSource; flagged?: boolean }
+export const RUN_CALL_ARGS_CHARS = 120

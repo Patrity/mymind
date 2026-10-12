@@ -13,6 +13,7 @@ import { applyHistoryPolicy, historyTaint, toolBlocksFor } from './tool-history'
 import { spliceSteers, type SteerMark } from './runtime/steer'
 import { activeToolNames, directoryText, parseToolsetIds, type ToolsetId } from './toolsets'
 import { JUDGE_LIMITS } from './judge/verdict'
+import { TAINT_SOURCES } from './judge/types'
 
 export type { AgentContentPart } from './types'
 import type { AgentContentPart } from './types'
@@ -204,6 +205,11 @@ export interface RunAgentCtx {
   /** Cycle 83: a CHILD workstream's segment — its model chain is built from `subagents` (its label
    *  first), never from `reasoning` alone (model.ts agentChain). */
   subagent?: { label: string | null }
+  /** Cycle 84 final fix wave (C1): taint that outlives the history window. `initial`: sources the run
+   *  starts with whatever the history shows (a workstream's stored, sticky taint). `onChange`: fired
+   *  with the run's whole taint whenever it gains a source (and at the start when it begins tainted)
+   *  — the runner persists it on the workstream at once. Must not throw. */
+  taint?: { initial?: readonly import('./judge/types').TaintSource[]; onChange?: (t: import('./judge/types').RunTaint) => void }
 }
 
 // Every tool in the profile is always AVAILABLE (the full ToolSet is built each run).
@@ -246,7 +252,12 @@ export async function* runAgent(
   // The tainting set is the GLOBAL list (I1), plus any `taints` tool of a custom registry.
   const tainting = new Set([...TAINTING_TOOL_NAMES, ...registry.filter(t => t.taints).map(t => t.name)])
   // Task 4 fix round 0 (C1/C2): with its reasons — the card heading and the judge read them.
-  const initialTaint = historyTaint(policed, tainting)
+  const seen = historyTaint(policed, tainting)
+  // C1: plus the caller's sticky taint (a workstream's stored sources) — never decays.
+  const initialTaint: import('./judge/types').RunTaint = {
+    sources: TAINT_SOURCES.filter(x => seen.sources.includes(x) || (ctx.taint?.initial ?? []).includes(x)),
+    flags: seen.flags
+  }
   const initiallyTainted = initialTaint.sources.length > 0
 
   let channel = createChannel()
@@ -262,7 +273,7 @@ export async function* runAgent(
         recentMessages: judgeMessages(messages)
       }
     : undefined
-  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted, initialTaint, judge })
+  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted, initialTaint, judge, onTaint: ctx.taint?.onChange })
 
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).

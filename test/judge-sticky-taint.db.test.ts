@@ -1,0 +1,345 @@
+// Cycle 84 final fix wave (C1, I1) — a workstream's taint is STICKY for its whole life, through the
+// REAL queue → runner → workstream loop → runAgent → buildAiTools → approval channel path, with a fake
+// model and a fake (controllable) verdict. The audit store is real (approval_verdicts in the shared dev
+// DB). The dev DB is shared: this file's own bus namespace, scoped pumps, every row it makes is
+// deleted in afterAll, every outbound notification is captured by workstreamNotifyDeps.
+//
+// The hole this closes (final review C1): run taint was seeded only from the POLICED history, and the
+// history policy elides a tool record once it is 3 tool-bearing turns back — so a mail read in segment
+// 1 no longer tainted segment 4, and an outbound call (cycle 81) or a dangerous one Smart Approvals
+// could auto-run (cycle 84) went through as if the run were clean.
+process.loadEnvFile('.env')
+import { describe, it, expect, afterAll, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+
+import { streamText } from 'ai'
+import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test'
+import { z } from 'zod'
+import { and, asc, eq, inArray } from 'drizzle-orm'
+import { useDb } from '@mymind/core/db'
+import { agentInbox, agentRuns, approvalVerdicts, conversationMessages, conversations, runEvents, workerCommands, workspaces, workstreams, type AgentRun } from '@mymind/core/db/schema'
+import { pumpOnce, setExecutionMode, waitForInFlight } from '@mymind/core/lib/agent/runtime/queue'
+import { runTurn } from '@mymind/core/lib/agent/runtime/runner'
+import { decideBusApproval, pendingBusApprovals } from '@mymind/core/lib/agent/runtime/bus-approvals'
+import { setBusNs } from '@mymind/core/lib/bus/ns'
+import { closeListener } from '@mymind/core/lib/bus/listen'
+import { createConversation } from '@mymind/core/services/conversations'
+import { enqueueWhy, startWorkstream } from '@mymind/core/lib/agent/workstreams/loop'
+import { spawnChildren } from '@mymind/core/lib/agent/workstreams/coordinator'
+import { getWorkstream, patchWorkstream } from '@mymind/core/lib/agent/workstreams/store'
+import { workstreamNotifyDeps } from '@mymind/core/lib/agent/workstreams/notify'
+import { runAgent, type AgentMessage, type RunAgentCtx } from '@mymind/core/lib/agent/run'
+import { applyHistoryPolicy, historyTaint } from '@mymind/core/lib/agent/tool-history'
+import { TAINTING_TOOL_NAMES } from '@mymind/core/lib/agent/profile'
+import { approvalJudgeDeps, defaultApprovalJudgeDeps } from '@mymind/core/lib/agent/judge/approval'
+import { startWorkstreamTool } from '@mymind/core/lib/agent/tools/workstreams'
+import type { JudgeInput } from '@mymind/core/lib/agent/judge/verdict'
+import type { AgentTool } from '@mymind/core/lib/agent/types'
+import type { JudgeVerdict, RunTaint } from '@mymind/core/lib/agent/judge/types'
+import type { WorkstreamAttention } from '@mymind/core/shared/types/workstreams'
+
+const NS = `judge-sticky-${process.pid}`
+const convIds: string[] = []
+const texts: string[] = []
+const ran: string[] = []
+const judged: JudgeInput[] = []
+const APPROVE: JudgeVerdict = { risk: 'low', recommendation: 'approve', confidence: 0.99, reasons: ['Bob asked for it'], model: 'J', latencyMs: 3 }
+const realNotify = { ...workstreamNotifyDeps }
+
+beforeAll(() => { setBusNs(NS); setExecutionMode('remote') })
+beforeEach(() => {
+  texts.length = 0
+  ran.length = 0
+  judged.length = 0
+  workstreamNotifyDeps.isAway = async () => false
+  workstreamNotifyDeps.text = async (t) => { texts.push(t); return [] }
+  workstreamNotifyDeps.imessageApproval = (_runId, _req, signal) =>
+    new Promise(res => signal.addEventListener('abort', () => res({ approved: false }), { once: true }))
+  // Everything but the taint says "auto-approve": Smart Approvals on for workstreams, an approve verdict
+  // at 0.99, a `review` rule floor with the gmail pin matching. Only R-taint can stop it.
+  const settings = async () => ({ enabled: true, smartApprovals: { workstreams: true, chat: false }, confidence: 0.9 })
+  Object.assign(approvalJudgeDeps, {
+    settings, freshSettings: settings,
+    rule: async () => ({ floor: 'review' as const, reasons: [], boundMessageId: 'draft-rev-1' }),
+    pinnedSendMessageId: () => 'draft-rev-1',
+    verdict: async (i: JudgeInput) => { judged.push(i); return APPROVE },
+    ruleContextWaitMs: 20
+  })
+})
+afterEach(() => { Object.assign(approvalJudgeDeps, defaultApprovalJudgeDeps) })
+afterAll(async () => {
+  Object.assign(workstreamNotifyDeps, realNotify)
+  const db = useDb()
+  const runIds = convIds.length ? (await db.select({ id: agentRuns.id }).from(agentRuns).where(inArray(agentRuns.conversationId, convIds))).map(r => r.id) : []
+  if (runIds.length) await db.delete(approvalVerdicts).where(inArray(approvalVerdicts.runId, runIds))
+  await db.delete(workspaces).where(eq(workspaces.ns, NS))
+  if (convIds.length) {
+    await db.delete(agentInbox).where(inArray(agentInbox.conversationId, convIds))
+    // Children first (parent_id is set null on delete, but they are this file's rows too).
+    const parents = await db.select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.conversationId, convIds))
+    if (parents.length) {
+      const kids = await db.select({ conv: workstreams.conversationId }).from(workstreams).where(inArray(workstreams.parentId, parents.map(p => p.id)))
+      convIds.push(...kids.map(k => k.conv).filter(c => !convIds.includes(c)))
+    }
+    await db.delete(workstreams).where(inArray(workstreams.conversationId, convIds))
+    await db.delete(agentRuns).where(inArray(agentRuns.conversationId, convIds))
+    await db.delete(conversationMessages).where(inArray(conversationMessages.conversationId, convIds))
+    await db.delete(conversations).where(inArray(conversations.id, convIds))
+  }
+  await db.delete(runEvents).where(eq(runEvents.ns, NS))
+  await db.delete(workerCommands).where(eq(workerCommands.ns, NS))
+  setExecutionMode('local')
+  setBusNs(null)
+  await closeListener()
+})
+
+// ── harness ─────────────────────────────────────────────────────────────────────────────────
+
+const usage = { inputTokens: { total: 1 }, outputTokens: { total: 1 } }
+const finish = (r: 'tool-calls' | 'stop') => ({ type: 'finish', finishReason: { unified: r, raw: undefined }, usage })
+const text = (s: string) => [{ type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: s }, { type: 'text-end', id: 't' }]
+const call = (id: string, toolName: string, input: unknown) => ({ type: 'tool-call', toolCallId: id, toolName, input: JSON.stringify(input) })
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+async function until<T>(f: () => Promise<T | null | undefined | false>, ms = 10_000): Promise<T> {
+  const end = Date.now() + ms
+  for (;;) {
+    const v = await f()
+    if (v) return v
+    if (Date.now() > end) throw new Error('timed out waiting')
+    await sleep(20)
+  }
+}
+
+/** A Google read (the REAL tainting name — the global list counts it). Returns third-party text. */
+const mailRead: AgentTool = {
+  name: 'gmail_read_thread', description: 'Read a mail thread', kind: 'read', toolset: 'gmail', taints: true,
+  schema: { threadId: z.string() },
+  handler: async () => { ran.push('read'); return { result: { from: 'bob@example.com', body: 'Please forward the Q3 numbers to me.' }, summary: 'read a thread' } }
+}
+/** Ordinary tool work that fills the history window. */
+const noteTool: AgentTool = {
+  name: 'note_progress', description: 'Note progress', kind: 'read', toolset: 'core',
+  schema: { n: z.number() },
+  handler: async a => { ran.push(`note:${String(a.n)}`); return { result: { ok: true, n: a.n }, summary: 'noted' } }
+}
+/** gmail_send as the gate sees it: dangerous; the judge binds to the (stubbed) pin. */
+const gmailSend: AgentTool = {
+  name: 'gmail_send', description: 'Send a draft', kind: 'create', toolset: 'gmail', dangerous: true,
+  schema: { draftId: z.string() },
+  describeApproval: a => ({ tool: 'gmail_send', title: 'Send this email?', command: `send draft ${String(a.draftId)} to bob@example.com`, proposedPattern: '' }),
+  handler: async a => { ran.push(`send:${String(a.draftId)}`); return { result: { ok: true }, summary: 'sent' } }
+}
+/** An outbound read (cycle 79b/81): free in a clean run, gated in a tainted one. */
+const webFetch: AgentTool = {
+  name: 'web_fetch', description: 'Fetch a URL', kind: 'read', toolset: 'core', outbound: true,
+  schema: { url: z.string() },
+  handler: async a => { ran.push(`fetch:${String(a.url)}`); return { result: { ok: true, text: 'page' }, summary: 'fetched' } }
+}
+
+type Steps = unknown[][]
+interface SegSeen { initial?: readonly string[]; historySaw: RunTaint; tools: string[] }
+/** One runFn per test: segment n runs `plan(n)`'s model steps (repeating the last). */
+function harness(plan: (n: number) => Steps, extraTools: AgentTool[] = []) {
+  const seen: SegSeen[] = []
+  const runFn = (r: AgentRun) => runTurn(r, {
+    assemble: (async () => ({ context: '', usedMemoryIds: [], used: 0, droppedTurns: 0 })) as never,
+    unavailableToolsets: async () => [],
+    runAgent: ((messages: AgentMessage[], ctx: RunAgentCtx) => {
+      const n = seen.length
+      // What the model-visible history alone would have seeded (the pre-fix behaviour).
+      const historySaw = historyTaint(applyHistoryPolicy(messages.filter(m => m.role !== 'system')), TAINTING_TOOL_NAMES)
+      seen.push({ initial: ctx.taint?.initial, historySaw, tools: [] })
+      const steps = plan(n)
+      let i = 0
+      const model = new MockLanguageModelV3({ doStream: async () => ({ stream: convertArrayToReadableStream(steps[Math.min(i++, steps.length - 1)]! as never) }) })
+      const tools = [mailRead, noteTool, gmailSend, webFetch, ...extraTools, ...(ctx.profile?.tools ?? []).filter(t => t.name === 'finish_workstream')]
+      return runAgent(messages, ctx, { streamText: ((a: Parameters<typeof streamText>[0]) => streamText({ ...a, model })) as never, tools, buildSystemPrompt: async () => 's' })
+    }) as never
+  })
+  return { seen, runFn }
+}
+
+async function newWorkstream(goal: string) {
+  const origin = await createConversation({ title: `judge-sticky origin ${goal}` })
+  convIds.push(origin.id)
+  const ws = await startWorkstream({ goal: `judge-sticky ${goal}`, originConversationId: origin.id }, { kick: false })
+  convIds.push(ws.conversationId)
+  return ws
+}
+const segRuns = (convId: string) => useDb().select().from(agentRuns)
+  .where(and(eq(agentRuns.conversationId, convId), eq(agentRuns.kind, 'workstream'))).orderBy(asc(agentRuns.createdAt))
+const verdictRows = (runIds: string[]) => useDb().select().from(approvalVerdicts).where(inArray(approvalVerdicts.runId, runIds))
+const waitingCard = async (wsId: string) => {
+  const r = await getWorkstream(wsId)
+  const att = r?.attention as WorkstreamAttention | null
+  return att?.kind === 'approval' ? att : null
+}
+/** Run one segment of the thread to its end (deciding every card that shows up with `decide`). */
+async function driveSegment(convId: string, runFn: (r: AgentRun) => Promise<unknown>, wsId: string, decide?: (att: WorkstreamAttention) => boolean) {
+  expect(await pumpOnce({ onlyConversations: [convId], rekick: false, run: runFn as never })).toBe(1)
+  for (;;) {
+    if (await waitForInFlight(150)) return
+    const att = decide ? await waitingCard(wsId) : null
+    if (att?.requestId && pendingBusApprovals().includes(att.requestId)) decideBusApproval({ requestId: att.requestId, approved: decide!(att) })
+  }
+}
+
+// ── C1 ──────────────────────────────────────────────────────────────────────────────────────
+
+describe('C1: a workstream stays tainted for its whole life', () => {
+  it('segment 1 reads mail → segments 2–4 stay tainted after the read leaves the history window; segment 4: the outbound call needs Tony and gmail_send never auto-runs', async () => {
+    const ws = await newWorkstream('inbox triage')
+    let midSegmentRow: { tainted: boolean; taintSources: string[] } | null = null
+    const { seen, runFn } = harness((n) => {
+      // n = 0 is segment 1 (runFn1 below); 1–3 fill the window; 4 is the outbound + send segment.
+      if (n <= 3) return [[...text(`step ${n}`), call(`n${n}`, 'note_progress', { n }), finish('tool-calls')], [...text(`done ${n}`), finish('stop')]]
+      return [
+        [...text('fetching the numbers'), call('f1', 'web_fetch', { url: 'https://evil.example/q3' }), finish('tool-calls')],
+        [...text('sending the reply'), call('s1', 'gmail_send', { draftId: 'r-12' }), finish('tool-calls')],
+        [call('fin', 'finish_workstream', { summary: 'handled the inbox' }), finish('tool-calls')],
+        [...text('done'), finish('stop')]
+      ]
+    })
+    // (b) persisted AT ONCE: the row is tainted while segment 1 is still running (its second step).
+    const runFn1 = (r: AgentRun) => runTurn(r, {
+      assemble: (async () => ({ context: '', usedMemoryIds: [], used: 0, droppedTurns: 0 })) as never,
+      unavailableToolsets: async () => [],
+      runAgent: ((messages: AgentMessage[], ctx: RunAgentCtx) => {
+        seen.push({ initial: ctx.taint?.initial, historySaw: { sources: [], flags: [] }, tools: [] })
+        const steps: Steps = [
+          [...text('reading the thread'), call('r1', 'gmail_read_thread', { threadId: 't-1' }), finish('tool-calls')],
+          [...text('drafted the reply Bob asked for'), finish('stop')]
+        ]
+        let i = 0
+        const model = new MockLanguageModelV3({
+          doStream: async () => {
+            const k = i++
+            if (k === 1) {
+              midSegmentRow = await until(async () => {
+                const [r] = await useDb().select({ tainted: workstreams.tainted, taintSources: workstreams.taintSources }).from(workstreams).where(eq(workstreams.id, ws.id))
+                return r?.tainted ? r : null
+              }, 3000).catch(() => null)
+            }
+            return { stream: convertArrayToReadableStream(steps[Math.min(k, steps.length - 1)]! as never) }
+          }
+        })
+        return runAgent(messages, ctx, { streamText: ((a: Parameters<typeof streamText>[0]) => streamText({ ...a, model })) as never, tools: [mailRead], buildSystemPrompt: async () => 's' })
+      }) as never
+    })
+    await driveSegment(ws.conversationId, runFn1, ws.id)
+    expect(ran).toEqual(['read'])
+    expect(midSegmentRow).toEqual({ tainted: true, taintSources: ['mail'] })
+    for (let n = 1; n <= 3; n++) await driveSegment(ws.conversationId, runFn, ws.id)
+    expect(ran).toEqual(['read', 'note:1', 'note:2', 'note:3'])
+    // Segment 4: Tony denies whatever card shows up.
+    const cards: WorkstreamAttention[] = []
+    await driveSegment(ws.conversationId, runFn, ws.id, (att) => { cards.push(att); return false })
+
+    // The read really is out of the model-visible window by segment 4 (pre-fix: run seeded clean)…
+    expect(seen[4]!.historySaw.sources).toEqual([])
+    // …yet every later segment started tainted from the row.
+    expect(seen.slice(1, 5).map(s => s.initial)).toEqual([['mail'], ['mail'], ['mail'], ['mail']])
+    // Nothing outbound or dangerous ran: both needed Tony, and he said no.
+    expect(ran).toEqual(['read', 'note:1', 'note:2', 'note:3'])
+    expect(cards.map(c => c.request?.tool)).toEqual(['web_fetch', 'gmail_send'])
+    expect(cards[0]!.request?.title).toBe('Web request after reading your mail')
+    // gmail_send: the judge was told the run is tainted, said approve at 0.99 — and it still did not auto-run.
+    const send = judged.find(j => j.tool === 'gmail_send')
+    expect(send?.taint?.sources).toEqual(['mail'])
+    expect(cards[1]!.judge).toMatchObject({ taint: ['mail'], autoPossible: false })
+    const runs = await segRuns(ws.conversationId)
+    const rows = await verdictRows(runs.map(r => r.id))
+    expect(rows.find(r => r.tool === 'gmail_send')).toMatchObject({ decision: 'denied', decidedBy: 'tony' })
+    expect(rows.some(r => r.decision === 'auto')).toBe(false)
+    expect(await getWorkstream(ws.id)).toMatchObject({ tainted: true, taintSources: ['mail'] })
+  }, 60_000)
+
+  it('a restart / coordinator wake / yield-resume: a NEW segment on a thread with no tainting history is seeded from the stored sources (flagged, workspace)', async () => {
+    const ws = await newWorkstream('restart seed')
+    await patchWorkstream(ws.id, { tainted: true })
+    await useDb().update(workstreams).set({ taintSources: ['flagged'] }).where(eq(workstreams.id, ws.id))
+    // Its workspace is tainted too (a sandbox that handled untrusted content).
+    await until(async () => (await useDb().select().from(workspaces).where(eq(workspaces.workstreamId, ws.id)))[0])
+    await useDb().update(workspaces).set({ tainted: true }).where(eq(workspaces.workstreamId, ws.id))
+    const { seen, runFn } = harness(() => [
+      [...text('sending'), call('s1', 'gmail_send', { draftId: 'r-9' }), finish('tool-calls')],
+      [call('fin', 'finish_workstream', { summary: 'x' }), finish('tool-calls')],
+      [...text('done'), finish('stop')]
+    ])
+    const cards: WorkstreamAttention[] = []
+    await driveSegment(ws.conversationId, runFn, ws.id, (att) => { cards.push(att); return false })
+    expect(seen[0]!.historySaw.sources).toEqual([])
+    expect(seen[0]!.initial).toEqual(['flagged', 'workspace'])
+    expect(judged[0]?.taint?.sources).toEqual(['flagged', 'workspace'])
+    expect(cards).toHaveLength(1)
+    expect(cards[0]!.judge).toMatchObject({ taint: ['flagged', 'workspace'], autoPossible: false })
+    expect(ran).toEqual([])
+    // The workspace source is now on the row as well.
+    expect((await getWorkstream(ws.id))!.taintSources).toEqual(['flagged', 'workspace'])
+
+    // A coordinator-style wake ('children') and a restart ('restarted') segment: the same seed.
+    for (const why of ['children', 'restarted'] as const) {
+      const row = (await getWorkstream(ws.id))!
+      await patchWorkstream(ws.id, { state: 'running', attention: null })
+      expect(await enqueueWhy(row, why, why === 'children' ? 'Child reports arrived.' : undefined)).toBeTruthy()
+      const before = seen.length
+      await driveSegment(ws.conversationId, runFn, ws.id, () => false)
+      expect(seen[before]!.initial).toEqual(['flagged', 'workspace'])
+    }
+    expect(ran).toEqual([])
+  }, 60_000)
+
+  it('control: an untainted workstream with the same stubs DOES auto-run gmail_send (the test above is not vacuous)', async () => {
+    const ws = await newWorkstream('clean control')
+    const { seen, runFn } = harness(() => [
+      [...text('sending'), call('s1', 'gmail_send', { draftId: 'r-1' }), finish('tool-calls')],
+      [call('fin', 'finish_workstream', { summary: 'x' }), finish('tool-calls')],
+      [...text('done'), finish('stop')]
+    ])
+    await driveSegment(ws.conversationId, runFn, ws.id, () => false)
+    expect(seen[0]!.initial).toEqual([])
+    expect(ran).toEqual(['send:r-1'])
+    const rows = await verdictRows((await segRuns(ws.conversationId)).map(r => r.id))
+    expect(rows).toEqual([expect.objectContaining({ tool: 'gmail_send', decision: 'auto', decidedBy: 'judge' })])
+    expect((await getWorkstream(ws.id))!.tainted).toBe(false)
+  }, 60_000)
+})
+
+// ── I1 ──────────────────────────────────────────────────────────────────────────────────────
+
+describe('I1: work started from a tainted run starts tainted', () => {
+  it('start_workstream from a tainted run: the new row carries the run\'s sources', async () => {
+    const origin = await createConversation({ title: 'judge-sticky I1 origin' })
+    convIds.push(origin.id)
+    const r = await startWorkstreamTool.handler({ goal: 'judge-sticky I1 start' }, {
+      signal: new AbortController().signal, isTainted: () => true, taint: () => ({ sources: ['flagged', 'mail'], flags: [] })
+    })
+    const res = r.result as { ok: boolean; id: string; conversationId: string }
+    expect(res.ok).toBe(true)
+    convIds.push(res.conversationId)
+    expect(await getWorkstream(res.id)).toMatchObject({ tainted: true, taintSources: ['flagged', 'mail'] })
+    // A clean run starts clean.
+    const clean = await startWorkstreamTool.handler({ goal: 'judge-sticky I1 clean' }, { signal: new AbortController().signal, isTainted: () => false, taint: () => ({ sources: [], flags: [] }) })
+    const c = clean.result as { id: string; conversationId: string }
+    convIds.push(c.conversationId)
+    expect(await getWorkstream(c.id)).toMatchObject({ tainted: false, taintSources: [] })
+  })
+
+  it('spawn_workstreams from a tainted coordinator run: every child row is tainted at creation (run taint ∪ the coordinator\'s stored taint)', async () => {
+    const coord = await newWorkstream('I1 coordinator')
+    const { children } = await spawnChildren(coord.id, [{ goal: 'judge-sticky child a' }, { goal: 'judge-sticky child b' }], { labels: [], kick: false, taint: ['flagged'] })
+    for (const k of children) {
+      convIds.push(k.conversationId)
+      expect(await getWorkstream(k.id)).toMatchObject({ tainted: true, taintSources: ['flagged'] })
+    }
+    // A clean spawn from a coordinator whose ROW is tainted still taints the children.
+    await useDb().update(workstreams).set({ tainted: true, taintSources: ['mail'] }).where(eq(workstreams.id, coord.id))
+    const { children: more } = await spawnChildren(coord.id, [{ goal: 'judge-sticky child c' }], { labels: [], kick: false, taint: [] })
+    convIds.push(more[0]!.conversationId)
+    expect(await getWorkstream(more[0]!.id)).toMatchObject({ tainted: true, taintSources: ['mail'] })
+    // The child's first segment is seeded from it.
+    const { seen, runFn } = harness(() => [[...text('ok'), call('fin', 'finish_workstream', { summary: 'x' }), finish('tool-calls')], [...text('done'), finish('stop')]])
+    await driveSegment(more[0]!.conversationId, runFn, more[0]!.id)
+    expect(seen[0]!.initial).toEqual(['mail'])
+  }, 60_000)
+})

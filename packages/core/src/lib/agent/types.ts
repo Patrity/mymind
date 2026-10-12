@@ -80,6 +80,9 @@ export interface ToolContext {
    *  call time — the bit can flip mid-run. The workspace tools run a tainted run's commands with no
    *  network (spec D5). Absent outside buildAiTools; a workspace tool then fails closed (tainted). */
   isTainted?: () => boolean
+  /** Final fix wave (I1): why THIS run is tainted (sources + guard flags), read at call time — work
+   *  a tainted run starts (a workstream, children) inherits it. Absent outside buildAiTools. */
+  taint?: () => import('./judge/types').RunTaint
 }
 
 export type ToolStartEvent = { type: 'tool-start'; name: string; args: Record<string, unknown>; callId?: string }

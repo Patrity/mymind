@@ -373,8 +373,8 @@ export function outputWarningDTO(toolCallId: string, source: GuardSource, v: Gua
  * Fix round 1 (M4): untrusted text that reaches a run NOT as a tool result — a watch's output
  * delivered as a wake event or a conversation note. Flagged: the warning goes first (an event row
  * carrying it seeds the next run's taint — tool-history.ts historyCarriesTaint), the
- * `judge:output-warning` activity is recorded (no content), and the workspace it came from is
- * tainted. Never throws.
+ * `judge:output-warning` activity is recorded (no content), and — on a real verdict only (I5) — the
+ * workspace it came from is tainted. Never throws.
  */
 export async function guardDeliveredText(
   text: string,
@@ -383,7 +383,9 @@ export async function guardDeliveredText(
   const v = await guardOutput({ tool: o.tool, source: o.source, result: text }, o.deps)
   if (!v.flagged) return { text, verdict: v }
   recordEvent({ kind: 'tool', name: 'judge:output-warning', severity: 'warn', meta: { tool: o.tool, source: o.source, by: v.by, score: v.score, labels: v.labels, latencyMs: v.latencyMs } })
-  if (o.workspaceId) {
+  // Final fix wave (I5): only a real verdict takes the workspace offline — a fail-closed flag (timeout,
+  // slot wait expired, error, judge off) still warns the run that reads this text.
+  if (o.workspaceId && (v.by === 'heuristics' || v.by === 'llm')) {
     try {
       await (o.taintWorkspace ?? (async (id: string) => { const { workspaceRuntime } = await import('../../sandbox/runtime'); await workspaceRuntime().manager.markTainted(id) }))(o.workspaceId)
     } catch (err) {

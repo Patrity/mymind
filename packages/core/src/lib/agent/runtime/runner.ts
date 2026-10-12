@@ -32,7 +32,7 @@ import { COORDINATOR_ORIGIN } from '../../../shared/types/workstreams'
 import { groupTurns, costTurns, keepTrailingTurns, LIGHT_CONTEXT_TURNS, RUNTIME_CONTEXT_BUDGET } from './history'
 import { isSuppressedReply } from './suppress'
 import type { RunInput, RunOutcome } from './types'
-import type { ApprovalSurface } from '../judge/types'
+import type { ApprovalSurface, RunTaint } from '../judge/types'
 import { planDeliveries, queueFailureNote } from '../../channels/deliver'
 import { insertDeliveries } from '../../channels/outbox'
 import { channelPresence } from '../../channels/presence'
@@ -199,7 +199,11 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         // Cycle 83: the same rule as the run-level taint (ai-tools.ts), persisted on the workstream —
         // a tainted child taints the coordinator run that reads its output. Cycle 84: so does a result
         // the output guard flagged.
-        if ((TAINTING_TOOL_NAMES.has(e.name) && producedContent(e.result)) || carriesWorkspaceTaint(e.result) || carriesInjectionWarning(e.result)) seg.markTainted()
+        // Final fix wave (C1): with its source (runAgent's onTaint below is the primary path; this
+        // catches a result carrying taint the run did not count, e.g. a nested one).
+        if (TAINTING_TOOL_NAMES.has(e.name) && producedContent(e.result)) seg.markTainted(['mail'])
+        if (carriesWorkspaceTaint(e.result)) seg.markTainted(['workspace'])
+        if (carriesInjectionWarning(e.result)) seg.markTainted(['flagged'])
       }
       if (e.type === 'reasoning') reasoningText += e.text
       // Overwrite, not accumulate: at most one usage event per turn in the common
@@ -311,6 +315,10 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       ...(seg ? { maxSteps: seg.maxSteps, shouldStop: seg.shouldStop, onStep: seg.onStep, workstream: seg.promptInfo } : {}),
       // Cycle 83 (carried C2): a child runs on its subagents chain (label → rest of subagents → reasoning).
       ...(seg?.child ? { subagent: { label: seg.child.modelLabel } } : {}),
+      // Cycle 84 final fix wave (C1): a workstream's taint is sticky for its whole life — every segment
+      // starts with the stored sources (and a tainted workspace), and a new source is persisted the
+      // moment the run gains it, not at segment end.
+      ...(seg ? { taint: { initial: seg.initialTaint, onChange: (t: RunTaint) => seg!.markTainted(t.sources) } } : {}),
       // Cycle 84: where this run's approvals are raised — Smart Approvals applies per surface, never
       // to a headless run (a job, a wake).
       approvals: { surface: approvalSurface(run, !!seg), ...(seg ? { workstreamId: seg.workstreamId } : {}) }

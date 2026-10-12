@@ -3,13 +3,13 @@
 // Transitions are decided in loop.ts; this file only persists them.
 import { and, asc, desc, eq, getTableColumns, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm'
 import { useDb } from '../../../db'
-import { workstreams, type WorkstreamRow } from '../../../db/schema'
+import { workspaces, workstreams, type WorkstreamRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
 import {
   DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, ZERO_USED, normalizeTreeBudget,
   type TreeBudget, type WorkstreamAttention, type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
-import type { ApprovalVerdictDTO } from '../judge/types'
+import { TAINT_SOURCES, type ApprovalVerdictDTO, type TaintSource } from '../judge/types'
 
 export type { WorkstreamRow }
 
@@ -190,6 +190,44 @@ export async function patchAttentionJudge(id: string, requestId: string, judge: 
     .set({ attention: sql`jsonb_set(${workstreams.attention}, '{judge}', ${JSON.stringify(judge)}::jsonb)`, updatedAt: sql`now()` })
     .where(and(eq(workstreams.id, id), eq(workstreams.state, 'attention'), sql`${workstreams.attention}->>'requestId' = ${requestId}`))
     .returning({ id: workstreams.id })
+  if (rows.length) publishWorkstream(id)
+  return rows.length > 0
+}
+
+/**
+ * Cycle 84 final fix wave (C1): why a workstream is tainted, as stored. Taint is sticky for the
+ * workstream's whole life — every segment's run is seeded from this. A row tainted before the sources
+ * were stored (empty set) reads as `mail` (the cycle-83 meaning of `tainted`). Unknown strings are
+ * dropped; order is TAINT_SOURCES'.
+ */
+export function storedTaintSources(row: Pick<WorkstreamRow, 'tainted' | 'taintSources'>): TaintSource[] {
+  const have = new Set((row.taintSources ?? []).filter((x): x is TaintSource => (TAINT_SOURCES as readonly string[]).includes(x)))
+  if (row.tainted && !have.size) have.add('mail')
+  return TAINT_SOURCES.filter(x => have.has(x))
+}
+
+/** The workspace a workstream's commands run in is tainted (its own, or — a `shared` child — its
+ *  coordinator's). Unreadable → tainted (fail closed). */
+export async function workstreamWorkspaceTainted(row: Pick<WorkstreamRow, 'id' | 'parentId' | 'workspaceMode'>): Promise<boolean> {
+  try {
+    const wsId = row.workspaceMode === 'shared' ? row.parentId : row.id
+    if (!wsId) return false
+    const [w] = await useDb().select({ tainted: workspaces.tainted }).from(workspaces).where(eq(workspaces.workstreamId, wsId)).limit(1)
+    return w?.tainted ?? false
+  } catch { return true }
+}
+
+/**
+ * Cycle 84 final fix wave (C1): mark the workstream tainted with these sources — a UNION in SQL (two
+ * writers can never shrink the set; never cleared). Publishes the row. False: no such workstream.
+ */
+export async function addWorkstreamTaint(id: string, sources: readonly TaintSource[]): Promise<boolean> {
+  const add = TAINT_SOURCES.filter(x => sources.includes(x))
+  const rows = await useDb().update(workstreams).set({
+    tainted: true,
+    taintSources: sql`(select coalesce(array_agg(distinct x order by x), '{}'::text[]) from unnest(${workstreams.taintSources} || ${sql.param(add)}::text[]) as x)`,
+    updatedAt: sql`now()`
+  }).where(eq(workstreams.id, id)).returning({ id: workstreams.id })
   if (rows.length) publishWorkstream(id)
   return rows.length > 0
 }

@@ -48,6 +48,10 @@ export const workstreams = pgTable('workstreams', {
   /** A run of this workstream read mail/calendar/contacts content (cycle 83: a tainted child taints
    *  the coordinator run that reads its output). Never cleared. */
   tainted: boolean('tainted').notNull().default(false),
+  /** Cycle 84 final fix wave (C1): WHY it is tainted — 'mail' | 'flagged' | 'workspace' (judge/types
+   *  TaintSource), a union that only grows. Every segment's run is seeded from it (taint is sticky for
+   *  the workstream's whole life). `tainted` with an empty set (rows from before) reads as 'mail'. */
+  taintSources: text('taint_sources').array().notNull().default(sql`'{}'::text[]`),
   /** Cycle 83 fix round 1 (I2): a CHILD, set at spawn and never cleared. Every child rule (depth 1,
    *  no coordinator toolset, notes to the coordinator, tree accounting) keys on THIS, not on
    *  `parent_id` — which goes NULL when the coordinator's row is deleted. A child whose coordinator

@@ -39,7 +39,7 @@ import { createRunEventWriter, type HubFrame, type RunEventWriter } from '../../
 import { APPROVAL_WITHDRAWN, type ImessageApprovalResult } from '../../channels/approvals'
 import { parseToolsetIds } from '../toolsets'
 import type { ApprovalOptions, ApprovalRequest } from '../types'
-import type { ApprovalVerdictDTO } from '../judge/types'
+import { TAINT_SOURCES, type ApprovalVerdictDTO, type TaintSource } from '../judge/types'
 import type { StepUsage } from '../run'
 import type { WorkstreamPromptInfo } from '../prompt'
 import type { RunInput, RunOutcome } from '../runtime/types'
@@ -48,8 +48,8 @@ import {
   type WorkstreamBudget, type WorkstreamDTO, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 import {
-  budgetOf, exhausted, getWorkstream, patchAttentionJudge, patchWorkstream, publishWorkstream, rollupTree, usedOf,
-  workstreamDTO, workstreamForConversation, type WorkstreamRow
+  addWorkstreamTaint, budgetOf, exhausted, getWorkstream, patchAttentionJudge, patchWorkstream, publishWorkstream, rollupTree, storedTaintSources, usedOf,
+  workstreamDTO, workstreamForConversation, workstreamWorkspaceTainted, type WorkstreamRow
 } from './store'
 import { promptInfo, segmentOrigin, segmentText, type SegmentWhy } from './prompt'
 import { noteOrigin, notifyTony, workstreamNotifyDeps } from './notify'
@@ -137,8 +137,13 @@ export interface Segment {
    *  showed (and marked reported) — un-shown again if the segment fails or is aborted (its tool
    *  results may never be persisted, so the model may never durably have seen them). */
   shown: Set<string>
-  /** Cycle 83: a run of this segment read mail/calendar/contacts content (persisted once). */
-  markTainted(): void
+  /** Cycle 84 final fix wave (C1): the taint this segment's run starts with — the workstream's stored
+   *  sources plus `workspace` when its workspace is tainted. Taint is sticky for the workstream's whole
+   *  life: it never decays out of the history window, across segments, yields, restarts or wakes. */
+  initialTaint: TaintSource[]
+  /** Cycle 83: a run of this segment became tainted — persisted AT ONCE (C1: not at segment end), as
+   *  a union with the stored sources. No sources given: `mail` (the cycle-83 meaning). */
+  markTainted(sources?: readonly TaintSource[]): void
   /** Fix round 1 (M7): resolves once the taint bit is on the row — finish_workstream / ask_tony
    *  await it, so a coordinator can never read a child's words before the child counts as tainted. */
   taintSettled(): Promise<void>
@@ -214,17 +219,21 @@ export async function beginSegment(run: AgentRun): Promise<Segment> {
   ws = patched
   final = ws.failureReason
   const parent = ws.parentId ? await getWorkstream(ws.parentId) : null
-  const seg = makeSegment(run, ws, { skip: false, final: !!final }, parent)
+  // C1: sticky taint — the row's sources, plus a tainted workspace (unreadable → tainted).
+  const initialTaint = storedTaintSources(ws)
+  if (!initialTaint.includes('workspace') && await workstreamWorkspaceTainted(ws)) initialTaint.push('workspace')
+  const seg = makeSegment(run, ws, { skip: false, final: !!final, initialTaint: TAINT_SOURCES.filter(x => initialTaint.includes(x)) }, parent)
   active.set(run.id, seg)
   return seg
 }
 
-function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final: boolean }, parent: WorkstreamRow | null = null): Segment {
+function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final: boolean; initialTaint?: TaintSource[] }, parent: WorkstreamRow | null = null): Segment {
   const base = usedOf(ws)
   // Cycle 83: approvals always reach Tony — a child's card is mirrored into the chat its
   // coordinator was started from (not the coordinator's thread), titled `<coordinator> › <child>`.
   const tonyChat = ws.isChild ? parent?.originConversationId ?? null : ws.originConversationId
-  let taintMarked = ws.tainted
+  // C1: what the row already says (sources only grow) — a write goes out only for a NEW source.
+  const taintStored = new Set<TaintSource>(storedTaintSources(ws))
   let taintWrite: Promise<void> = Promise.resolve()
   const budget = budgetOf(ws)
   let steps = 0
@@ -294,10 +303,12 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
     wait: null,
     shown: new Set(),
     child: ws.isChild ? { modelLabel: ws.modelLabel, workspaceMode: ws.workspaceMode } : null,
-    markTainted() {
-      if (taintMarked) return
-      taintMarked = true
-      taintWrite = serial(() => patchWorkstream(ws.id, { tainted: true }))
+    initialTaint: o.initialTaint ?? [],
+    markTainted(sources) {
+      const add = (sources?.length ? sources : ['mail' as const]).filter(x => !taintStored.has(x))
+      if (!add.length) return
+      for (const x of add) taintStored.add(x)
+      taintWrite = serial(() => addWorkstreamTaint(ws.id, add))
     },
     taintSettled: () => taintWrite,
     toolCalls: 0,
@@ -574,6 +585,9 @@ export async function startWorkstream(i: {
   goal: string; toolsets?: string[]; budget?: Partial<WorkstreamBudget>; originConversationId?: string | null
   /** Cycle 83 final fix wave (I1): a coordinator's tree budget (its children's steps). */
   treeBudget?: Partial<TreeBudget>
+  /** Cycle 84 final fix wave (I1): the starting run's taint — the workstream starts tainted with it
+   *  (sticky for its whole life, C1). */
+  taint?: readonly TaintSource[]
 }, deps: { kick?: boolean } = {}): Promise<WorkstreamDTO> {
   const goal = i.goal.trim()
   if (!goal) throw new Error('a workstream needs a goal')
@@ -584,6 +598,7 @@ export async function startWorkstream(i: {
     const [row] = await tx.insert(workstreams).values({
       conversationId: conv!.id, originConversationId: i.originConversationId ?? null, goal, state: 'queued', used: ZERO_USED,
       toolsets, budget: clampBudget(i.budget),
+      ...(i.taint?.length ? { tainted: true, taintSources: TAINT_SOURCES.filter(x => i.taint!.includes(x)) } : {}),
       // Cycle 83: started as a coordinator — its tree budget shows from the start (spawn sets the
       // default otherwise: a workstream that loads `coordinator` later).
       ...(toolsets.includes('coordinator') ? { treeBudget: normalizeTreeBudget(i.treeBudget) } : {})

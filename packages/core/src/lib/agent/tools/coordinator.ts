@@ -17,6 +17,7 @@ import { ON_DEMAND_TOOLSETS, type ToolsetId } from '../toolsets'
 import { childrenOf, getWorkstream, type WorkstreamRow } from '../workstreams/store'
 import { BUDGET_LIMITS, DEFAULT_CHILD_BUDGET, DEFAULT_TREE_BUDGET, MAX_SPAWN_PER_CALL, TERMINAL_WORKSTREAM_STATES } from '../../../shared/types/workstreams'
 import type { SubagentModelInfo } from '../../ai/registry/resolve'
+import { runTaintSources } from './workstreams'
 
 // Imported at call time (tools/workstreams.ts explains: the loop reaches back to profile.ts).
 const loop = () => import('../workstreams/loop')
@@ -77,7 +78,8 @@ export const spawnWorkstreamsTool: AgentTool = {
       if (typeof ws === 'string') return { result: { ok: false, error: ws }, summary: 'spawn_workstreams refused' }
       const { listSubagentModels } = await import('../../ai/registry/resolve')
       const labels = (await listSubagentModels().catch(() => [])).map(m => m.label)
-      const r = await (await coord()).spawnChildren(ws.id, a.children as never, { labels })
+      // Final fix wave (I1): the children start with this run's taint.
+      const r = await (await coord()).spawnChildren(ws.id, a.children as never, { labels, taint: runTaintSources(ctx) })
       return {
         result: { ok: true, children: r.children.map(c => ({ id: c.id, goal: c.goal, model: c.model, workspace: c.workspace, budget: c.budget })), treeLeft: r.tree.remaining, next: 'Call wait_for_workstreams with these ids.' },
         summary: `spawned ${r.children.length} child workstream${r.children.length === 1 ? '' : 's'}`

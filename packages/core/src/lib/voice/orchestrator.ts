@@ -67,6 +67,8 @@ export interface TurnDeps {
   workstream?: RunAgentCtx['workstream']
   /** Cycle 83: a child workstream's segment runs on its subagents chain. */
   subagent?: RunAgentCtx['subagent']
+  /** Cycle 84 final fix wave (C1): forwarded verbatim (a workstream's sticky taint). */
+  taint?: RunAgentCtx['taint']
   runAgent?: (m: AgentMessage[], c: RunAgentCtx) => AsyncGenerator<AgentEvent>
 }
 
@@ -118,7 +120,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   const subagentSteps = new Map<string, SubagentStep[]>()
 
   let sawText = false
-  const ws = { ...(deps.maxSteps !== undefined ? { maxSteps: deps.maxSteps } : {}), ...(deps.shouldStop ? { shouldStop: deps.shouldStop } : {}), ...(deps.onStep ? { onStep: deps.onStep } : {}), ...(deps.workstream ? { workstream: deps.workstream } : {}), ...(deps.subagent ? { subagent: deps.subagent } : {}), ...(deps.approvals ? { approvals: deps.approvals } : {}) }
+  const ws = { ...(deps.maxSteps !== undefined ? { maxSteps: deps.maxSteps } : {}), ...(deps.shouldStop ? { shouldStop: deps.shouldStop } : {}), ...(deps.onStep ? { onStep: deps.onStep } : {}), ...(deps.workstream ? { workstream: deps.workstream } : {}), ...(deps.subagent ? { subagent: deps.subagent } : {}), ...(deps.approvals ? { approvals: deps.approvals } : {}), ...(deps.taint ? { taint: deps.taint } : {}) }
   for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id), drainSteer: deps.drainSteer, wake: deps.wake, runId: deps.runId, toolsets: deps.toolsets, ...ws })) {
     if (deps.signal.aborted) break
     if (ev.type === 'reasoning-delta') {

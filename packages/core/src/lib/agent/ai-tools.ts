@@ -12,7 +12,8 @@ import { recordEvent, withSpan } from '../observability/record'
 import type { ToolsetId } from './toolsets'
 import { carriesInjectionWarning, carriesWorkspaceTaint, producedContent } from './tool-history'
 import { guardOutput, guardReasons, guardWarning, outputWarningDTO, wrapFlagged, type GuardInput, type GuardVerdict } from './judge/guard'
-import { TAINT_SOURCES, type OutputWarningDTO, type RunTaint, type TaintFlag, type TaintSource } from './judge/types'
+import { RUN_CALL_ARGS_CHARS, TAINT_SOURCES, type OutputWarningDTO, type RunCall, type RunTaint, type TaintFlag, type TaintSource } from './judge/types'
+import { cutAt } from './judge/verdict'
 
 export interface RunHooks {
   signal: AbortSignal
@@ -38,6 +39,9 @@ export interface RunHooks {
   /** Cycle 84 Task 3: taint the run's workspace after a flagged workspace result (tests inject one).
    *  Default: sandbox/runtime.ts taintRunWorkspace. */
   taintWorkspace?: (runId: string | undefined) => Promise<void>
+  /** Cycle 84 final fix wave (C1): the run gained a taint source (also fired once at the start when
+   *  it begins tainted) — the runner persists it on the workstream at once. Errors are swallowed. */
+  onTaint?: (t: RunTaint) => void
 }
 
 async function approvalRequestFor(t: AgentTool, input: Record<string, unknown>, approvalNonce: string): Promise<ApprovalRequest> {
@@ -122,6 +126,20 @@ async function outboundApprovalRequest(t: AgentTool, input: Record<string, unkno
   }
 }
 
+/** I2: a call's masked args in at most RUN_CALL_ARGS_CHARS chars (the judge's run trail). */
+export function argSummary(args: Record<string, unknown>): string {
+  let json: string
+  try { json = JSON.stringify(args) ?? '' } catch { json = '[unserializable]' }
+  const one = json.replace(/\s+/g, ' ')
+  return one.length > RUN_CALL_ARGS_CHARS ? `${cutAt(one, RUN_CALL_ARGS_CHARS - 1)}…` : one
+}
+
+/** Final fix wave (I5): a guard flag that may persist taint beyond the run (a workspace, a delivered
+ *  watch result) — a real verdict only, never a fail-closed one. */
+export function workspaceTaintingVerdict(v: Pick<GuardVerdict, 'flagged' | 'by'>): boolean {
+  return v.flagged && (v.by === 'heuristics' || v.by === 'llm')
+}
+
 /** Adapt the agent tool registry into an AI SDK ToolSet (execute = gate + handler + bus + undo). */
 export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
   // Run-level taint (cycle 79 fix wave I3, 79b): one ToolSet is built per run, so this flag lives
@@ -137,7 +155,21 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
   const taintFlags: TaintFlag[] = (hooks.initialTaint?.flags ?? []).map(f => ({ ...f, reasons: [...f.reasons] }))
   const isTainted = () => taintSources.size > 0
   const runTaint = (): RunTaint => ({ sources: TAINT_SOURCES.filter(x => taintSources.has(x)), flags: taintFlags.map(f => ({ ...f, reasons: [...f.reasons] })) })
-  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId, loadToolsets: hooks.loadToolsets, isTainted }
+  // C1: every new source is reported at once (a workstream persists it — sticky across segments).
+  const notifyTaint = () => {
+    if (!hooks.onTaint || !taintSources.size) return
+    try { hooks.onTaint(runTaint()) } catch (err) { console.warn('[ai-tools] onTaint failed:', (err as Error).message) }
+  }
+  const addTaint = (x: TaintSource) => {
+    if (taintSources.has(x)) return
+    taintSources.add(x)
+    notifyTaint()
+  }
+  notifyTaint()
+  // I2 (final fix wave): this run's calls so far, as the judge reads them — tool, a short body-free
+  // arg summary, the guard source and whether the guard flagged the result. Never results.
+  const trail: RunCall[] = []
+  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId, loadToolsets: hooks.loadToolsets, isTainted, taint: runTaint }
   const guard = hooks.guard ?? guardOutput
   // Imported at call time: the sandbox runtime reaches back into the agent loop (watch wakes).
   const taintWorkspace = hooks.taintWorkspace ?? (async (runId: string | undefined) => (await import('../sandbox/runtime')).taintRunWorkspace(runId))
@@ -163,12 +195,12 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
     }
     if (!v.flagged && nestedFlagged) v = { ...v, flagged: true, by: 'nested' }
     if (!v.flagged) return null
-    taintSources.add('flagged')
-    // N3 + fix round 3 (NB4): a Stop that cancelled the classification decided nothing — the result
-    // keeps its warning (the history must not carry it unwarned), but the workspace is not tainted on
-    // a verdict that never came. Only that case: any other fail-closed result taints as before.
-    const stoppedMidCheck = v.by === 'fail-closed' && v.llm?.error === 'guard cancelled' && hooks.signal.aborted
-    if (t.guard === 'workspace' && !stoppedMidCheck) {
+    addTaint('flagged')
+    // Final fix wave (I5): only a REAL verdict — a flag-alone heuristic signal or the classifier saying
+    // injection — takes the workspace offline (persistent). A fail-closed flag (the classifier timed
+    // out, waited too long for a slot, errored, was off, or Stop cancelled it) decided nothing about
+    // the content: the RUN is still tainted and warned, the workspace keeps its network.
+    if (t.guard === 'workspace' && workspaceTaintingVerdict(v)) {
       // The run is tainted already, so its next workspace command would taint the workspace anyway;
       // this does it now (the networked container dies with whatever the content started there).
       // M6: a failure is never silent — an activity error (the run itself stays tainted: fail closed).
@@ -235,6 +267,10 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           catch { safeArgs = { redacted: true, reason: 'redaction failed' } }
         }
         hooks.onEvent({ type: 'tool-start', name: t.name, args: safeArgs, callId })
+        // I2: what the run did BEFORE this call (the judge of this call reads it), then this call.
+        const priorCalls = trail.map(c => ({ ...c }))
+        const trailEntry: RunCall = { tool: t.name, args: argSummary(safeArgs), ...(t.guard ? { guard: t.guard } : {}) }
+        trail.push(trailEntry)
         // Dangerous tools pause for human approval BEFORE the handler runs — unless the tool's
         // autoApprove fast-path clears it (allowlist-first). An outbound tool in a tainted run
         // (fix wave I3) is gated the same way, but never auto-approved and never allowlistable.
@@ -260,7 +296,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
               ? createApprovalJudge({
                   tool: t, input, req, nonce: approvalNonce, surface: hooks.judge.surface, runId: hooks.runId,
                   workstreamId: hooks.judge.workstreamId, goal: hooks.judge.goal, recentMessages: hooks.judge.recentMessages,
-                  isTainted, taint: runTaint, signal: hooks.signal
+                  isTainted, taint: runTaint, runCalls: priorCalls, signal: hooks.signal
                 })
               : undefined
             const card: ApprovalRequest = { ...req, callId, args: safeArgs }
@@ -285,10 +321,11 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           )
           // Cycle 82: a workspace that handled tainted content taints every run that reads from it
           // (its files may be mail-derived) — the result says so with `workspaceTainted`.
-          if (t.taints && producedContent(exec.result)) taintSources.add('mail')
-          if (carriesWorkspaceTaint(exec.result)) taintSources.add('workspace')
+          if (t.taints && producedContent(exec.result)) addTaint('mail')
+          if (carriesWorkspaceTaint(exec.result)) addTaint('workspace')
           // Cycle 84 Task 3: the output guard, BEFORE the model (or the history) sees the result.
           const guarded = t.guard ? await guardResult(t, exec.result, callId, nestedFlagged) : null
+          if (guarded) trailEntry.flagged = true
           const result = guarded?.result ?? exec.result
           const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
           publishActivity({ type: 'tool', name: t.name, summary: exec.summary, undoToken })
