@@ -406,9 +406,11 @@ Two process lessons worth keeping, both paid for in fix rounds:
 
 Carried out of the 11 cycle handovers, de-duplicated, current items only:
 
-**Workstreams (cycle 83 coordinator)**
+**Workstreams (cycle 83 coordinator)** — see the [cycle-83 handover](handovers/2026-10-12-coordinator.md)
 - `sweepCoordinators` flushes child lifecycle notes for every live coordinator every 5 s (a `getWorkstream`, a running-run probe and a full `childrenOf` each, even when nothing changed) — scales as coordinators × children per tick. Do the "pending note" test in SQL (only coordinators with a child whose lifecycle key differs from `lifecycle_noted`). (Final review M6, parked.)
 - `read_workstream` / immediate `wait_for_workstreams` results are `kind:'read'`, so a later segment replays them capped at `READ_RESULT_CAP` (1500) — the full summary is one live `read_workstream` away, but not in replayed history. (Final review I3 scenario B; not in the fix-wave ruling.)
+- Parked (b)'s fix (a leftover report's question is only marked shown once it's durably in the thread) is covered by a test and a mutation only on the `ask_tony`/attention branch. The `paused`, Stop and idle-pause endings call the same `unshowLeftover` helper but have no test of their own, and a watch-parked ending with leftover reports isn't covered at all (the brief named only ask_tony/paused/idle). (Final fix wave report, concern 2.)
+- `routeInboundAnswer`'s `#k` tag: with **exactly one** question open, a reply that starts with a non-matching `#k` still answers it whole — tag text included — matching the pre-I2 single-question behaviour rather than being treated as "no match". Only matters once ≥ 2 questions are open at once (then a non-matching `#k` correctly lands in main). (Final fix wave report, concern 4.)
 
 **AI quality**
 - ~~Session-summarization worker — sessions show "(untitled session)"; generate title+summary (bridget had this).~~ ✅ **shipped (cycle 13 phase 4)** — `summarize-sessions` task → title+summary+`summary_embedding`; + session/message semantic search in the palette.

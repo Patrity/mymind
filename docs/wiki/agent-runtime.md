@@ -1,8 +1,8 @@
 ---
 title: Agent Runtime (server-owned turns, main thread, wake)
 status: built
-cycle: 73 (jobs callers, silent runs, light context and the queued frame: cycle 74; `reply_to`, iMessage approvals and channel deliveries: cycle 75; separate agent worker + Postgres bus: cycle 81)
-updated: 2026-10-11
+cycle: 73 (jobs callers, silent runs, light context and the queued frame: cycle 74; `reply_to`, iMessage approvals and channel deliveries: cycle 75; separate agent worker + Postgres bus: cycle 81; per-model pools in the claim path: cycle 83)
+updated: 2026-10-12
 mymind_id: 2a37ce21-96db-4a31-a834-47b654e6f013
 mymind_hash: dac5655ce21a48eba2554d6d356ea53028ce3972d0e361197ef3707ddd3ec6f5
 ---
@@ -87,7 +87,7 @@ the last exception to "the worker is the only executor".
 |---|---|
 | `runner.ts` | `runTurn(run)`: runs one turn. This is the old `ws.ts` turn body moved verbatim: capture the leaf, load history (bounded), `assembleContext`, `handleTurn`/`runAgent`, persist, then send the `conversation`/`persisted` frames, with rescue on throw or abort. It persists drained steers as user rows, streams only `state` frames for a wake run, slices history to the last 4 turns for `context: 'light'`, and makes a suppressed wake leave no rows at all. |
 | `queue.ts` | `enqueue` (resolve the session, then either steer or `createRun`), the pump (`pumpOnce` / `kick`), `execute` (10 s liveness bump, 5 min headless wall clock, `finishRun`, requeue of unread steers), `abortActive` / `abortActiveAndWait`, and `workerTick` (every 5 s: `recoverStale`, then `sweepCrashedFires()` (reliability pass: repairs `at` claims and event fire rows a crash left behind; see agent-jobs.md), then `jobsTick()` and `dueTaskEvents()` (cycle 74), then `startDeliveries()` (the outbox, started without awaiting it, single-flight; reliability pass) and `catchUpTick()` (cycle 75), each guarded on its own, then pump). `enqueue` carries an optional `replyTo` onto the new run, and `noSteer: true` (set by channel input) makes it always create a run, never steer. `workerTick` reaches `catchUpTick` through a dynamic `import()` (inbound.ts imports `enqueue` from queue.ts, so a static import back would be a cycle). After every run `execute` calls the jobs `onRunFinished` hook. |
-| `runs.ts` | Run store: `createRun`, `claimNextRun` (one statement, `for update skip locked`, headless slot cap), fenced `touchRun`/`finishRun`, `activeRunFor`, `recoverOrphans`, `listRuns`. |
+| `runs.ts` | Run store: `createRun`, `claimNextRun` (one statement, `for update skip locked`, headless slot cap, **per-model pool cap — cycle 83, below**), fenced `touchRun`/`finishRun`, `activeRunFor`, `recoverOrphans`, `listRuns`. |
 | `sessions.ts` | `resolveSession`. `main` returns the main conversation (created lazily; at most one, enforced by an index). `thread:new` makes a new side thread. `thread:<uuid>` returns an existing thread (the id's shape is validated before querying). `isolated:<slug>` makes a fresh thread titled `wake: <slug>`. |
 | `stream.ts` | `StreamHub` frame types and `withCid` (tags frames with `cid`). Since cycle 81 the runner publishes through `bus-publisher.ts` (→ `run_events`); fan-out to sockets is the web's `lib/bus/relay.ts`. |
 | `bus-publisher.ts` | The runner's default publisher: every frame → the run-event log (cycle 81). |
@@ -122,7 +122,10 @@ The web's `server/plugins/agent-runtime.ts` starts none of this.
 - `conversation_messages.role` gains `'event'`. The new `origin` column holds values like
   `wake:<reason>`, `review:approved`, `review:failed` or `runtime:restart`.
 - `agent_runs` columns: `id`, `conversation_id`, `session_key`, `trigger` (`user|wake`),
-  `wake_reason`, `profile` (`interactive|headless`), `model_def_id`, `status`, `suppressed`,
+  `wake_reason`, `profile` (`interactive|headless`), `model_def_id` (cycle 83: for a `kind='workstream'`
+  run, stamped once at **enqueue** time with the segment's primary model — see **Per-model pools**
+  below — and never rewritten; for every other run it's whatever `createRun` was given, informational
+  only), `status`, `suppressed`,
   `input` jsonb, `origin_sink_id` (the socket that asked, used for TTS and audio targeting),
   `claimed_at`, `alive_at`, `owner` (migration **0055**: the boot id of the process that
   claimed it), `job_id` (migration **0056**: the job that fired it, `on delete set null`), `finished_at`, `error`, `usage`, `user_message_id`, `assistant_message_id`,
@@ -151,7 +154,7 @@ queued ──claim──▶ running ──▶ done | failed | aborted        (ex
 | Transition | Written by |
 |---|---|
 | → `queued` | `createRun`. Callers: `enqueue` (a user message, or `wake`), `requeueUnconsumed` (unread steers, always `trigger='user'`, `profile='interactive'`). |
-| `queued` → `running` | `claimNextRun`. It picks the oldest queued run whose conversation has nothing running, and a headless run only while fewer than `HEADLESS_SLOTS = 1` headless runs are running. It sets `claimed_at`/`alive_at` = `now()` and `owner` = this process's `BOOT_ID` (a random UUID per process). A concurrent loser gets a unique violation, which is returned as null. |
+| `queued` → `running` | `claimNextRun`. It picks the oldest queued run whose conversation has nothing running, a headless run only while fewer than `HEADLESS_SLOTS = 1` headless runs are running, **and (cycle 83) a `kind='workstream'` run only while fewer than its `model_def_id`'s `maxInFlight` workstream segments are already `running` against that same model** — see **Per-model pools** below. It sets `claimed_at`/`alive_at` = `now()` and `owner` = this process's `BOOT_ID` (a random UUID per process). A concurrent loser gets a unique violation, which is returned as null. |
 | `running` (liveness) | `touchRun` every 10 s, **fenced** on `status='running'`. If the fence fails, another process recovered the run, so this process aborts it (`checkStillRunning`). |
 | `running` → `done`/`failed`/`aborted` | `finishRun`, also **fenced** on `status='running'`. A run that was recovered while it was secretly alive keeps `interrupted`. `suppressed=true` is set for a silent wake (`NO_REPLY` or an empty reply). An abort by the headless wall clock is flagged `timedOut` on the outcome, so the jobs hook can tell it from Tony's Stop. |
 | `running` → `interrupted` | `recoverOrphans`, when `coalesce(alive_at, claimed_at)` is older than 60 s. It runs at boot **and on every 5 s worker tick**, excluding run ids this process is executing. **At boot with `AGENT_RUNTIME_EXCLUSIVE=1`** (set in prod's systemd unit) it also takes every `running` row whose non-null `owner` is another boot id, however fresh — a deploy restart no longer leaves the thread "busy" for up to 60 s. Without the env (the shared dev DB) boot recovery stays age-only. It appends an event row ("A turn was interrupted by a restart…") and requeues unread steers. **No automatic retry.** |
@@ -159,6 +162,27 @@ queued ──claim──▶ running ──▶ done | failed | aborted        (ex
 After every terminal outcome, `execute` calls `requeueUnconsumed`. A steer that arrived too late
 to be drained becomes the next run, whatever the outcome was. The spec said "abort only"; that
 was overridden because it contradicted the spec's own "never silently dropped" rule.
+
+### Per-model pools in the claim path (cycle 83)
+
+`claimNextRun`'s `for update skip locked` query adds one more condition alongside the headless
+slot cap: a `kind='workstream'` run only claims while fewer than its `model_def_id`'s `maxInFlight`
+other workstream segments are already `running` on that same model (`DEFAULT_MAX_IN_FLIGHT` = 6
+when the model carries no override). Chat turns and wakes (`kind <> 'workstream'`) are never
+pooled, and a segment whose `model_def_id` is null (queued before AI was configured) isn't pooled
+either. The whole read-then-decide check sits under one global advisory lock
+(`mymind:agent_runs:claim`) so two concurrent claimers can't both see the same free slot. A pool
+isn't kept in memory — it's always just this count of `running` rows, so a worker restart needs no
+recovery and a slot frees the instant its run leaves `running` (by any route: done, failed,
+aborted, or `recoverOrphans`'s `interrupted`).
+
+The pool key — and the model a segment's chain tries first — is **stamped once, at enqueue**:
+`workstreams/loop.ts enqueueSegment` calls `runtime/pools.ts segmentPrimaryModelId(ws)` and writes
+the result to `agent_runs.model_def_id` before the row is ever queued. It's never rewritten
+afterward, so a mid-segment failover to a fallback model doesn't grab a second pool slot. Full
+mechanics, the `subagents` resolution order, and the measured default: see
+[ai-providers.md § `subagents` model class and per-model pools](ai-providers.md#subagents-model-class-and-per-model-pools-cycle-83)
+and [workstreams.md § Coordinator](workstreams.md#coordinator-cycle-83).
 
 **Steering.** When Tony sends a **plain-text** message while an **interactive** run is `running`
 on that thread, `pushSteer` inserts it only if the run is still running (the check locks the run

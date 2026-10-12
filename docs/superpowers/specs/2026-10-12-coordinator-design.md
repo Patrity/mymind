@@ -2,7 +2,7 @@
 title: "Coordinator — workstreams that fan out to child workstreams, a `subagents` model class, budget-governed concurrency (cycle 83, harness step 4)"
 cycle: 83
 date: 2026-10-12
-status: spec
+status: built  # see handover 2026-10-12-coordinator.md
 supersedes: null
 builds_on: 2026-10-11-sandboxed-workspace-design.md
 ---
@@ -119,6 +119,21 @@ Tool results that include child output carry the existing untrusted-data marking
 - **Taint:** D9; a `shared`-workspace child taints the shared workspace like any run (cycle 82 rules).
 - **Sandboxes** are unchanged: containers start lazily on workspace tool use and compete for
   `SANDBOX_MAX_RUNNING` slots; research children that never use the workspace never start one.
+
+> **Amendment 2026-10-12 (cycle 83 final fix wave, ruling I2) — D8 / iMessage routing.** Removing
+> the top-level cap (D3) makes "several non-terminal workstreams each waiting on a question"
+> routine rather than rare — including a coordinator in `attention {question}` with one of its
+> children simultaneously **escalated** to Tony. The original D8 text ("the coordinator answers or
+> escalates") did not say how an inbound iMessage reply picks among several open questions, and
+> `routeInboundAnswer` returned `null` (dropping the reply into main chat) whenever more than one
+> row qualified. Fixed by tagging: every outbound question text now carries a short `#k` handle —
+> the smallest free integer among the currently open, routable questions (`attention.tag`,
+> `tagQuestion`, assigned under one advisory lock, idempotent). A reply starting with `#k …` answers
+> that question (the tag is stripped); an untagged reply answers the **most recently notified** open
+> question; a `#k` matching no open question, with several waiting, is left for Bridget to route
+> rather than guessed at. Tony's confirmation names which workstream got the reply and lists the
+> others' tags when more than one was open. See [workstreams.md § `ask_tony` routing and
+> escalation](../../wiki/workstreams.md#ask_tony-routing-and-escalation) for the shipped mechanics.
 
 ## 6. UI
 
