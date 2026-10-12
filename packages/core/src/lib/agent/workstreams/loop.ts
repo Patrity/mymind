@@ -59,6 +59,8 @@ import { segmentPrimaryModelId } from '../runtime/pools'
 // Cycle 83: the top-level cap of 3 (MAX_ACTIVE_WORKSTREAMS) is gone (spec D3) — a tree's budget and
 // the per-model in-flight pools govern fan-out instead.
 const coordinator = () => import('./coordinator')
+/** How Tony's words read when they ride inside a queued report (coordinator.ts uses it too). */
+export const TONY_WROTE = 'Tony wrote in this thread: '
 /** A workstream still waiting on Tony is re-announced at most this often (review M1)… */
 export const NUDGE_EVERY_MS = 2 * 60 * 60 * 1000
 /** …and at most this many times per attention episode (final review I3): never all night. */
@@ -133,14 +135,17 @@ export interface Segment {
   child: { modelLabel: string | null; workspaceMode: 'own' | 'shared' } | null
   /** Cycle 83: a run of this segment read mail/calendar/contacts content (persisted once). */
   markTainted(): void
+  /** Fix round 1 (M7): resolves once the taint bit is on the row — finish_workstream / ask_tony
+   *  await it, so a coordinator can never read a child's words before the child counts as tainted. */
+  taintSettled(): Promise<void>
 }
 
 /** Who Tony sees a workstream as, and where its notes go (cycle 83): a child is shown as
  *  `<coordinator goal> › <child goal>`, and its notes go to the chat its COORDINATOR was started from
  *  — never into the coordinator's own thread (an event row appended mid-segment forks a thread). */
-export async function tonyFacing(ws: Pick<WorkstreamRow, 'id' | 'goal' | 'originConversationId' | 'conversationId' | 'parentId'>, parent?: WorkstreamRow | null): Promise<Pick<WorkstreamRow, 'id' | 'goal' | 'originConversationId' | 'conversationId'>> {
-  if (!ws.parentId) return ws
-  const p = parent ?? await getWorkstream(ws.parentId)
+export async function tonyFacing(ws: Pick<WorkstreamRow, 'id' | 'goal' | 'originConversationId' | 'conversationId' | 'parentId' | 'isChild'>, parent?: WorkstreamRow | null): Promise<Pick<WorkstreamRow, 'id' | 'goal' | 'originConversationId' | 'conversationId'>> {
+  if (!ws.isChild) return ws
+  const p = parent ?? (ws.parentId ? await getWorkstream(ws.parentId) : null)
   return { id: ws.id, conversationId: ws.conversationId, goal: childTitle(p?.goal ?? 'coordinator', ws.goal), originConversationId: p?.originConversationId ?? null }
 }
 
@@ -214,8 +219,9 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
   const base = usedOf(ws)
   // Cycle 83: approvals always reach Tony — a child's card is mirrored into the chat its
   // coordinator was started from (not the coordinator's thread), titled `<coordinator> › <child>`.
-  const tonyChat = ws.parentId ? parent?.originConversationId ?? null : ws.originConversationId
+  const tonyChat = ws.isChild ? parent?.originConversationId ?? null : ws.originConversationId
   let taintMarked = ws.tainted
+  let taintWrite: Promise<void> = Promise.resolve()
   const budget = budgetOf(ws)
   let steps = 0
   let inputTokens = 0
@@ -279,12 +285,13 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
     promptInfo: promptInfo(ws, o.final ? ws.failureReason : null, parent),
     stop: null,
     wait: null,
-    child: ws.parentId ? { modelLabel: ws.modelLabel, workspaceMode: ws.workspaceMode } : null,
+    child: ws.isChild ? { modelLabel: ws.modelLabel, workspaceMode: ws.workspaceMode } : null,
     markTainted() {
       if (taintMarked) return
       taintMarked = true
-      void serial(() => patchWorkstream(ws.id, { tainted: true }))
+      taintWrite = serial(() => patchWorkstream(ws.id, { tainted: true }))
     },
+    taintSettled: () => taintWrite,
     toolCalls: 0,
     stepsTaken: () => steps,
     shouldStop() {
@@ -350,7 +357,7 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
       })
       return (req) => {
         // Cycle 83: a child's card says whose it is — `<coordinator goal> › <child goal>`.
-        if (ws.parentId) req = { ...req, title: `${childTitle(parent?.goal ?? 'coordinator', ws.goal)}: ${req.title ?? `Run ${req.tool}?`}` }
+        if (ws.isChild) req = { ...req, title: `${childTitle(parent?.goal ?? 'coordinator', ws.goal)}: ${req.title ?? `Run ${req.tool}?`}` }
         current = req
         return bus(req)
       }
@@ -435,8 +442,12 @@ export async function enqueueWhy(ws: WorkstreamRow, why: SegmentWhy, detail?: st
 /** Tony's words into the segment that is queued and not yet claimed: they replace a system
  *  continuation prompt (his message is the better next prompt) or are appended to his earlier one. */
 async function foldIntoQueued(ws: WorkstreamRow, text: string): Promise<string | null> {
+  // Fix round 1 (I1): a queued REPORT (a coordinator's children, a fired watch) is never replaced —
+  // his words ride after it, labelled as his; a bare continuation prompt is replaced by them.
   const res = await useDb().execute(sql`
     update agent_runs set input = case
+        when input->>'eventOrigin' in ('segment:children', 'segment:watch')
+          then jsonb_set(input, '{text}', to_jsonb((input->>'text') || E'\n\n' || ${TONY_WROTE}::text || ${text}::text))
         when input ? 'eventOrigin' then (input - 'eventOrigin') || jsonb_build_object('text', ${text}::text)
         else jsonb_set(input, '{text}', to_jsonb((input->>'text') || E'\n\n' || ${text}::text))
       end
@@ -525,7 +536,7 @@ async function failWorkstream(ws: WorkstreamRow, reason: string, summary: string
     state: 'failed', failureReason: reason, summary, attention: null, finishedAt: new Date(), lastOutcome
   }, RUNNABLE)
   // Cycle 83: a child's failure goes to its coordinator (store → coordinator.ts afterTransition), which decides.
-  if (row && !row.parentId) await notifyTony(row, `⚙ Workstream stopped — ${ws.goal}\nReason: ${reason}${summary ? `\n\n${summary}` : ''}`)
+  if (row && !row.isChild) await notifyTony(row, `⚙ Workstream stopped — ${ws.goal}\nReason: ${reason}${summary ? `\n\n${summary}` : ''}`)
 }
 
 async function cancelNow(ws: WorkstreamRow, lastOutcome?: string): Promise<void> {
@@ -542,7 +553,7 @@ function attentionOf(ws: Pick<WorkstreamRow, 'attention'>): WorkstreamAttention 
 async function pauseWorkstream(ws: WorkstreamRow, text: string, lastOutcome: string, note?: string): Promise<void> {
   const row = await patchWorkstream(ws.id, { state: 'paused', attention: { kind: 'paused', text }, lastOutcome }, ['running', 'attention'])
   // A paused child is its coordinator's to handle (it is woken: coordinator.ts), not Tony's.
-  if (row && note && !row.parentId) await notifyTony(row, note)
+  if (row && note && !row.isChild) await notifyTony(row, note)
 }
 
 export function questionNote(goal: string, question: string): string {
@@ -556,6 +567,9 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   if (seg) await seg.end()
   ended.delete(run.id)
   const ws = await workstreamForConversation(run.conversationId)
+  // S1: a coordinator's child lifecycle notes that waited for this segment to end land now — before
+  // anything below queues the next segment.
+  if (ws?.treeBudget) await (await coordinator()).flushChildNotes(ws.id).catch(err => console.error('[workstreams] child notes failed:', err))
   if (!ws || isTerminal(ws.state) || seg?.skip) {
     if (ws && seg?.skip && ws.cancelRequested) await cancelNow(ws)
     return null
@@ -610,6 +624,11 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
     const unread = await drainSteerFor(run.id)
     await patchWorkstream(ws.id, { failures: 0, lastOutcome: 'wait' })
     if (unread.length) return enqueueSegment(current, { text: unread.join('\n\n') })
+    // M6: a watch that already fired is delivered first (the model can wait again after reading it).
+    if (await workstreamHasWatchResults(ws.id)) {
+      const next = await enqueueWatchResults(current)
+      if (next !== undefined) return next
+    }
     return (await coordinator()).parkForChildren(current, seg.wait)
   }
 
@@ -732,7 +751,7 @@ export async function pauseWorkstreamForTony(runId: string | undefined, workstre
   }
   if (seg) seg.stop ??= 'attention'
   // A child's pause reaches its coordinator instead (coordinator.ts afterTransition).
-  if (!row.parentId) await notifyTony(row, `⚙ Workstream paused — ${row.goal}\n\n${why}`)
+  if (!row.isChild) await notifyTony(row, `⚙ Workstream paused — ${row.goal}\n\n${why}`)
   return true
 }
 
@@ -920,7 +939,7 @@ export async function nudgeWaitingWorkstreams(opts: { onlyConversations?: string
     const att = attentionOf(ws)
     if (!att || att.kind === 'paused' || (att.nudges ?? 0) >= MAX_NUDGES || now - (att.notifiedAt ?? 0) < NUDGE_EVERY_MS) continue
     // Cycle 83: a child's question waits on its COORDINATOR (unless it was escalated to Tony).
-    if (ws.parentId && att.kind === 'question' && !att.escalated) continue
+    if (ws.isChild && att.kind === 'question' && !att.escalated) continue
     const row = await patchWorkstream(ws.id, { attention: { ...att, notifiedAt: now, nudges: (att.nudges ?? 0) + 1 } }, ['attention'])
     if (!row) continue
     const who = await tonyFacing(row)
@@ -1013,7 +1032,7 @@ export async function resumeWorkstream(ws: WorkstreamRow, text?: string): Promis
       ? clampBudget(resumeBudget(b, used))
       : b
     const row = await useDb().transaction(async (tx) => {
-      if (ws.parentId) await (await coordinator()).reserveForResume(tx, ws, budget)
+      if (ws.isChild) await (await coordinator()).reserveForResume(tx, ws, budget)
       const [r] = await tx.update(workstreams).set({
         state: 'running', cancelRequested: false, failures: 0, failureReason: null, lastOutcome: null,
         finishedAt: null, attention: null, summary: null, budget, updatedAt: sql`now()`
@@ -1046,7 +1065,7 @@ export async function routeInboundAnswer(input: RunInput, opts: { mainConversati
     eq(workstreams.state, 'attention'), sql`${workstreams.attention}->>'kind' = 'question'`,
     // Cycle 83: a child's question is its coordinator's to answer — Tony's text only answers it once
     // he was asked too (escalated: the coordinator was itself waiting on him).
-    sql`(${workstreams.parentId} is null or ${workstreams.attention}->>'escalated' = 'true')`,
+    sql`(not ${workstreams.isChild} or ${workstreams.attention}->>'escalated' = 'true')`,
     opts.onlyConversations ? inArray(workstreams.conversationId, opts.onlyConversations) : undefined
   )).limit(2)
   if (waiting.length !== 1) return null

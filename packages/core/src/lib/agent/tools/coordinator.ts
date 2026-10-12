@@ -34,7 +34,7 @@ async function coordinatorOf(ctx: ToolContext, name: string): Promise<Workstream
   if (!seg) return `${name} only works inside a workstream (start one with start_workstream({toolsets: ['coordinator']}))`
   const ws = await getWorkstream(seg.workstreamId)
   if (!ws) return 'this workstream no longer exists'
-  if (ws.parentId) return `${name} is not available to a child workstream (children cannot spawn or manage workstreams)`
+  if (ws.isChild) return `${name} is not available to a child workstream (children cannot spawn or manage workstreams)`
   return ws
 }
 

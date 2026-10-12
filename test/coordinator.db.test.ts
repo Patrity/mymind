@@ -11,18 +11,18 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
-import { agentInbox, agentRuns, conversationMessages, conversations, runEvents, workerCommands, workspaces, workstreams, type AgentRun } from '@mymind/core/db/schema'
+import { agentInbox, agentRuns, conversationMessages, conversations, runEvents, workerCommands, workspaces, workspaceWatches, workstreams, type AgentRun } from '@mymind/core/db/schema'
 import { pumpOnce, setExecutionMode, waitForInFlight } from '@mymind/core/lib/agent/runtime/queue'
 import { runTurn } from '@mymind/core/lib/agent/runtime/runner'
 import { decideBusApproval } from '@mymind/core/lib/agent/runtime/bus-approvals'
 import { openApprovalFrames } from '@mymind/core/lib/bus/events'
 import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { closeListener } from '@mymind/core/lib/bus/listen'
-import { createConversation } from '@mymind/core/services/conversations'
+import { createConversation, deleteConversation, getAgentHistory } from '@mymind/core/services/conversations'
 import { controlWorkstream, nudgeWaitingWorkstreams, replyToWorkstream, resumeWorkstream, routeInboundAnswer, startWorkstream } from '@mymind/core/lib/agent/workstreams/loop'
 import { getWorkstream, patchWorkstream, workstreamDTO } from '@mymind/core/lib/agent/workstreams/store'
 import {
-  childReport, CoordinatorError, parkForChildren, spawnChildren, sweepCoordinators, treeStatus, WAITING_FOR_CHILDREN, wakeCoordinatorIfReady
+  childReport, CoordinatorError, flushChildNotes, parkForChildren, spawnChildren, sweepCoordinators, treeStatus, WAITING_FOR_CHILDREN, wakeCoordinatorIfReady
 } from '@mymind/core/lib/agent/workstreams/coordinator'
 import { workstreamNotifyDeps } from '@mymind/core/lib/agent/workstreams/notify'
 import { coordinatorTools } from '@mymind/core/lib/agent/tools/coordinator'
@@ -647,14 +647,23 @@ describe('coordinator: taint, approvals, workspaces, cascade', () => {
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 
-  it('a child segment that reads mail is persisted tainted (runner); a child runs on its subagents chain, stamped on its segment', async () => {
+  it('a child segment that reads mail is persisted tainted (runner); the coordinator that READS it is tainted through the runner too (M1); a child runs on its subagents chain', async () => {
     let coordConv = ''
+    let coordTaintedBeforeRead: boolean | undefined
     const { seen, drive } = harness((conv) => async function* (ctx, _m, seg) {
       step(ctx)
       if (conv === coordConv) {
-        if (seg === 0) await callTool(ctx, 'spawn_workstreams', { children: [{ goal: 'T83 reads mail' }] })
-        await callTool(ctx, 'wait_for_workstreams', { ids: (await workstreamDTO((await getWorkstream((await useDb().select().from(workstreams).where(eq(workstreams.conversationId, conv)))[0]!.id))!)).childIds })
-        if (seg > 0) await callTool(ctx, 'finish_workstream', { summary: 'ok' })
+        const me = (await useDb().select().from(workstreams).where(eq(workstreams.conversationId, conv)))[0]!
+        if (seg === 0) {
+          await callTool(ctx, 'spawn_workstreams', { children: [{ goal: 'T83 reads mail' }] })
+          await callTool(ctx, 'wait_for_workstreams', { ids: (await workstreamDTO(me)).childIds })
+        } else {
+          coordTaintedBeforeRead = me.tainted
+          // Through the runner, as the real loop does: the tool result is an event the runner sees.
+          const r = await callTool(ctx, 'read_workstream', { id: (await workstreamDTO(me)).childIds[0] })
+          yield { type: 'tool-result', name: 'read_workstream', summary: 'read', callId: 'r1', result: r }
+          await callTool(ctx, 'finish_workstream', { summary: 'ok' })
+        }
       } else {
         yield { type: 'tool-result', name: 'gmail_search', summary: '1 thread', callId: 'c1', result: { threads: [{ subject: 'hi' }] } }
         await callTool(ctx, 'finish_workstream', { summary: 'read it' })
@@ -667,7 +676,8 @@ describe('coordinator: taint, approvals, workspaces, cascade', () => {
     const [childId] = (await workstreamDTO((await getWorkstream(ws.id))!)).childIds
     const child = (await getWorkstream(childId!))!
     expect(child.tainted).toBe(true)
-    expect((await getWorkstream(ws.id))!.tainted).toBe(false)
+    expect(coordTaintedBeforeRead).toBe(false)                   // the wake report itself withheld its words
+    expect((await getWorkstream(ws.id))!.tainted).toBe(true)      // reading its output tainted the coordinator
     const { segmentPrimaryModelId } = await import('@mymind/core/lib/agent/runtime/pools')
     const childSeg = (await segRuns(child.conversationId))[0]!
     expect(childSeg.modelDefId).toBe(await segmentPrimaryModelId(child))
@@ -754,4 +764,284 @@ describe('coordinator: taint, approvals, workspaces, cascade', () => {
     expect(kids).toHaveLength(2)
     for (const id of kids) expect((await getWorkstream(id))!.state).toBe('cancelled')
   }, 30_000)
+})
+
+describe('fix round 1', () => {
+  const noteRows = async (conv: string) => (await thread(conv)).filter(m => m.role === 'event' && m.origin?.startsWith('workstream:'))
+  const history = async (conv: string) => (await getAgentHistory(conv)).map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n')
+
+  it('S1: state-only lifecycle notes in the coordinator thread — never while its segment runs, never child output, each event once, on the active path', async () => {
+    const { ws } = await idleCoordinator('notes')
+    const seg = await segmentFor(ws.id)                       // the coordinator's segment RUNS
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 noted child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    await settleSegments(kid.conversationId)
+    await patchWorkstream(kid.id, { state: 'running' })
+    await patchWorkstream(kid.id, { state: 'done', summary: 'SECRET-CHILD-OUTPUT', finishedAt: new Date() })
+    expect(await noteRows(ws.conversationId)).toEqual([])      // held back: a row now would fork the thread
+    await seg.release()                                         // the segment ended
+    expect(await sweepCoordinators({ onlyConversations: [ws.conversationId] })).toBe(0)
+    const notes = await noteRows(ws.conversationId)
+    expect(notes.map(n => n.content)).toEqual([
+      `Child workstream "T83 noted child" (id ${kid.id}) was spawned.`,
+      `Child workstream "T83 noted child" (id ${kid.id}) finished.`
+    ])
+    expect(notes.every(n => n.origin === `workstream:${kid.id}`)).toBe(true)
+    expect(JSON.stringify(await thread(ws.conversationId))).not.toContain('SECRET-CHILD-OUTPUT')
+    expect(await history(ws.conversationId)).toContain('finished.')   // on the path the model reads
+    // Once each: another flush writes nothing.
+    await flushChildNotes(ws.id)
+    expect(await noteRows(ws.conversationId)).toHaveLength(2)
+    // A question and an approval: state only.
+    const r2 = await spawnChildren(ws.id, [{ goal: 'T83 asking child' }], { labels: [], kick: false })
+    await settleSegments((await getWorkstream(r2.children[0]!.id))!.conversationId)
+    await patchWorkstream(r2.children[0]!.id, { state: 'attention', attention: { kind: 'question', text: 'SECRET-QUESTION?' } })
+    const after = (await noteRows(ws.conversationId)).map(n => n.content)
+    expect(after.at(-1)).toMatch(/"T83 asking child" .* is asking you a question/)
+    expect(after.join('\n')).not.toContain('SECRET-QUESTION')
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+    expect((await noteRows(ws.conversationId)).map(n => n.content).at(-1)).toMatch(/"T83 asking child" .* was cancelled\./)
+  })
+
+  it('S1 through the real loop: spawned/finished notes land before the wake, in the coordinator\'s history', async () => {
+    let coordConv = ''
+    const { drive } = harness((conv) => async function* (ctx, _m, seg) {
+      step(ctx)
+      if (conv === coordConv) {
+        if (seg === 0) {
+          const r = await callTool(ctx, 'spawn_workstreams', { children: [{ goal: 'T83 loop child' }] })
+          await callTool(ctx, 'wait_for_workstreams', { ids: [r.children[0].id] })
+        } else await callTool(ctx, 'finish_workstream', { summary: 'merged' })
+      } else await callTool(ctx, 'finish_workstream', { summary: 'CHILD-WORDS' })
+      yield { type: 'done' }
+    })
+    const { ws } = await newCoordinator('loopnotes')
+    coordConv = ws.conversationId
+    await drive(coordConv)
+    const rows = await thread(coordConv)
+    const order = rows.map(m => m.origin ?? m.role)
+    const spawnedAt = rows.findIndex(m => m.content.endsWith('was spawned.'))
+    const finishedAt = rows.findIndex(m => m.content.endsWith('finished.') && m.role === 'event')
+    const wakeAt = order.indexOf('segment:children')
+    expect(spawnedAt).toBeGreaterThan(-1)
+    expect(finishedAt).toBeGreaterThan(spawnedAt)
+    expect(wakeAt).toBeGreaterThan(finishedAt)
+    expect((await noteRows(coordConv)).some(n => n.content.includes('CHILD-WORDS'))).toBe(false)
+    const h = await history(coordConv)
+    expect(h).toContain('was spawned.')
+    expect(h).toContain('finished.')
+  })
+
+  it('S1: notes held back during a coordinator segment land as soon as it ends (no sweep needed)', async () => {
+    let coordConv = ''
+    const { runFn } = harness((conv) => async function* (ctx) {
+      step(ctx)
+      if (conv === coordConv) {
+        const r = await callTool(ctx, 'spawn_workstreams', { children: [{ goal: 'T83 held child' }] })
+        await callTool(ctx, 'cancel_workstreams', { ids: [r.children[0].id] })   // a transition WHILE it runs
+        expect(await noteRows(conv)).toEqual([])
+        await callTool(ctx, 'finish_workstream', { summary: 'nothing to do' })
+      }
+      yield { type: 'done' }
+    })
+    const { ws } = await newCoordinator('heldnotes')
+    coordConv = ws.conversationId
+    expect(await pumpOnce({ onlyConversations: [coordConv], rekick: false, run: runFn })).toBe(1)
+    expect(await waitForInFlight(20_000)).toBe(true)
+    expect((await noteRows(coordConv)).map(n => n.content.replace(/ \(id [^)]+\)/, ''))).toEqual([
+      'Child workstream "T83 held child" was spawned.', 'Child workstream "T83 held child" was cancelled.'
+    ])
+  })
+
+  it('I1: a wake while a segment is already QUEUED attaches the report to it (never dropped); questions count as shown only then', async () => {
+    const { ws } = await idleCoordinator('i1-queued')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 i1 child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    await settleSegments(kid.conversationId)
+    expect(await parkForChildren((await getWorkstream(ws.id))!, wait([kid.id]))).toBeNull()
+    // Tony's reply is queued (its state flip to running has not landed yet).
+    await useDb().insert(agentRuns).values({ conversationId: ws.conversationId, sessionKey: `thread:${ws.conversationId}`, trigger: 'user', profile: 'interactive', kind: 'workstream', status: 'queued', input: { text: 'TONY-EARLY', modality: 'text' } })
+    await patchWorkstream(kid.id, { state: 'attention', attention: { kind: 'question', text: 'I1-Q?' } })
+    const [q] = await activeSegs(ws.conversationId)
+    const input = q!.input as { text: string; eventOrigin?: string }
+    expect(input.eventOrigin).toBe('segment:children')
+    expect(input.text).toContain('asks: I1-Q?')
+    expect(input.text).toContain('Tony wrote in this thread: TONY-EARLY')
+    expect(await activeSegs(ws.conversationId)).toHaveLength(1)
+    expect(att((await getWorkstream(kid.id))!)).toMatchObject({ reported: true })
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('I1: Tony typing before the wake segment is claimed APPENDS to the report (never replaces it)', async () => {
+    const { ws } = await idleCoordinator('i1-fold')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 i1 fold child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    await settleSegments(kid.conversationId)
+    await parkForChildren((await getWorkstream(ws.id))!, wait([kid.id]))
+    await patchWorkstream(kid.id, { state: 'done', summary: 'FOLD-SUMMARY', finishedAt: new Date() })
+    await replyToWorkstream((await getWorkstream(ws.id))!, { text: 'TONY-LATE', modality: 'text' })
+    const [q] = await activeSegs(ws.conversationId)
+    const input = q!.input as { text: string; eventOrigin?: string }
+    expect(input.eventOrigin).toBe('segment:children')
+    expect(input.text).toMatch(/FOLD-SUMMARY[\s\S]*Tony wrote in this thread: TONY-LATE/)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('I1: a report that cannot be attached (a segment is RUNNING) leaves the question unshown — it wakes the coordinator again later', async () => {
+    const { ws } = await idleCoordinator('i1-running')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 i1 running child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    await settleSegments(kid.conversationId)
+    await parkForChildren((await getWorkstream(ws.id))!, wait([kid.id]))
+    await useDb().insert(agentRuns).values({ conversationId: ws.conversationId, sessionKey: `thread:${ws.conversationId}`, trigger: 'user', profile: 'interactive', kind: 'workstream', status: 'running', input: { text: 'x', modality: 'text' } })
+    await patchWorkstream(kid.id, { state: 'attention', attention: { kind: 'question', text: 'UNSHOWN?' } })
+    expect(att((await getWorkstream(kid.id))!)?.reported).toBeUndefined()
+    await settleSegments(ws.conversationId)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('I2: deleting a coordinator\'s thread cancels its children first; they stay children (never promoted)', async () => {
+    const { ws } = await idleCoordinator('i2-delete')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 i2 child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    await deleteConversation(ws.conversationId)
+    const after = (await getWorkstream(kid.id))!
+    expect(after).toMatchObject({ state: 'cancelled', parentId: null, isChild: true })
+    expect((await workstreamDTO(after)).isChild).toBe(true)
+    await expect(resumeWorkstream(after)).rejects.toThrow(/coordinator no longer exists/)
+  })
+
+  it('I2: a child whose coordinator row vanished without the hook is cancelled by the sweep (and on its next transition), keeps the child registry, and can never spawn', async () => {
+    const { ws } = await idleCoordinator('i2-sweep')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 i2 orphan' }, { goal: 'T83 i2 orphan 2' }], { labels: [], kick: false })
+    const [k1, k2] = await Promise.all(r.children.map(async c => (await getWorkstream(c.id))!))
+    await useDb().delete(workstreams).where(eq(workstreams.id, ws.id))   // no hook ran
+    const orphan = (await getWorkstream(k1!.id))!
+    expect(orphan).toMatchObject({ parentId: null, isChild: true, state: 'queued' })
+    // Still a child: no coordinator tools, and spawning is refused.
+    const { beginSegment, discardSegment } = await import('@mymind/core/lib/agent/workstreams/loop')
+    const [run] = await activeSegs(orphan.conversationId)
+    const seg = await beginSegment(run!)
+    expect(seg.child).not.toBeNull()
+    discardSegment(run!.id)
+    await expect(spawnChildren(orphan.id, [{ goal: 'T83 x' }], { labels: [], kick: false })).rejects.toThrow(/depth 1/)
+    // beginSegment moved it to running → the transition hook cancelled it.
+    expect((await getWorkstream(k1!.id))!.state).toBe('cancelled')
+    // The other one never moved: the sweep cancels it.
+    expect((await getWorkstream(k2!.id))!.state).toBe('queued')
+    expect(await sweepCoordinators({ onlyConversations: [k2!.conversationId] })).toBe(1)
+    expect((await getWorkstream(k2!.id))!.state).toBe('cancelled')
+  })
+
+  it('M2: a SHARED child counts as tainted when the coordinator\'s workspace (the one it works in) is tainted', async () => {
+    const { ws } = await idleCoordinator('m2-shared')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 shared reader', workspace: 'shared' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    const { ensureWorkstreamWorkspace } = await import('@mymind/core/lib/sandbox/store')
+    const coordWs = await ensureWorkstreamWorkspace(ws.id)
+    const seg = await segmentFor(ws.id)
+    const read = async () => (await tool('read_workstream').handler({ id: kid.id }, { signal: new AbortController().signal, runId: seg.runId })).result as Record<string, any>
+    expect((await read()).workspaceTainted).toBeUndefined()
+    await useDb().update(workspaces).set({ tainted: true }).where(eq(workspaces.id, coordWs.id))
+    expect(Object.keys(await read())[0]).toBe('workspaceTainted')
+    await seg.release()
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M3: a parked coordinator with cancel_requested is never woken', async () => {
+    const { ws } = await idleCoordinator('m3-cancelreq')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 m3 child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    await settleSegments(kid.conversationId)
+    await parkForChildren((await getWorkstream(ws.id))!, wait([kid.id]))
+    await useDb().update(workstreams).set({ cancelRequested: true }).where(eq(workstreams.id, ws.id))
+    await useDb().update(workstreams).set({ state: 'done' }).where(eq(workstreams.id, kid.id))
+    expect(await wakeCoordinatorIfReady(ws.id)).toBeNull()
+    expect((await getWorkstream(ws.id))!.state).toBe('paused')
+    expect(await activeSegs(ws.conversationId)).toEqual([])
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M5: a top-level workstream that loaded `coordinator` itself gets the coordinator rules (next segment) and at once in load_toolsets\' result', async () => {
+    let loadResult: Record<string, any> | undefined
+    let wsConv = ''
+    const { seen, drive } = harness((conv) => async function* (ctx, _m, seg) {
+      step(ctx)
+      if (seg === 0) {
+        loadResult = (await ctx.profile!.tools.find(t => t.name === 'load_toolsets')!.handler({ ids: ['coordinator'] }, { signal: ctx.signal, runId: ctx.runId, loadToolsets: ids => ids })).result as Record<string, any>
+        // (the runner persists what load_toolsets loaded; here we persist it as onChange would)
+        await useDb().update(conversations).set({ activeToolsets: ['coordinator'] }).where(eq(conversations.id, conv))
+        yield { type: 'tool-result', name: 'load_toolsets', summary: 'loaded' }
+      } else await callTool(ctx, 'finish_workstream', { summary: 'ok' })
+      yield { type: 'done' }
+    })
+    const origin = await createConversation({ title: 'T83 origin m5' })
+    convIds.push(origin.id)
+    const w = await startWorkstream({ goal: 'T83 m5 plain', originConversationId: origin.id }, { kick: false })
+    convIds.push(w.conversationId)
+    wsConv = w.conversationId
+    await drive(wsConv)
+    expect(seen[0]!.role).toBeUndefined()
+    expect(loadResult!.instructions).toMatch(/You are a COORDINATOR/)
+    expect(seen[1]!.role).toBe('coordinator')
+  })
+
+  it('M6: a watch that fired during the segment is delivered before parking on a wait', async () => {
+    let coordConv = ''
+    let kidId = ''
+    const { runFn } = harness((conv) => async function* (ctx) {
+      step(ctx)
+      if (conv === coordConv) {
+        const r = await callTool(ctx, 'spawn_workstreams', { children: [{ goal: 'T83 m6 child' }] })
+        kidId = r.children[0].id
+        const me = (await useDb().select().from(workstreams).where(eq(workstreams.conversationId, conv)))[0]!
+        const { ensureWorkstreamWorkspace } = await import('@mymind/core/lib/sandbox/store')
+        const wsRow = await ensureWorkstreamWorkspace(me.id)
+        await useDb().insert(workspaceWatches).values({ workspaceId: wsRow.id, workstreamId: me.id, conversationId: conv, command: 'true', until: { kind: 'exit0' }, intervalSec: 30, deadlineAt: new Date(Date.now() + 60_000), state: 'met', resultText: 'WATCH-FIRED', endedAt: new Date() })
+        await callTool(ctx, 'wait_for_workstreams', { ids: [kidId] })
+      }
+      yield { type: 'done' }
+    })
+    const { ws } = await newCoordinator('m6')
+    coordConv = ws.conversationId
+    expect(await pumpOnce({ onlyConversations: [coordConv], rekick: false, run: runFn })).toBe(1)
+    expect(await waitForInFlight(20_000)).toBe(true)
+    expect((await getWorkstream(ws.id))!.state).toBe('running')    // not parked
+    const next = (await activeSegs(coordConv))[0]!
+    expect(next.input).toMatchObject({ eventOrigin: 'segment:watch', text: expect.stringContaining('WATCH-FIRED') })
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M7: a child\'s finish waits for its taint bit — a tainted run is on the row before the coordinator can read the summary', async () => {
+    const { ws } = await idleCoordinator('m7')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 m7 child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    await settleSegments(kid.conversationId)
+    const seg = await segmentFor(kid.id)
+    const { workstreamOnlyTools } = await import('@mymind/core/lib/agent/tools/workstreams')
+    const finish = workstreamOnlyTools.find(t => t.name === 'finish_workstream')!
+    const out = (await finish.handler({ summary: 'MAIL-DERIVED' }, { signal: new AbortController().signal, runId: seg.runId, isTainted: () => true })).result
+    expect(out).toMatchObject({ ok: true })
+    const row = (await getWorkstream(kid.id))!
+    expect(row).toMatchObject({ state: 'done', tainted: true })
+    await seg.release()
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('C6a: a coordinator parked on a WATCH is woken by a child\'s question (not escalated to Tony)', async () => {
+    const { ws } = await idleCoordinator('c6a')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 c6a child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    await settleSegments(kid.conversationId)
+    await settleSegments(ws.conversationId)
+    await patchWorkstream(ws.id, { state: 'paused', attention: { kind: 'paused', text: 'Waiting for a watch', waitingForWatch: true } })
+    texts.length = 0
+    await patchWorkstream(kid.id, { state: 'attention', attention: { kind: 'question', text: 'C6A-Q?', notifiedAt: Date.now() } })
+    expect((await getWorkstream(ws.id))!.state).toBe('running')
+    const [q] = await activeSegs(ws.conversationId)
+    expect(q!.input).toMatchObject({ eventOrigin: 'segment:children', text: expect.stringContaining('asks: C6A-Q?') })
+    expect(texts).toEqual([])
+    expect(att((await getWorkstream(kid.id))!)?.escalated).toBeUndefined()
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
 })

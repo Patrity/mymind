@@ -47,6 +47,19 @@ A child gets its own thread (`⚙ <goal>`, as today) with `origin_conversation_i
 thread. A child's budget is reserved from the parent's remaining tree budget at spawn time; unused
 child budget returns to the pool when the child ends.
 
+> **Amendment 2026-10-12 (cycle 83 Task 2 fix round 1, rulings I2 / C3 / S1).**
+> - `is_child boolean not null default false` is set at spawn and never cleared. Every child rule (depth 1, no
+>   `coordinator` toolset, notes to the coordinator instead of Tony, tree accounting) keys on it, **not** on
+>   `parent_id`, which goes NULL when the coordinator's row is deleted. Deleting a coordinator (or its thread)
+>   cancels its non-terminal children first; a child whose coordinator vanished is cancelled by the worker's
+>   sweep — never promoted to top-level work.
+> - `tainted boolean` (C3): a run of the workstream read mail/calendar/contacts; never cleared (D9).
+> - `lifecycle_noted text` (S1): the last child lifecycle event written into the coordinator's thread. Those
+>   notes (§5) are **state-only** (the child's goal + spawned/attention/paused/done/failed/cancelled, never its
+>   output) and are never appended while a coordinator segment runs (that would fork its thread); child
+>   output reaches the coordinator only through `wait_for_workstreams` / `read_workstream` results and the
+>   wake report.
+
 ## 3. Model class `subagents` and concurrency pools
 
 - `USAGES` gains **`subagents`**. `ModelDef` gains `description: string | null` (written for the

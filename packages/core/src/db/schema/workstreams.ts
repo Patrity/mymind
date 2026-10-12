@@ -43,7 +43,15 @@ export const workstreams = pgTable('workstreams', {
   treeUsed: jsonb('tree_used'),
   /** A run of this workstream read mail/calendar/contacts content (cycle 83: a tainted child taints
    *  the coordinator run that reads its output). Never cleared. */
-  tainted: boolean('tainted').notNull().default(false)
+  tainted: boolean('tainted').notNull().default(false),
+  /** Cycle 83 fix round 1 (I2): a CHILD, set at spawn and never cleared. Every child rule (depth 1,
+   *  no coordinator toolset, notes to the coordinator, tree accounting) keys on THIS, not on
+   *  `parent_id` — which goes NULL when the coordinator's row is deleted. A child whose coordinator
+   *  vanished is cancelled (coordinator.ts sweep), never promoted to top-level work. */
+  isChild: boolean('is_child').notNull().default(false),
+  /** Cycle 83 fix round 1 (S1): the last lifecycle event of this child written into its coordinator's
+   *  thread as a state-only note (`spawned`, `attention:<kind>:<hash>`, `paused:<hash>`, `done`…). */
+  lifecycleNoted: text('lifecycle_noted')
 }, (t) => [
   index('workstreams_parent_idx').on(t.parentId),
   uniqueIndex('workstreams_conversation_idx').on(t.conversationId),

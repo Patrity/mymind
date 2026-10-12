@@ -50,14 +50,14 @@ export async function childChain(label: string | null): Promise<ResolvedModel[]>
 /**
  * The primary model a workstream's next segment runs on — its pool key. Called once per segment,
  * when the segment is enqueued, and stamped on agent_runs.model_def_id (the runner then tries that
- * model first). A CHILD (`parentId` set) runs on its subagents chain (no label = the first
+ * model first). A CHILD (`isChild`) runs on its subagents chain (no label = the first
  * `subagents` model, or `reasoning` when `subagents` is empty); everything else — coordinators
  * included — on the head of `reasoning`.
  * Null (AI not configured) = unpooled; the segment then fails in the runner as it would anyway.
  */
-export async function segmentPrimaryModelId(ws: Pick<WorkstreamRow, 'parentId' | 'modelLabel'>): Promise<string | null> {
+export async function segmentPrimaryModelId(ws: Pick<WorkstreamRow, 'isChild' | 'modelLabel'>): Promise<string | null> {
   try {
     const doc = await loadConfig()
-    return (ws.parentId ? childChainFrom(doc, ws.modelLabel) : resolveChainFrom(doc, 'reasoning'))[0]!.modelDefId
+    return (ws.isChild ? childChainFrom(doc, ws.modelLabel) : resolveChainFrom(doc, 'reasoning'))[0]!.modelDefId
   } catch { return null }
 }

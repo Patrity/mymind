@@ -43,7 +43,7 @@ export function toWorkstreamDTO(r: WorkstreamRow, childIds: string[] = []): Work
     createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(), finishedAt: r.finishedAt?.toISOString() ?? null,
     parentId: r.parentId, modelLabel: r.modelLabel, workspaceMode: r.workspaceMode,
     treeBudget: treeBudgetOf(r), treeUsed: r.treeUsed ? usedOf({ used: r.treeUsed }) : null,
-    childIds, tainted: r.tainted
+    childIds, tainted: r.tainted, isChild: r.isChild
   }
 }
 
@@ -59,7 +59,7 @@ export async function childIdsOf(parentIds: string[]): Promise<Map<string, strin
 
 /** DTOs with their children's ids filled in. */
 export async function workstreamDTOs(rows: WorkstreamRow[]): Promise<WorkstreamDTO[]> {
-  const kids = await childIdsOf(rows.filter(r => !r.parentId).map(r => r.id))
+  const kids = await childIdsOf(rows.filter(r => !r.isChild).map(r => r.id))
   return rows.map(r => toWorkstreamDTO(r, kids.get(r.id) ?? []))
 }
 export async function workstreamDTO(row: WorkstreamRow): Promise<WorkstreamDTO> {

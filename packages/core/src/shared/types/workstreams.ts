@@ -70,6 +70,8 @@ export interface WorkstreamDTO {
   treeUsed: WorkstreamUsed | null
   /** A coordinator's children, oldest first. */
   childIds: string[]
+  /** Cycle 83 fix round 1 (I2): a child — even after its coordinator is gone (`parentId` null). */
+  isChild: boolean
   /** A run of it read mail/calendar/contacts content. */
   tainted: boolean
 }

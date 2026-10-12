@@ -90,11 +90,14 @@ export const finishWorkstreamTool: AgentTool = {
         }
       }
       const summary = (a.summary as string).trim()
+      // M7: the taint bit is on the row before the work can end (a coordinator reads this summary).
+      if (ctx.isTainted?.()) seg.markTainted()
+      await seg.taintSettled()
       const ws = await patchWorkstream(seg.workstreamId, { state: 'done', summary, attention: null, finishedAt: new Date() }, ['running', 'attention'])
       if (!ws) return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'finish_workstream: not running' }
       seg.stop = 'finished'
       // A child reports to its coordinator (woken by the transition: coordinator.ts), not to Tony.
-      if (!ws.parentId) await (await notify()).notifyTony(ws, `⚙ Workstream done — ${ws.goal}\n\n${summary}`)
+      if (!ws.isChild) await (await notify()).notifyTony(ws, `⚙ Workstream done — ${ws.goal}\n\n${summary}`)
       return { result: { ok: true, state: 'done' }, summary: 'workstream finished' }
     } catch (err) {
       return fail('finish_workstream', err)
@@ -114,12 +117,15 @@ export const askTonyTool: AgentTool = {
       const seg = segmentForRun(ctx.runId)
       if (!seg) return { result: { ok: false, error: `ask_tony ${NOT_IN_WORKSTREAM}` }, summary: 'ask_tony: not a workstream' }
       const question = (a.question as string).trim()
+      // M7: the taint bit lands before the question reaches the coordinator.
+      if (ctx.isTainted?.()) seg.markTainted()
+      await seg.taintSettled()
       const ws = await patchWorkstream(seg.workstreamId, { state: 'attention', attention: { kind: 'question', text: question, notifiedAt: Date.now() } }, ['running', 'attention'])
       if (!ws) return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'ask_tony: not running' }
       seg.stop = 'attention'
       // Cycle 83 (spec D8): a child's question goes to its coordinator (woken by the transition —
       // coordinator.ts), and to Tony only when the coordinator is itself waiting on him.
-      if (ws.parentId) return { result: { ok: true, note: 'Your coordinator has been asked. Stop here: you resume when it (or Tony) answers.' }, summary: 'asked the coordinator' }
+      if (ws.isChild) return { result: { ok: true, note: 'Your coordinator has been asked. Stop here: you resume when it (or Tony) answers.' }, summary: 'asked the coordinator' }
       await (await notify()).notifyTony(ws, questionNote(ws.goal, question))
       return { result: { ok: true, note: 'Tony has been asked. Stop here: the workstream resumes when he replies.' }, summary: 'asked Tony' }
     } catch (err) {

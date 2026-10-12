@@ -665,7 +665,7 @@ describe('fix round 1', () => {
     expect((await activeSegs(ws.conversationId)).map(r => (r.input as { text: string }).text)).toEqual(['the blue one'])
     expect(await getWorkstream(ws.id)).toMatchObject({ state: 'running', attention: null })
     // Fix round 2 (I-new-1): only a QUESTION can be answered — never running work, never an approval card.
-    expect((await tool.handler({ id: ws.id, text: 'more' }, { signal: new AbortController().signal })).result).toMatchObject({ ok: false, error: /not waiting on a question/ })
+    expect((await tool.handler({ id: ws.id, text: 'more' }, { signal: new AbortController().signal })).result).toMatchObject({ ok: false, error: expect.stringMatching(/not waiting on a question/) })
     await useDb().update(agentRuns).set({ status: 'done', finishedAt: sql`now()` }).where(eq(agentRuns.conversationId, ws.conversationId))
     await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'approval', text: 'run it?', requestId: '00000000-0000-4000-8000-0000000000bb', runId: q!.id } })
     expect((await tool.handler({ id: ws.id, text: 'deny it' }, { signal: new AbortController().signal })).result).toMatchObject({ ok: false })

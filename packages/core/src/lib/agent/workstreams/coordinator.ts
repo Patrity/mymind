@@ -22,9 +22,9 @@
 //   TAINT (spec D9). Child output is untrusted. A child that read mail/calendar/contacts (`tainted`) or
 //   whose workspace is tainted taints the run that reads its output: tool results carry
 //   `workspaceTainted: true` first (ai-tools.ts), and a wake prompt withholds that child's text.
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
-import { conversations, workspaces, workstreams } from '../../../db/schema'
+import { agentRuns, conversations, workspaces, workstreams } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
 import {
   BUDGET_LIMITS, DEFAULT_CHILD_BUDGET, DEFAULT_TREE_BUDGET, MAX_SPAWN_PER_CALL, TERMINAL_WORKSTREAM_STATES, ZERO_USED,
@@ -32,7 +32,7 @@ import {
 } from '../../../shared/types/workstreams'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import { budgetOf, childrenOf, getWorkstream, publishWorkstream, rollupTree, treeBudgetOf, usedOf, type WorkstreamRow } from './store'
-import { cancelWorkstream, childTitle, enqueueWhy, kick, questionNote, threadTitle, tonyFacing } from './loop'
+import { cancelWorkstream, childTitle, enqueueWhy, kick, questionNote, threadTitle, TONY_WROTE, tonyFacing } from './loop'
 import { notifyTony } from './notify'
 import { ensureWorkstreamWorkspace } from '../../sandbox/store'
 
@@ -102,8 +102,9 @@ export async function treeStatus(coordinatorId: string): Promise<{ budget: Works
  * counted only what it used while it was ended).
  */
 export async function reserveForResume(tx: Tx, child: WorkstreamRow, budget: WorkstreamBudget): Promise<void> {
-  await lockTree(tx, child.parentId!)
-  const [p] = await tx.select().from(workstreams).where(eq(workstreams.id, child.parentId!)).for('update')
+  if (!child.parentId) throw new CoordinatorError('its coordinator no longer exists — a child cannot run without it')
+  await lockTree(tx, child.parentId)
+  const [p] = await tx.select().from(workstreams).where(eq(workstreams.id, child.parentId)).for('update')
   if (!p || isTerminal(p.state)) throw new CoordinatorError('its coordinator has ended — a child cannot run without it')
   const kids = await tx.select().from(workstreams).where(eq(workstreams.parentId, p.id))
   const left = remainingOf(treeBudgetOf(p) ?? DEFAULT_TREE_BUDGET, committedOf(p, kids))
@@ -146,7 +147,7 @@ export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o
     await lockTree(tx, coordinatorId)
     const [p] = await tx.select().from(workstreams).where(eq(workstreams.id, coordinatorId)).for('update')
     if (!p) throw new CoordinatorError('no such workstream')
-    if (p.parentId) throw new CoordinatorError('a child workstream cannot spawn children (depth 1)')
+    if (p.isChild) throw new CoordinatorError('a child workstream cannot spawn children (depth 1)')
     if (isTerminal(p.state) || p.cancelRequested) throw new CoordinatorError(`the coordinator is ${p.cancelRequested ? 'being cancelled' : p.state}`)
     const tree = treeBudgetOf(p) ?? DEFAULT_TREE_BUDGET
     const kids = await tx.select().from(workstreams).where(eq(workstreams.parentId, p.id))
@@ -161,7 +162,7 @@ export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o
       const [conv] = await tx.insert(conversations).values({ title: threadTitle(c.goal) }).returning({ id: conversations.id })
       const [row] = await tx.insert(workstreams).values({
         conversationId: conv!.id, originConversationId: p.conversationId, goal: c.goal, state: 'queued', used: ZERO_USED,
-        toolsets: c.toolsets, budget: c.budget, parentId: p.id, modelLabel: c.model, workspaceMode: c.workspace
+        toolsets: c.toolsets, budget: c.budget, parentId: p.id, isChild: true, modelLabel: c.model, workspaceMode: c.workspace
       }).returning()
       rows.push(row!)
     }
@@ -306,26 +307,114 @@ export async function wakeCoordinatorIfReady(coordinatorId: string, o: { now?: n
   const won = await useDb().transaction(async (tx) => {
     await lockTree(tx, coordinatorId)
     const [c] = await tx.select().from(workstreams).where(eq(workstreams.id, coordinatorId)).for('update')
-    const wait = c ? attentionOf(c)?.waitingForChildren : undefined
-    if (!c || c.state !== 'paused' || !wait || c.cancelRequested) return null
+    if (!c || c.state !== 'paused' || c.cancelRequested) return null
+    const att = attentionOf(c)
+    const wait = att?.waitingForChildren
+    // Ruling C6a: a coordinator parked on a WATCH is not waiting on Tony — a child's question wakes it
+    // (its watch stays armed and is delivered at the next segment boundary).
+    const onWatch = !wait && att?.waitingForWatch === true && !!c.treeBudget
+    if (!wait && !onWatch) return null
     const kids = await tx.select().from(workstreams).where(eq(workstreams.parentId, coordinatorId))
-    const ev = evaluateWait(wait, kids, o.now)
-    if (!ev.ready) return null
+    let timedOut = false
+    if (wait) {
+      const ev = evaluateWait(wait, kids, o.now)
+      if (!ev.ready) return null
+      timedOut = ev.timedOut
+    } else if (!kids.some(needsCoordinator)) return null
     const [row] = await tx.update(workstreams).set({ state: 'running', attention: null, updatedAt: sql`now()` })
       .where(eq(workstreams.id, coordinatorId)).returning()
-    return { row: row!, kids, wait, timedOut: ev.timedOut }
+    return { row: row!, kids, wait, timedOut }
   })
   if (!won) return null
   publishWorkstream(coordinatorId)
+  const ids = won.wait?.ids ?? []
   // In the order the coordinator listed them, then any other child that needs it (a question).
-  const listed = [...won.wait.ids.flatMap(id => won.kids.filter(k => k.id === id)), ...won.kids.filter(k => !won.wait.ids.includes(k.id) && needsCoordinator(k))]
-  const missing = won.wait.ids.filter(id => !won.kids.some(k => k.id === id))
+  const listed = [...ids.flatMap(id => won.kids.filter(k => k.id === id)), ...won.kids.filter(k => !ids.includes(k.id) && needsCoordinator(k))]
+  const missing = ids.filter(id => !won.kids.some(k => k.id === id))
   const header = won.timedOut
-    ? `wait_for_workstreams timed out after ${won.wait.timeoutMin} min. Where your children stand:`
+    ? `wait_for_workstreams timed out after ${won.wait!.timeoutMin} min. Where your children stand:`
     : 'Your child workstreams have news:'
   const text = await childReport(listed, header) + (missing.length ? `\nNo longer exist: ${missing.join(', ')}` : '')
-  await markReported(listed)
-  return enqueueWhy(won.row, 'children', text)
+  // S1: the state-only lifecycle notes land first (no coordinator segment runs now).
+  await flushChildNotes(coordinatorId)
+  // Fix round 1 (I1): the report is NEVER dropped. A segment already queued (Tony's reply, Resume)
+  // carries it instead; questions count as shown only once the report is attached to a segment.
+  const runId = (await enqueueWhy(won.row, 'children', text)) ?? (await attachReport(won.row.conversationId, text))
+  if (runId) await markReported(listed)
+  return runId
+}
+
+/** I1: attach a wake report to the coordinator's QUEUED segment (it holds its own words too). */
+async function attachReport(conversationId: string, text: string): Promise<string | null> {
+  const res = await useDb().execute(sql`
+    update agent_runs set input = case
+        when input ? 'eventOrigin' then jsonb_set(input, '{text}', to_jsonb((input->>'text') || E'\n\n' || ${text}::text))
+        else input || jsonb_build_object('eventOrigin', 'segment:children', 'text', ${text}::text || E'\n\n' || ${TONY_WROTE}::text || (input->>'text'))
+      end
+    where conversation_id = ${conversationId}::uuid and kind = 'workstream' and status = 'queued'
+    returning id`)
+  return (res.rows[0] as { id?: string } | undefined)?.id ?? null
+}
+
+
+// ── Lifecycle notes (ruling S1) ─────────────────────────────────────────────────────────────────
+//
+// Spec §5: child lifecycle events are written into the coordinator's thread as event notes. They are
+// STATE-ONLY — the child's goal (the coordinator's own words) and what happened — never the child's
+// output, so a note can never carry taint (summaries reach the model only through wait/read results).
+// A note is never appended while a coordinator segment RUNS (the runner chains its turn from the leaf
+// it read at the start, so a row appended mid-turn would sit on a branch nobody sees): pending notes
+// are flushed at the segment's end, before a wake, on child transitions and by the tick sweep.
+
+function hashText(t: string): string {
+  let h = 0
+  for (let i = 0; i < t.length; i++) h = (Math.imul(31, h) + t.charCodeAt(i)) | 0
+  return (h >>> 0).toString(36)
+}
+
+/** The lifecycle event a child is at, as a key (null: nothing new — running/queued after its start). */
+export function lifecycleKey(k: WorkstreamRow): string | null {
+  if (isTerminal(k.state)) return k.state
+  const att = attentionOf(k)
+  if (k.state === 'attention' && att) return `attention:${att.kind}:${hashText(att.text)}`
+  if (k.state === 'paused' && att && !att.waitingForWatch) return `paused:${hashText(att.text)}`
+  return k.lifecycleNoted ? null : 'spawned'
+}
+
+function noteText(k: WorkstreamRow, key: string): string {
+  const g = k.goal.replace(/\s+/g, ' ').trim()
+  const who = `Child workstream "${g.length > 120 ? `${g.slice(0, 119)}…` : g}" (id ${k.id})`
+  if (key === 'spawned') return `${who} was spawned.`
+  if (key === 'done') return `${who} finished.`
+  if (key === 'failed') return `${who} failed.`
+  if (key === 'cancelled') return `${who} was cancelled.`
+  if (key.startsWith('attention:question')) return `${who} is asking you a question — wait_for_workstreams or read_workstream shows it; answer with answer_child.`
+  if (key.startsWith('attention:approval')) return `${who} is waiting for Tony's approval.`
+  return `${who} paused.`
+}
+
+/** Write the coordinator's pending child lifecycle notes (each event once). Returns how many. */
+export async function flushChildNotes(coordinatorId: string): Promise<number> {
+  const coord = await getWorkstream(coordinatorId)
+  if (!coord) return 0
+  const [running] = await useDb().select({ id: agentRuns.id }).from(agentRuns)
+    .where(and(eq(agentRuns.conversationId, coord.conversationId), eq(agentRuns.kind, 'workstream'), eq(agentRuns.status, 'running'))).limit(1)
+  if (running) return 0
+  const { appendEvent } = await import('../../../services/conversations')
+  let n = 0
+  for (const k of await childrenOf(coordinatorId)) {
+    const key = lifecycleKey(k)
+    if (!key || key === k.lifecycleNoted) continue
+    // Compare-and-set per child: of concurrent flushers exactly one writes each event.
+    const [won] = await useDb().update(workstreams).set({ lifecycleNoted: key })
+      .where(and(eq(workstreams.id, k.id), k.lifecycleNoted === null ? isNull(workstreams.lifecycleNoted) : eq(workstreams.lifecycleNoted, k.lifecycleNoted))).returning({ id: workstreams.id })
+    if (!won) continue
+    // A child that already moved on before its first note still gets its "spawned" line first.
+    if (k.lifecycleNoted === null && key !== 'spawned') { await appendEvent(coord.conversationId, noteText(k, 'spawned'), `workstream:${k.id}`); n++ }
+    await appendEvent(coord.conversationId, noteText(k, key), `workstream:${k.id}`)
+    n++
+  }
+  return n
 }
 
 /**
@@ -341,20 +430,44 @@ export async function sweepCoordinators(o: { onlyConversations?: string[]; now?:
   let n = 0
   const parked = await useDb().execute(sql`
     select w.id from workstreams w
-    where w.state = 'paused' and w.attention ? 'waitingForChildren' ${scope('w.conversation_id')}`)
+    where w.state = 'paused' and (w.attention ? 'waitingForChildren' or (w.attention ? 'waitingForWatch' and w.tree_budget is not null))
+      ${scope('w.conversation_id')}`)
   for (const { id } of parked.rows as Array<{ id: string }>) {
     if (await wakeCoordinatorIfReady(id, { now: o.now })) n++
   }
+  // Ruling I2: a child whose coordinator has ended — or is GONE (its row deleted: parent_id went
+  // NULL) — is cancelled, never promoted to top-level work.
   const orphans = await useDb().execute(sql`
-    select c.id from workstreams c join workstreams p on p.id = c.parent_id
-    where p.state in ('done', 'failed', 'cancelled') and c.state not in ('done', 'failed', 'cancelled')
+    select c.id from workstreams c left join workstreams p on p.id = c.parent_id
+    where c.is_child and c.state not in ('done', 'failed', 'cancelled')
+      and (p.id is null or p.state in ('done', 'failed', 'cancelled'))
       ${scope('c.conversation_id')}`)
   for (const { id } of orphans.rows as Array<{ id: string }>) {
     const c = await getWorkstream(id)
     if (c && !isTerminal(c.state)) { await cancelWorkstream(c); n++ }
   }
+  // S1: notes a transition could not write (a coordinator segment was running then).
+  const coords = await useDb().execute(sql`
+    select w.id from workstreams w
+    where w.tree_budget is not null and (w.state not in ('done', 'failed', 'cancelled') or w.updated_at > now() - interval '1 hour')
+      ${scope('w.conversation_id')}`)
+  for (const { id } of coords.rows as Array<{ id: string }>) await flushChildNotes(id)
   if (n) await kick()
   return n
+}
+
+/**
+ * Ruling I2: a coordinator's thread is about to be deleted (services/conversations.ts
+ * deleteConversation) — its row goes with it (FK cascade) and its children's parent_id goes NULL, so
+ * its children still going are cancelled FIRST, inside the tree. The sweep cancels any it missed.
+ */
+export async function cancelChildrenOfThread(conversationId: string): Promise<number> {
+  const [coord] = await useDb().select().from(workstreams).where(eq(workstreams.conversationId, conversationId)).limit(1)
+  if (!coord || coord.isChild) return 0
+  const live = await liveChildren(coord.id)
+  for (const k of live) await cancelWorkstream(k)
+  if (live.length) await kick()
+  return live.length
 }
 
 // ── Transitions (store.ts patchWorkstream calls this after every state change) ──────────────────
@@ -362,7 +475,8 @@ export async function sweepCoordinators(o: { onlyConversations?: string[]; now?:
 /** A coordinator is waiting on Tony (its question or card, or a pause that is not its own wait). */
 function heldByTony(c: WorkstreamRow): boolean {
   const att = attentionOf(c)
-  return c.state === 'attention' || (c.state === 'paused' && !att?.waitingForChildren)
+  // C6a: parked on its own wait OR on a watch is not waiting on Tony (a child's question wakes it).
+  return c.state === 'attention' || (c.state === 'paused' && !att?.waitingForChildren && !att?.waitingForWatch)
 }
 
 /** Tell Tony about a child's question too — once per question. */
@@ -378,14 +492,17 @@ async function escalate(child: WorkstreamRow, coord: WorkstreamRow): Promise<voi
 }
 
 export async function afterTransition(row: WorkstreamRow): Promise<void> {
-  if (row.parentId) {
+  if (row.isChild) {
+    // I2: a child whose coordinator is gone is cancelled — never promoted to top-level work.
+    if (!row.parentId) { if (!isTerminal(row.state)) await cancelWorkstream(row); return }
     // A child moved: its coordinator's tree use (a refund when it ended), Tony when the coordinator
-    // can't answer, and a wake when the coordinator waits on it.
+    // can't answer, a wake when the coordinator waits on it, and its lifecycle note.
     await rollupTree(row.parentId)
     const coord = await getWorkstream(row.parentId)
-    if (!coord) return
+    if (!coord) { if (!isTerminal(row.state)) await cancelWorkstream(row); return }
     if (row.state === 'attention' && attentionOf(row)?.kind === 'question' && heldByTony(coord)) await escalate(row, coord)
     if (await wakeCoordinatorIfReady(coord.id)) await kick()
+    else await flushChildNotes(coord.id)
     return
   }
   if (!row.treeBudget) return

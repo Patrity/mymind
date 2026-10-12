@@ -253,6 +253,9 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // declared it" — only `storedBefore`/`jobDeclared`, fixed for the whole turn, are known here.
     const mainOnlyJobDeclared = conv?.kind === 'main' ? jobDeclaredToolsets.filter(id => !storedToolsets.includes(id)) : []
     const unavailable = await (deps.unavailableToolsets ?? (() => unavailableGoogleToolsets()))().catch((): ToolsetId[] => ['gmail', 'calendar'])
+    // Cycle 83 fix round 1 (M5): a top-level workstream that has loaded `coordinator` (D1: any
+    // workstream becomes a coordinator by loading it) gets the coordinator rules from this segment on.
+    if (seg && !seg.child && !seg.promptInfo.role && initialToolsets.includes('coordinator')) seg.promptInfo = { ...seg.promptInfo, role: { kind: 'coordinator' } }
     const toolsets = {
       initial: initialToolsets,
       unavailable,

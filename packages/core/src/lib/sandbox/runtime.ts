@@ -45,7 +45,7 @@ export async function resolveWorkspace(runId: string | undefined): Promise<Works
     if (ws && !TERMINAL_WORKSTREAM_STATES.includes(ws.state)) {
       // Cycle 83 (D7): a `shared` child works in its coordinator's workspace (its watches still wake
       // the child: workstreamId stays the child's).
-      const row = await ensureWorkstreamWorkspace(ws.parentId && ws.workspaceMode === 'shared' ? ws.parentId : ws.id)
+      const row = await ensureWorkstreamWorkspace(ws.isChild && ws.parentId && ws.workspaceMode === 'shared' ? ws.parentId : ws.id)
       return { workspaceId: row.id, kind: 'workstream', workstreamId: ws.id, conversationId }
     }
   }

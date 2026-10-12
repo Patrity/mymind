@@ -14,6 +14,13 @@ export const loadToolsetsTool: AgentTool = {
     const ids = args.ids as ToolsetId[]
     const added = ctx.loadToolsets?.(ids) ?? []
     const names = ids.map(id => `${id} (${TOOLSETS[id].description})`).join(', ')
-    return { result: { loaded: ids, newlyLoaded: added }, summary: `loaded ${names}` }
+    // Cycle 83 fix round 1 (M5): a top-level workstream that loads `coordinator` gets its rules at once
+    // (the system prompt carries them from its next segment on).
+    let instructions: string | undefined
+    if (ids.includes('coordinator')) {
+      const seg = (await import('../workstreams/loop')).segmentForRun(ctx.runId)
+      if (seg && !seg.child) instructions = (await import('../prompt')).COORDINATOR_RULES.join('\n')
+    }
+    return { result: { loaded: ids, newlyLoaded: added, ...(instructions ? { instructions } : {}) }, summary: `loaded ${names}` }
   }
 }

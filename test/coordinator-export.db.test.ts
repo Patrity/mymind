@@ -16,7 +16,7 @@ import { conversations, workspaces, workstreams } from '@mymind/core/db/schema'
 import { createSandboxManager, type SandboxManager } from '@mymind/core/lib/sandbox/manager'
 import { createWorkspaceRuntime, setWorkspaceRuntime, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
 import { ensureWorkstreamWorkspace } from '@mymind/core/lib/sandbox/store'
-import { exportToCoordinatorTool, workspaceTools } from '@mymind/core/lib/agent/tools/workspace'
+import { exportToCoordinatorTool, exportUnpackCommand, workspaceTools } from '@mymind/core/lib/agent/tools/workspace'
 import { ZERO_USED } from '@mymind/core/shared/types/workstreams'
 import type { ToolContext } from '@mymind/core/lib/agent/types'
 
@@ -49,7 +49,7 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
     convIds.push(conv!.id)
     const [row] = await useDb().insert(workstreams).values({
       conversationId: conv!.id, goal, state: 'running', used: ZERO_USED, budget: { maxSteps: 10, maxWallMs: 600_000 },
-      parentId: o.parentId ?? null, workspaceMode: o.workspaceMode ?? 'own'
+      parentId: o.parentId ?? null, isChild: !!o.parentId, workspaceMode: o.workspaceMode ?? 'own'
     }).returning()
     return row!
   }
@@ -58,7 +58,8 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
     setBusNs(NS)
     root = realpathSync(mkdtempSync(path.join(tmpdir(), 'mm-t83x-')))
     m = createSandboxManager({
-      labels: LABELS, settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 10, dns: [] },
+      // A 20 MB quota: the uncompressed-size check (fix round 1, M4) bites at a testable size.
+      labels: LABELS, settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 10, dns: [], quotaBytes: 20 * 1024 * 1024 },
       log: { info: () => {}, warn: () => {}, error: () => {} }
     })
     rt = createWorkspaceRuntime(m, { resolve: async () => ({ workspaceId: as.workspaceId, kind: 'workstream', workstreamId: as.workstreamId, conversationId: null }) })
@@ -127,5 +128,37 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
     } finally { tainted = false }
     const [row] = await useDb().select().from(workspaces).where(eq(workspaces.id, coordWs.id))
     expect(row!.tainted).toBe(true)
+  }, 180_000)
+
+  it('M4: the UNCOMPRESSED size must fit the coordinator\'s remaining quota (a tiny gzip of 30 MB of zeros is refused, nothing lands)', async () => {
+    const coord = await workstream('T83X coordinator 3')
+    const child = await workstream('T83X zipbomb child', { parentId: coord.id })
+    const coordWs = await ensureWorkstreamWorkspace(coord.id)
+    const childWs = await ensureWorkstreamWorkspace(child.id)
+    as = { workspaceId: childWs.id, workstreamId: child.id }
+    expect((await call('bash', { command: 'head -c 31457280 /dev/zero > zeros.bin && echo ok' })).stdout).toContain('ok')
+    const r = await call('export_to_coordinator', { paths: ['zeros.bin'] })
+    expect(r).toMatchObject({ ok: false, error: expect.stringMatching(/too large to export: 3146\d{4} bytes uncompressed/) })
+    as = { workspaceId: coordWs.id, workstreamId: coord.id }
+    expect((await call('bash', { command: `test -e from/${child.id} && echo LANDED || echo NONE` })).stdout.trim()).toBe('NONE')
+  }, 180_000)
+
+  it('M4: the unpack itself (in the coordinator\'s sandbox) cuts decompression at the limit and refuses links — whatever size the child claimed', async () => {
+    const coord = await workstream('T83X coordinator 4')
+    const coordWs = await ensureWorkstreamWorkspace(coord.id)
+    as = { workspaceId: coordWs.id, workstreamId: coord.id }
+    // Archives built inside the sandbox, as a hostile child could: 5 MB of zeros, and a symlink.
+    const mk = await call('bash', { command: 'mkdir -p /tmp/a/b && head -c 5242880 /dev/zero > /tmp/a/big && ln -s /etc/hostname /tmp/a/b/link && tar -C /tmp/a -czf - big | base64 -w0 > /tmp/big.b64 && tar -C /tmp/a -czf - b | base64 -w0 > /tmp/link.b64 && echo ok' })
+    expect(mk.stdout).toContain('ok')
+    const b64 = async (f: string) => (await call('bash', { command: `cat ${f}` })).stdout as string
+    const m = rt.manager
+    const big = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/x', 1024 * 1024), { input: await b64('/tmp/big.b64'), timeoutSec: 60 })
+    expect(big.exitCode).toBe(3)
+    const link = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/y', 10 * 1024 * 1024), { input: await b64('/tmp/link.b64'), timeoutSec: 60 })
+    expect(link.exitCode).toBe(4)
+    expect((await call('bash', { command: 'ls from 2>/dev/null | wc -l' })).stdout.trim()).toBe('0')
+    // Under the limit, plain files: extracted.
+    const ok = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/z', 10 * 1024 * 1024), { input: await b64('/tmp/big.b64'), timeoutSec: 60 })
+    expect(ok.exitCode).toBe(0)
   }, 180_000)
 })

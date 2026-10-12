@@ -28,7 +28,7 @@ export function segmentText(why: SegmentWhy, ws: Pick<WorkstreamRow, 'goal'>, de
 /** `parent`: a child's coordinator (cycle 83 — the child's rules name it). */
 export function promptInfo(ws: WorkstreamRow, final?: string | null, parent?: WorkstreamRow | null): WorkstreamPromptInfo {
   const u = usedOf(ws)
-  const role: WorkstreamPromptInfo['role'] = ws.parentId
+  const role: WorkstreamPromptInfo['role'] = ws.isChild
     ? { kind: 'child', coordinatorGoal: parent?.goal ?? 'its coordinator', workspace: ws.workspaceMode }
     : ws.treeBudget || ws.toolsets.includes('coordinator') ? { kind: 'coordinator' } : undefined
   return {

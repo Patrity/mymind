@@ -478,6 +478,13 @@ export async function listConversations(
 }
 
 export async function deleteConversation(id: string): Promise<void> {
+  // Cycle 83 (ruling I2): a coordinator's thread takes its workstream row with it (FK cascade) and its
+  // children's parent_id goes NULL — cancel those children first, inside the tree. Never blocks the
+  // delete: the worker's sweep cancels any child left without a coordinator.
+  try {
+    const { cancelChildrenOfThread } = await import('../lib/agent/workstreams/coordinator')
+    await cancelChildrenOfThread(id)
+  } catch (err) { console.error('[conversations] cancelling a coordinator\'s children failed:', err) }
   // cascade delete on conversation_messages is set via FK onDelete: 'cascade'
   await useDb()
     .delete(conversations)

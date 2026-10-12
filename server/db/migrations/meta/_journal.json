@@ -547,6 +547,13 @@
       "when": 1791772944449,
       "tag": "0077_amazing_chameleon",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1791776881044,
+      "tag": "0078_daily_callisto",
+      "breakpoints": true
     }
   ]
 }

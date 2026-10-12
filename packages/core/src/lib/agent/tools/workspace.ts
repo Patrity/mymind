@@ -536,6 +536,22 @@ export const importDocumentTool: AgentTool = {
 /** Cycle 83: export_to_coordinator's limits — the archive travels base64 through the 1 MB output cap. */
 export const EXPORT_MAX_PATHS = 100
 export const EXPORT_DIR = 'from'
+/** Fix round 1 (M4): at most this much unpacked per export (and never past the destination's quota). */
+export const EXPORT_MAX_UNPACKED_BYTES = 200 * 1024 * 1024
+const EXPORT_TOO_LARGE = '__mm_export_too_large__'
+
+/** The unpack, run INSIDE the destination sandbox with the base64 archive on stdin: decompression is
+ *  cut at `limit` bytes (exit 3), an archive holding anything but plain files and directories is
+ *  refused before extraction (exit 4), and nothing extracts over an existing directory's metadata. */
+export function exportUnpackCommand(dir: string, limit: number): string {
+  return [
+    't=$(mktemp) || exit 1',
+    `base64 -d | gzip -dc | head -c ${limit + 1} > "$t"`,
+    `if [ "$(wc -c < "$t")" -gt ${limit} ]; then rm -f "$t"; echo "${EXPORT_TOO_LARGE}" >&2; exit 3; fi`,
+    `if tar -tvf "$t" | grep -q '^[^-d]'; then rm -f "$t"; echo "the archive holds links or special files" >&2; exit 4; fi`,
+    `mkdir -p ${dir} && tar -xf "$t" -C ${dir} --no-same-owner --no-same-permissions --no-overwrite-dir; s=$?; rm -f "$t"; exit $s`
+  ].join('\n')
+}
 
 /** null when `p` may be exported (relative, no `..`, not MyMind's bookkeeping); else why not. */
 function exportPathProblem(p: string): string | null {
@@ -571,20 +587,36 @@ export const exportToCoordinatorTool: AgentTool = {
     const c = await begin(ctx, scope)
     const { getWorkstream } = await import('../workstreams/store')
     const child = c.ref.workstreamId ? await getWorkstream(c.ref.workstreamId) : null
-    if (!child?.parentId) return { result: { ok: false, error: 'export_to_coordinator is only for a child workstream (this run has no coordinator)' }, summary: 'export_to_coordinator: not a child' }
+    if (!child?.isChild) return { result: { ok: false, error: 'export_to_coordinator is only for a child workstream (this run has no coordinator)' }, summary: 'export_to_coordinator: not a child' }
+    if (!child.parentId) return { result: { ok: false, error: 'your coordinator no longer exists' }, summary: 'export_to_coordinator: no coordinator' }
     if (child.workspaceMode !== 'own') return { result: { ok: false, error: 'you share your coordinator\'s workspace already — your files are there' }, summary: 'export_to_coordinator: shared workspace' }
-    // Inside the child's sandbox: the file list on stdin (NUL-separated), a gzip'd tar out as base64.
-    // Via a temp file, not a pipe: the sandbox's sh (dash) has no pipefail, so a tar error (a missing
-    // path) would otherwise be hidden behind base64's exit 0.
-    const pack = await exec(c, 'f=$(mktemp) && tar -C /workspace --null -T - -h --hard-dereference -czf "$f" && base64 -w0 "$f"; s=$?; rm -f "$f"; exit $s', { input: paths.join('\0'), capBytes: 1024 * 1024, timeoutSec: 120 })
+    // Inside the child's sandbox: the file list on stdin (NUL-separated); out come the archive's
+    // UNCOMPRESSED size (first line) and the gzip'd tar as base64. Via a temp file, not a pipe: the
+    // sandbox's sh (dash) has no pipefail, so a tar error (a missing path) would otherwise be hidden.
+    const pack = await exec(c, 'f=$(mktemp) && tar -C /workspace --null -T - -h --hard-dereference -czf "$f" && n=$(gzip -dc "$f" | wc -c) && printf "%s\\n" "$n" && base64 -w0 "$f"; s=$?; rm -f "$f"; exit $s', { input: paths.join('\0'), capBytes: 1024 * 1024, timeoutSec: 120 })
     if (pack.truncated) return { result: withTaint(pack, { ok: false, error: 'too large to export (over ~700 KB compressed) — export fewer or smaller files, or write a summary file and export that' }), summary: 'export_to_coordinator: too large' }
     if (pack.exitCode !== 0) return failed('export_to_coordinator', pack)
+    const nl = pack.stdout.indexOf('\n')
+    const claimed = Number(pack.stdout.slice(0, nl))
+    const archive = pack.stdout.slice(nl + 1)
     const { ensureWorkstreamWorkspace } = await import('../../sandbox/store')
     const dest = await ensureWorkstreamWorkspace(child.parentId)
     const tainted = c.tainted || pack.tainted
-    await workspaceRuntime().manager.checkQuota(dest.id, { tainted })
+    // Fix round 1 (M4): the UNCOMPRESSED size must fit the coordinator's remaining quota (and a
+    // per-export ceiling) — ~700 KB of gzip can expand far past it.
+    const m = workspaceRuntime().manager
+    await m.checkQuota(dest.id, { tainted })
+    const used = (await dbWorkspaceStore.get(dest.id))?.bytesUsed ?? 0
+    const limit = Math.min(EXPORT_MAX_UNPACKED_BYTES, m.settings.quotaBytes - used)
+    const tooBig = (n: number) => ({ result: withTaint({ tainted }, { ok: false, error: `too large to export: ${n} bytes uncompressed, and the coordinator's workspace takes at most ${Math.max(0, limit)} more — export less` }), summary: 'export_to_coordinator: too large' })
+    if (limit <= 0 || !Number.isFinite(claimed) || claimed > limit) return tooBig(claimed)
     const dir = `/workspace/${EXPORT_DIR}/${child.id}`
-    const unpack = await workspaceRuntime().manager.exec(dest.id, `mkdir -p ${dir} && base64 -d | tar -xzf - -C ${dir} --no-same-owner --no-same-permissions`, { tainted, signal: ctx.signal, input: pack.stdout, timeoutSec: 120 })
+    // The archive came from a sandbox the child controls, so the size it claimed is only advisory:
+    // INSIDE the coordinator's sandbox the decompression is cut at the limit, and an archive holding
+    // anything but plain files and directories (links, devices — its tar could have been swapped) is
+    // refused before anything is extracted.
+    const unpack = await m.exec(dest.id, exportUnpackCommand(dir, limit), { tainted, signal: ctx.signal, input: archive, timeoutSec: 120 })
+    if (unpack.exitCode === 3) return tooBig(limit + 1)
     if (unpack.exitCode !== 0) return failed('export_to_coordinator', { ...unpack, tainted: tainted || unpack.tainted })
     return {
       result: withTaint({ tainted: tainted || unpack.tainted }, { ok: true, copied: paths, to: `${EXPORT_DIR}/${child.id}/`, note: `In your coordinator's workspace under ${EXPORT_DIR}/${child.id}/ — mention the paths in your finish_workstream summary.` }),
