@@ -149,6 +149,21 @@ describe('agent settings doc (DB)', () => {
     expect(await getJudgeSettings()).toEqual({ enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9, maxInFlight: 4 })
   })
 
+  it('I5: judge.maxInFlight sizes this process\'s judge/guard limiter — on save and on every (re)read', async () => {
+    const { judgeSlotStats, setJudgeMaxInFlight } = await import('@mymind/core/lib/agent/judge/limiter')
+    try {
+      await saveAgentSettings({ judge: { maxInFlight: 7 } })
+      expect(judgeSlotStats().max).toBe(7)
+      setJudgeMaxInFlight(4)                                   // another process's value, say
+      invalidateAgentSettings()
+      await getAgentSettings()                                 // re-read from the row
+      expect(judgeSlotStats().max).toBe(7)
+    } finally {
+      await saveAgentSettings({ judge: { maxInFlight: 4 } })
+    }
+    expect(judgeSlotStats().max).toBe(4)
+  })
+
   it('an invalid patch throws and changes nothing', async () => {
     const before = await getAgentSettings()
     await expect(saveAgentSettings({ judge: { confidence: 0.3 } })).rejects.toThrow()
