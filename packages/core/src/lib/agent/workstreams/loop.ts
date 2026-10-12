@@ -28,7 +28,7 @@
 // tools module is reached from here through a cycle (notify → channels → queue → runner → profile).
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
-import { agentRuns, channelApprovals, conversationMessages, conversations, workstreams, type AgentRun } from '../../../db/schema'
+import { agentRuns, channelApprovals, conversationMessages, conversations, workstreamQuestionTags, workstreams, type AgentRun } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
 import { createRun } from '../runtime/runs'
 import { abortRun } from '../runtime/aborts'
@@ -1253,11 +1253,15 @@ export async function resumeWorkstream(ws: WorkstreamRow, text?: string): Promis
 const OPEN_QUESTION = sql`${workstreams.state} = 'attention' and ${workstreams.attention}->>'kind' = 'question'
   and (not ${workstreams.isChild} or ${workstreams.attention}->>'escalated' = 'true')`
 
+/** Follow-up N2: a tag is never issued again within this long of its last issue. */
+export const QUESTION_TAG_REUSE_MS = 7 * 24 * 60 * 60 * 1000
+
 /**
- * Final fix wave (I2): give an open question its `#k` handle — the smallest k no other open question
- * holds — before Tony is texted about it, so a reply can say which question it answers. Under one
- * advisory lock (two questions asked at once never share a k). Null when the row no longer waits on
- * a question Tony can answer. Idempotent: a tagged question keeps its tag.
+ * Final fix wave (I2): give an open question its `#k` handle before Tony is texted about it, so a
+ * reply can say which question it answers. Follow-up N2: the smallest k that no open question holds
+ * AND that was not issued within QUESTION_TAG_REUSE_MS (workstream_question_tags) — so an old text's
+ * tag never reaches a different question. Under one advisory lock (two questions asked at once never
+ * share a k). Null when the row no longer waits on a question Tony can answer. Idempotent.
  */
 export async function tagQuestion(workstreamId: string): Promise<number | null> {
   const tag = await useDb().transaction(async (tx) => {
@@ -1268,13 +1272,32 @@ export async function tagQuestion(workstreamId: string): Promise<number | null> 
     if (att.tag) return att.tag
     const taken = new Set((await tx.select({ attention: workstreams.attention }).from(workstreams).where(OPEN_QUESTION))
       .map(r => (r.attention as WorkstreamAttention | null)?.tag).filter((t): t is number => typeof t === 'number'))
+    for (const r of await tx.select({ tag: workstreamQuestionTags.tag }).from(workstreamQuestionTags)
+      .where(sql`${workstreamQuestionTags.issuedAt} > now() - make_interval(secs => ${QUESTION_TAG_REUSE_MS / 1000})`)) taken.add(r.tag)
     let k = 1
     while (taken.has(k)) k++
+    await tx.insert(workstreamQuestionTags).values({ tag: k, workstreamId: row.id, issuedAt: sql`now()` })
+      .onConflictDoUpdate({ target: workstreamQuestionTags.tag, set: { workstreamId: row.id, issuedAt: sql`now()` } })
     await tx.update(workstreams).set({ attention: { ...att, tag: k } }).where(eq(workstreams.id, row.id))
     return k
   })
   if (tag) publishWorkstream(workstreamId)
   return tag
+}
+
+/** N2: when `tag` was issued within the reuse window and its question is closed, tell Tony so. */
+async function closedQuestionReply(tag: number, opts: { onlyConversations?: string[] }): Promise<boolean> {
+  const [issued] = await useDb().select().from(workstreamQuestionTags)
+    .where(and(eq(workstreamQuestionTags.tag, tag), sql`${workstreamQuestionTags.issuedAt} > now() - make_interval(secs => ${QUESTION_TAG_REUSE_MS / 1000})`)).limit(1)
+  if (!issued) return false
+  const ws = await getWorkstream(issued.workstreamId)
+  // Still open (outside the caller's scope): not closed.
+  if (ws && ws.state === 'attention' && attentionOf(ws)?.kind === 'question' && attentionOf(ws)?.tag === tag) return false
+  if (opts.onlyConversations && (!ws || !opts.onlyConversations.includes(ws.conversationId))) return false
+  const what = ws ? (await tonyFacing(ws)).goal : 'a workstream that no longer exists'
+  await workstreamNotifyDeps.text(`↪ #${tag} (${what}) is already closed — your reply was not passed on to any workstream.`, ws?.originConversationId ?? ws?.conversationId ?? null)
+    .catch(err => console.error('[workstreams] closed-question reply failed:', err))
+  return true
 }
 
 /** `#k` at the very start of a reply (then optional punctuation): which question it answers. */
@@ -1299,12 +1322,16 @@ export async function routeInboundAnswer(input: RunInput, opts: { mainConversati
     OPEN_QUESTION,
     opts.onlyConversations ? inArray(workstreams.conversationId, opts.onlyConversations) : undefined
   ))
-  if (!waiting.length) return null
   const tagged = parseQuestionTag(input.text)
+  const hit = tagged ? waiting.find(w => attentionOf(w)?.tag === tagged.tag) : undefined
+  // Follow-up N2: a tag issued within the reuse window whose question is no longer open — Tony is
+  // replying to an old text. Never rerouted to anything else: he is told it is closed, and the text
+  // lands in main as an ordinary turn (his words are kept).
+  if (tagged && !hit && await closedQuestionReply(tagged.tag, opts)) return null
+  if (!waiting.length) return null
   let ws: WorkstreamRow | undefined
   let text = input.text
   if (tagged) {
-    const hit = waiting.find(w => attentionOf(w)?.tag === tagged.tag)
     if (hit && tagged.rest.trim()) { ws = hit; text = tagged.rest }
     else if (waiting.length > 1) return null // a #k no open question holds: not a guess between several
   }

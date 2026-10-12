@@ -63,3 +63,12 @@ export const workstreams = pgTable('workstreams', {
 ])
 
 export type WorkstreamRow = typeof workstreams.$inferSelect
+
+/** Cycle 83 follow-up (N2): every `#k` question tag Tony was texted, by tag — a tag is never reused
+ *  within 7 days of being issued, so a late reply carrying an old tag can never reach a different
+ *  question (it is told that question is closed instead). No FK: the record outlives the workstream. */
+export const workstreamQuestionTags = pgTable('workstream_question_tags', {
+  tag: integer('tag').primaryKey(),
+  workstreamId: uuid('workstream_id').notNull(),
+  issuedAt: timestamp('issued_at', { withTimezone: true }).notNull().defaultNow()
+})

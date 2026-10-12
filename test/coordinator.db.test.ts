@@ -62,6 +62,7 @@ afterAll(async () => {
   await db.delete(workspaces).where(eq(workspaces.ns, NS))
   if (convIds.length) {
     await db.delete(agentInbox).where(inArray(agentInbox.conversationId, convIds))
+    await db.execute(sql`delete from workstream_question_tags where workstream_id in (select id from workstreams where conversation_id in (${sql.join(convIds.map(c => sql`${c}::uuid`), sql`, `)}))`)
     await db.delete(workstreams).where(inArray(workstreams.conversationId, convIds))
     await db.delete(agentRuns).where(inArray(agentRuns.conversationId, convIds))
     await db.delete(conversationMessages).where(inArray(conversationMessages.conversationId, convIds))
@@ -1787,5 +1788,37 @@ describe('final fix wave', () => {
     expect(att((await getWorkstream(b!.id))!)).toEqual(fresh)                 // never overwritten
     expect(att((await getWorkstream(a!.id))!)).toMatchObject({ awaySent: true })
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('follow-up N2: tags are never reused within 7 days; a reply carrying a closed question\'s tag is told so and reaches no other question', async () => {
+    const { tagQuestion } = await import('@mymind/core/lib/agent/workstreams/loop')
+    const a = await idleCoordinator('n2-a')
+    const b = await idleCoordinator('n2-b')
+    const c = await idleCoordinator('n2-c')
+    const scope = [a, b, c].map(x => x.ws.conversationId)
+    await patchWorkstream(a.ws.id, { state: 'attention', attention: { kind: 'question', text: 'A?', notifiedAt: Date.now() } })
+    const ta = (await tagQuestion(a.ws.id))!
+    // A is answered (its question closes, its tag is no longer held by an open question)…
+    expect(await routeInboundAnswer({ text: `#${ta} yes`, modality: 'text' }, { mainConversationId: a.origin, onlyConversations: scope })).toMatchObject({ workstreamId: a.ws.id })
+    expect((await getWorkstream(a.ws.id))!.state).toBe('running')
+    // …and B and C ask: neither gets A's tag back.
+    await patchWorkstream(b.ws.id, { state: 'attention', attention: { kind: 'question', text: 'B?', notifiedAt: Date.now() } })
+    await patchWorkstream(c.ws.id, { state: 'attention', attention: { kind: 'question', text: 'C?', notifiedAt: Date.now() } })
+    const tb = (await tagQuestion(b.ws.id))!
+    const tc = (await tagQuestion(c.ws.id))!
+    expect([tb, tc]).not.toContain(ta)
+    // A late reply to A's old text: told it is closed; neither B nor C gets it (lands in main).
+    texts.length = 0
+    expect(await routeInboundAnswer({ text: `#${ta} actually no`, modality: 'text' }, { mainConversationId: a.origin, onlyConversations: scope })).toBeNull()
+    expect(texts).toEqual([expect.stringMatching(new RegExp(`^↪ #${ta} \\(T83 n2-a\\) is already closed`))])
+    for (const x of [b, c]) expect(await activeSegs(x.ws.conversationId)).toEqual([])
+    // …even with ONE question open (before, a non-matching tag answered the only one).
+    await patchWorkstream(c.ws.id, { state: 'running', attention: null })
+    expect(await routeInboundAnswer({ text: `#${ta} no`, modality: 'text' }, { mainConversationId: a.origin, onlyConversations: scope })).toBeNull()
+    expect(await activeSegs(b.ws.conversationId)).toEqual([])
+    // Past the reuse window the old tag is just unknown again (the one open question takes the text).
+    await useDb().execute(sql`update workstream_question_tags set issued_at = now() - interval '8 days' where tag = ${ta} and workstream_id = ${a.ws.id}::uuid`)
+    expect(await routeInboundAnswer({ text: `#${ta} hello`, modality: 'text' }, { mainConversationId: a.origin, onlyConversations: scope })).toMatchObject({ workstreamId: b.ws.id })
+    for (const x of [a, b, c]) await controlWorkstream({ workstreamId: x.ws.id, action: 'cancel' })
   })
 })

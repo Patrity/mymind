@@ -73,6 +73,7 @@ afterAll(async () => {
   await db.delete(workspaces).where(eq(workspaces.ns, NS))
   if (convIds.length) {
     await db.delete(agentInbox).where(inArray(agentInbox.conversationId, convIds))
+    await db.execute(sql`delete from workstream_question_tags where workstream_id in (select id from workstreams where conversation_id in (${sql.join(convIds.map(c => sql`${c}::uuid`), sql`, `)}))`)
     await db.delete(workstreams).where(inArray(workstreams.conversationId, convIds))
     await db.delete(agentRuns).where(inArray(agentRuns.conversationId, convIds))
     await db.delete(conversationMessages).where(inArray(conversationMessages.conversationId, convIds))
