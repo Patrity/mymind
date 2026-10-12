@@ -353,6 +353,10 @@ describe('I1: work started from a tainted run starts tainted', () => {
     const u = unv.result as { id: string; conversationId: string }
     convIds.push(u.conversationId)
     expect(await getWorkstream(u.id)).toMatchObject({ tainted: false, taintSources: [] })
+    // Defence in depth: startWorkstream itself keeps only the persisted kinds.
+    const direct = await startWorkstream({ goal: 'judge-sticky I1 direct', taint: ['unverified', 'workspace'] }, { kick: false })
+    convIds.push(direct.conversationId)
+    expect(await getWorkstream(direct.id)).toMatchObject({ tainted: false, taintSources: [] })
     // A clean run starts clean.
     const clean = await startWorkstreamTool.handler({ goal: 'judge-sticky I1 clean' }, { signal: new AbortController().signal, isTainted: () => false, taint: () => ({ sources: [], flags: [] }) })
     const c = clean.result as { id: string; conversationId: string }
