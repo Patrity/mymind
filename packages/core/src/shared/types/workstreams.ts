@@ -75,6 +75,10 @@ export interface WorkstreamDTO {
   parentId: string | null
   /** A child's `subagents` model label (null = the default). */
   modelLabel: string | null
+  /** Cycle 83 final fix wave (C2): a CHILD's model as it resolves now — the label of the head of its
+   *  chain (its label's model, else the first `subagents` model, else `reasoning`'s); null otherwise
+   *  or when the AI config cannot be read. */
+  resolvedModel: string | null
   workspaceMode: WorkspaceMode
   /** A coordinator's tree budget (its children's steps — final fix wave I1) and its rolled-up use
    *  (own + every child); null otherwise. */

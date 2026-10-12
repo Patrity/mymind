@@ -35,14 +35,14 @@ export function treeBudgetOf(row: Pick<WorkstreamRow, 'treeBudget'>): TreeBudget
 
 /** `childIds`: the coordinator's children (workstreamDTOs/workstreamDTO load them); `childCount` how
  *  many it has in all (the list embeds only some — listChildrenEmbedded). */
-export function toWorkstreamDTO(r: WorkstreamRow, childIds: string[] = [], childCount = childIds.length): WorkstreamDTO {
+export function toWorkstreamDTO(r: WorkstreamRow, childIds: string[] = [], childCount = childIds.length, resolvedModel: string | null = null): WorkstreamDTO {
   return {
     id: r.id, conversationId: r.conversationId, originConversationId: r.originConversationId,
     goal: r.goal, state: r.state, toolsets: r.toolsets, budget: budgetOf(r), used: usedOf(r),
     attention: (r.attention as WorkstreamAttention | null) ?? null, summary: r.summary, failureReason: r.failureReason,
     currentRunId: r.currentRunId,
     createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(), finishedAt: r.finishedAt?.toISOString() ?? null,
-    parentId: r.parentId, modelLabel: r.modelLabel, workspaceMode: r.workspaceMode,
+    parentId: r.parentId, modelLabel: r.modelLabel, resolvedModel: r.isChild ? resolvedModel : null, workspaceMode: r.workspaceMode,
     treeBudget: treeBudgetOf(r), treeUsed: r.treeUsed ? usedOf({ used: r.treeUsed }) : null,
     childIds, childCount, tainted: r.tainted, isChild: r.isChild
   }
@@ -58,10 +58,35 @@ export async function childIdsOf(parentIds: string[]): Promise<Map<string, strin
   return out
 }
 
-/** DTOs with their children's ids filled in. */
+/**
+ * Final fix wave (C2): each CHILD's model as it resolves now (pools.ts childChainFrom — the model its
+ * next segment is pooled on and tries first), by row id. One config read; one resolution per label.
+ * Empty when the config cannot be read (the UI then shows the label, or "default model").
+ */
+export async function childModelLabels(rows: WorkstreamRow[]): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>()
+  const kids = rows.filter(r => r.isChild)
+  if (!kids.length) return out
+  try {
+    const [{ loadConfig }, { childChainFrom }] = await Promise.all([import('../../ai/registry/store'), import('../runtime/pools')])
+    const doc = await loadConfig()
+    const byLabel = new Map<string | null, string | null>()
+    for (const k of kids) {
+      if (!byLabel.has(k.modelLabel)) {
+        let label: string | null = null
+        try { label = childChainFrom(doc, k.modelLabel)[0]?.label ?? null } catch { /* unresolvable: none */ }
+        byLabel.set(k.modelLabel, label)
+      }
+      out.set(k.id, byLabel.get(k.modelLabel) ?? null)
+    }
+  } catch { /* no config: leave them unresolved */ }
+  return out
+}
+
+/** DTOs with their children's ids (and a child's resolved model) filled in. */
 export async function workstreamDTOs(rows: WorkstreamRow[]): Promise<WorkstreamDTO[]> {
-  const kids = await childIdsOf(rows.filter(r => !r.isChild).map(r => r.id))
-  return rows.map(r => toWorkstreamDTO(r, kids.get(r.id) ?? []))
+  const [kids, models] = await Promise.all([childIdsOf(rows.filter(r => !r.isChild).map(r => r.id)), childModelLabels(rows)])
+  return rows.map(r => toWorkstreamDTO(r, kids.get(r.id) ?? [], undefined, models.get(r.id) ?? null))
 }
 export async function workstreamDTO(row: WorkstreamRow): Promise<WorkstreamDTO> {
   return (await workstreamDTOs([row]))[0]!

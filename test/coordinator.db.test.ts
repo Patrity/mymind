@@ -1690,4 +1690,17 @@ describe('final fix wave', () => {
     expect(await sweepLeftoverReports({ onlyConversations: [ws.conversationId] })).toBe(0)
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
+
+  it('C2: a child\'s DTO names the model it resolves to now (its pool key\'s model), a coordinator\'s none', async () => {
+    const { childChain, segmentPrimaryModelId } = await import('@mymind/core/lib/agent/runtime/pools')
+    const { ws } = await idleCoordinator('c2')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 c2 child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    const head = await childChain(null).then(c => c[0] ?? null, () => null)
+    const dto = await workstreamDTO(kid)
+    expect(dto.resolvedModel).toBe(head?.label ?? null)
+    if (head) expect(head.modelDefId).toBe(await segmentPrimaryModelId(kid))   // the same model it is pooled on
+    expect((await workstreamDTO((await getWorkstream(ws.id))!)).resolvedModel).toBeNull()
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
 })

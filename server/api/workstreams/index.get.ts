@@ -1,4 +1,4 @@
-import { listChildrenEmbedded, listWorkstreams, toWorkstreamDTO } from '@mymind/core/lib/agent/workstreams/store'
+import { childModelLabels, listChildrenEmbedded, listWorkstreams, toWorkstreamDTO } from '@mymind/core/lib/agent/workstreams/store'
 import { CHILDREN_IN_LIST, type WorkstreamDTO, type WorkstreamState } from '@mymind/core/shared/types/workstreams'
 
 /** Upper bound for `?limit` (a bad or huge value never becomes an unbounded scan). */
@@ -22,10 +22,12 @@ export default defineEventHandler(async (event) => {
   const top = await listWorkstreams({ states, limit: Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), MAX_LIMIT) : MAX_LIMIT, topLevel: true })
   const { byParent, counts } = await listChildrenEmbedded(top.filter(r => !r.isChild).map(r => r.id), CHILDREN_IN_LIST)
   const out: WorkstreamDTO[] = []
+  // Final fix wave (C2): each child's resolved model (an orphaned child listed at the top level too).
+  const models = await childModelLabels([...top, ...[...byParent.values()].flat()])
   for (const r of top) {
     const kids = byParent.get(r.id) ?? []
-    out.push(toWorkstreamDTO(r, kids.map(k => k.id), counts.get(r.id) ?? 0))
+    out.push(toWorkstreamDTO(r, kids.map(k => k.id), counts.get(r.id) ?? 0, models.get(r.id) ?? null))
   }
-  for (const r of top) for (const k of byParent.get(r.id) ?? []) out.push(toWorkstreamDTO(k))
+  for (const r of top) for (const k of byParent.get(r.id) ?? []) out.push(toWorkstreamDTO(k, [], 0, models.get(k.id) ?? null))
   return out
 })

@@ -211,7 +211,8 @@ export function hiddenChildren(node: Pick<WorkstreamNode, 'childCount' | 'childr
   return Math.max(0, node.childCount - (node.children?.length ?? 0))
 }
 
-/** A child's model as the panel shows it: its `subagents` label, or the default resolution. */
-export function childModelLabel(ws: Pick<WorkstreamDTO, 'modelLabel'>): string {
-  return ws.modelLabel ?? 'default model'
+/** A child's model as the panel shows it: the model it resolves to now (final fix wave C2 — the
+ *  default resolution named, or the fallback when its label left `subagents`), else its label. */
+export function childModelLabel(ws: Pick<WorkstreamDTO, 'modelLabel' | 'resolvedModel'>): string {
+  return ws.resolvedModel ?? ws.modelLabel ?? 'default model'
 }

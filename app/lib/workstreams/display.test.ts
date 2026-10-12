@@ -182,7 +182,7 @@ const dto = (o: Partial<WorkstreamDTO>): WorkstreamDTO => ({
   id: ID, conversationId: ID, originConversationId: null, goal: 'g', state: 'running', toolsets: [],
   budget: { maxSteps: 200, maxWallMs: 3_600_000 }, used: { ...ZERO_USED }, attention: null, summary: null, failureReason: null,
   currentRunId: null, createdAt: '2026-10-12T00:00:00Z', updatedAt: '2026-10-12T00:00:00Z', finishedAt: null,
-  parentId: null, modelLabel: null, workspaceMode: 'own', treeBudget: null, treeUsed: null, childIds: [], childCount: 0, isChild: false, tainted: false, ...o
+  parentId: null, modelLabel: null, resolvedModel: null, workspaceMode: 'own', treeBudget: null, treeUsed: null, childIds: [], childCount: 0, isChild: false, tainted: false, ...o
 })
 
 describe('nestWorkstreams', () => {
@@ -212,7 +212,10 @@ describe('nestWorkstreams', () => {
 
 describe('childModelLabel', () => {
   it('falls back to the default resolution', () => {
-    expect(childModelLabel({ modelLabel: 'fast' })).toBe('fast')
-    expect(childModelLabel({ modelLabel: null })).toBe('default model')
+    expect(childModelLabel({ modelLabel: 'fast', resolvedModel: null })).toBe('fast')
+    expect(childModelLabel({ modelLabel: null, resolvedModel: null })).toBe('default model')
+    // C2: the model it resolves to now is named instead of "default model".
+    expect(childModelLabel({ modelLabel: null, resolvedModel: 'Qwen 32B' })).toBe('Qwen 32B')
+    expect(childModelLabel({ modelLabel: 'gone', resolvedModel: 'Qwen 32B' })).toBe('Qwen 32B')
   })
 })
