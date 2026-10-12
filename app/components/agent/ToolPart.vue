@@ -4,6 +4,8 @@ import { approvalFor, type PendingApprovals } from '~/lib/agent/approvals'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/components/ai-elements/tool'
 import { toolTitle, isRunning } from '~/lib/agent/render'
 import { startedWorkstream } from '~/lib/workstreams/display'
+import { autoApprovalNote } from '~/lib/agent/judge-display'
+import type { OutputWarningDTO } from '@mymind/core/lib/agent/judge/types'
 
 const props = defineProps<{
   part: Extract<AgentUIPart, { type: 'dynamic-tool' }>
@@ -11,6 +13,8 @@ const props = defineProps<{
   undone?: boolean
   /** Every pending approval's details, by requestId — this part renders only its OWN entry. */
   approvals?: PendingApprovals | null
+  /** Cycle 84: the output guard flagged this call's result (its `data-output_warning` part). */
+  warning?: OutputWarningDTO | null
 }>()
 const emit = defineEmits<{
   undo: [undoToken: string]
@@ -23,6 +27,8 @@ const running = computed(() => isRunning(props.part))
 const pendingPart = computed(() => (props.part.state === 'approval-requested' ? props.part : null))
 // A workstream this call started gets its compact card + link (cycle 81 spec §5.5).
 const started = computed(() => (envelope.value ? startedWorkstream(props.part.toolName, props.part.input, envelope.value.value) : null))
+// Cycle 84: "⚖ auto-approved (0.94): <reason>" — the judge ran this call without Tony.
+const autoNote = computed(() => autoApprovalNote(envelope.value?.approval))
 const approvalDetails = computed(() => (
   pendingPart.value ? approvalFor(props.approvals, pendingPart.value.approval.id) : null
 ))
@@ -51,6 +57,17 @@ const approvalDetails = computed(() => (
       />
     </ToolContent>
   </Tool>
+  <p
+    v-if="autoNote"
+    class="-mt-2 mb-3 text-xs text-success break-words"
+    data-testid="judge-auto-note"
+  >
+    {{ autoNote }}
+  </p>
+  <AgentOutputWarningChip
+    v-if="warning"
+    :warning="warning"
+  />
   <div
     v-if="envelope?.undoToken"
     class="-mt-3 mb-3 flex justify-end"

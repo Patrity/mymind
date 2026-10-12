@@ -18,6 +18,16 @@ export const STATE_META: Record<WorkstreamState, { label: string; color: Color; 
   cancelled: { label: 'cancelled', color: 'neutral', icon: 'i-lucide-ban' }
 }
 
+/** Cycle 84: a running workstream whose call the judge is still deciding on (spec §2.1) — not a new
+ *  state, a detail of `running`. */
+export const EVALUATING_META = { label: 'evaluating', color: 'info', icon: 'i-lucide-scale' } as const satisfies { label: string; color: Color; icon: string }
+
+/** The badge for a workstream: its state, or "evaluating" while running with the judge deciding. */
+export function stateMeta(ws: { state: WorkstreamState; stateDetail?: 'evaluating' | null }): { label: string; color: Color; icon: string } {
+  if (ws.state === 'running' && ws.stateDetail === 'evaluating') return EVALUATING_META
+  return STATE_META[ws.state]
+}
+
 export function isTerminal(state: WorkstreamState): boolean {
   return state === 'done' || state === 'failed' || state === 'cancelled'
 }

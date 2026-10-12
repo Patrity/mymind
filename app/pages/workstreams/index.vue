@@ -10,7 +10,7 @@
  */
 import type { TableColumn } from '@nuxt/ui'
 import { BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET } from '@mymind/core/shared/types/workstreams'
-import { BUDGET_NOTES, STATE_META, childModelLabel, elapsedMs, formatCost, formatDuration, hiddenChildren, nestWorkstreams, type WorkstreamNode } from '~/lib/workstreams/display'
+import { BUDGET_NOTES, stateMeta, childModelLabel, elapsedMs, formatCost, formatDuration, hiddenChildren, nestWorkstreams, type WorkstreamNode } from '~/lib/workstreams/display'
 
 definePageMeta({ title: 'Workstreams' })
 
@@ -115,11 +115,11 @@ async function create() {
       >
         <template #state-cell="{ row }">
           <UBadge
-            :color="STATE_META[row.original.state].color"
-            :icon="STATE_META[row.original.state].icon"
+            :color="stateMeta(row.original).color"
+            :icon="stateMeta(row.original).icon"
             variant="subtle"
             size="sm"
-            :label="STATE_META[row.original.state].label"
+            :label="stateMeta(row.original).label"
             :data-testid="`ws-state-${row.original.id}`"
           />
         </template>

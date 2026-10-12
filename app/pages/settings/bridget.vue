@@ -52,6 +52,9 @@ watch(mode, async (next) => {
     <div class="border-t border-default pt-6">
       <SettingsAgentTimezone />
     </div>
+    <div class="border-t border-default pt-6">
+      <SettingsJudgeSettings />
+    </div>
     <div
       class="border-t border-default pt-6 flex flex-col gap-3"
       data-testid="self-improvement"

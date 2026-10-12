@@ -6,7 +6,7 @@ import { framesOnOpen, reconnectDelay, RECONNECTING_AFTER, sessionExpired } from
 import { authClient } from '../lib/auth-client'
 import { createClientTurns } from '../lib/agent/turn-stream'
 import { epochDividers } from '../lib/agent/dividers'
-import { addApproval, removeApproval, type PendingApprovals } from '../lib/agent/approvals'
+import { addApproval, removeApproval, resolveApproval, setApprovalVerdict, type PendingApprovals } from '../lib/agent/approvals'
 import type { AttachmentRef } from '@mymind/core/shared/types/conversation'
 import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 
@@ -412,7 +412,8 @@ export function useVoice() {
         if (fx.state) state.value = fx.state
         if (fx.error) error.value = fx.error
         if (fx.approval) pendingApprovals.value = addApproval(pendingApprovals.value, fx.approval)
-        if (fx.approvalResolved) pendingApprovals.value = removeApproval(pendingApprovals.value, fx.approvalResolved)
+        if (fx.approvalVerdict) pendingApprovals.value = setApprovalVerdict(pendingApprovals.value, fx.approvalVerdict.requestId, fx.approvalVerdict.judge)
+        if (fx.approvalResolved) pendingApprovals.value = resolveApproval(pendingApprovals.value, fx.approvalResolved, fx.approvalAuto)
         if (fx.conversation) {
           conversationId.value = fx.conversation.id
           conversationTitle.value = fx.conversation.title

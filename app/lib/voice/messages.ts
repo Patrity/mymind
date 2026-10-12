@@ -1,8 +1,9 @@
 // Pure mapping of server WS JSON messages onto client effects. Kept out of
 // useVoice so the logic is testable without WebSocket/AudioContext mocks.
 import type { AgentMessageFrame } from '@mymind/core/shared/types/agent-ui'
+import type { ApprovalVerdictDTO, ToolApprovalNote } from '@mymind/core/lib/agent/judge/types'
 
-export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; allowlistable?: boolean; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null; cid?: string; run?: string; seq?: number }
+export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; allowlistable?: boolean; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null; cid?: string; run?: string; seq?: number; judge?: unknown; decidedBy?: string; auto?: unknown }
 
 // Frame types that belong to ONE conversation and must not be applied while viewing a
 // different one. Every hub-published JSON frame carries `cid` (server/lib/agent/runtime/
@@ -57,6 +58,10 @@ export interface MsgEffect {
   error?: string
   approval?: { requestId: string; tool: string; command: string; proposedPattern: string; allowlistable: boolean; title?: string }
   approvalResolved?: string // requestId that was settled server-side (timeout)
+  /** Cycle 84: the judge's state for an open card (`approval-verdict`) — the latest replaces it. */
+  approvalVerdict?: { requestId: string; judge: ApprovalVerdictDTO }
+  /** Cycle 84: `approval-resolved` decided by the judge — the card's "⚖ auto-approved" note. */
+  approvalAuto?: ToolApprovalNote
   /** The server lazily created a thread on this turn — id + its derived title. */
   conversation?: { id: string; title: string | null }
   /** This turn's rows are COMMITTED, and this is the thread they landed in. Sent immediately
@@ -135,8 +140,12 @@ export function mapServerMessage(
       }
     }
   }
+  if (m.type === 'approval-verdict' && m.requestId && isVerdictDTO(m.judge)) {
+    return { approvalVerdict: { requestId: m.requestId, judge: m.judge } }
+  }
   if (m.type === 'approval-resolved' && m.requestId) {
-    return { approvalResolved: m.requestId }
+    const auto = m.decidedBy === 'judge' && isApprovalNote(m.auto) ? m.auto : null
+    return { approvalResolved: m.requestId, ...(auto ? { approvalAuto: auto } : {}) }
   }
   // Sent once, when the first turn of a new thread creates the conversation row.
   if (m.type === 'conversation' && m.conversationId) {
@@ -233,4 +242,19 @@ export function createLeftThreads(): LeftThreads {
       unnamed = null
     }
   }
+}
+
+// Shape checks for the cycle 84 judge frames: a frame that does not look right is ignored rather
+// than rendered half-way (a malformed verdict must never read as "auto-approved").
+function isVerdictDTO(v: unknown): v is ApprovalVerdictDTO {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return typeof o.pending === 'boolean' && typeof o.autoPossible === 'boolean'
+    && (o.verdict === null || (typeof o.verdict === 'object' && Array.isArray((o.verdict as { reasons?: unknown }).reasons)))
+    && (o.rule === null || (typeof o.rule === 'object' && Array.isArray((o.rule as { reasons?: unknown }).reasons)))
+}
+function isApprovalNote(v: unknown): v is ToolApprovalNote {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return o.decidedBy === 'judge' && typeof o.confidence === 'number' && (o.reason === null || typeof o.reason === 'string')
 }

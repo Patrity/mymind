@@ -8,6 +8,7 @@
 <script setup lang="ts">
 import type { AgentUIPart } from '@mymind/core/shared/types/agent-ui'
 import { canApprove, type PendingApprovalDetails } from '~/lib/agent/approvals'
+import { autoApprovedLabel } from '~/lib/agent/judge-display'
 import { Confirmation, ConfirmationAction, ConfirmationActions, ConfirmationRequest, ConfirmationTitle } from '@/components/ai-elements/confirmation'
 
 
@@ -36,7 +37,10 @@ const inputJson = computed(() => JSON.stringify(props.part.input, null, 2))
 
 const approvable = computed(() => canApprove(props.part.toolName, props.details))
 
-const canRemember = computed(() => props.details?.allowlistable === true)
+const canRemember = computed(() => props.details?.allowlistable === true && !props.details.auto)
+
+// Cycle 84: the judge approved this call — the card stays until its result lands, with no buttons.
+const autoLabel = computed(() => (props.details?.auto ? autoApprovedLabel(props.details.auto) : null))
 
 // exec commands are one-liners whose long unbroken tokens (paths, flags) are better clipped
 // mid-token than left to overflow; every other tool's command (e.g. gmail_send's From/To/Cc/
@@ -48,6 +52,7 @@ function approve() {
   emit('approve', props.part.approval.id, { remember: canRemember.value && remember.value, pattern: pattern.value })
 }
 function deny() {
+  if (autoLabel.value) return
   emit('deny', props.part.approval.id)
 }
 </script>
@@ -64,19 +69,28 @@ function deny() {
     <ConfirmationRequest>
       <div class="flex flex-col gap-3">
         <ConfirmationTitle>
-          <span v-if="details">{{ details.title ?? 'Run this?' }}</span>
+          <span
+            v-if="autoLabel"
+            class="text-success"
+            data-testid="approval-auto"
+          >{{ autoLabel }}</span>
+          <span v-else-if="details">{{ details.title ?? 'Run this?' }}</span>
           <span v-else-if="approvable">Approve <code class="font-mono">{{ part.toolName }}</code>?</span>
           <span v-else data-testid="approval-details-unavailable">Details unavailable — deny <code class="font-mono">{{ part.toolName }}</code></span>
         </ConfirmationTitle>
         <!-- Never truncated (review I2): the card shows the WHOLE email body / description / note
              that will be sent, scrolling instead of cutting it off. -->
         <pre class="max-h-96 overflow-auto whitespace-pre-wrap rounded bg-elevated/60 p-2 text-xs font-mono" :class="wrapClass" data-testid="approval-command">{{ details ? details.command : inputJson }}</pre>
+        <AgentJudgeVerdict
+          v-if="details?.judge && !autoLabel"
+          :judge="details.judge"
+        />
         <div v-if="details && canRemember" class="flex flex-wrap items-center gap-2" data-testid="approval-always-allow">
           <UCheckbox v-model="remember" />
           <span class="text-sm text-muted">Always allow commands matching</span>
           <UInput v-model="pattern" :disabled="!remember" size="xs" class="max-w-xs flex-1 font-mono" />
         </div>
-        <ConfirmationActions>
+        <ConfirmationActions v-if="!autoLabel">
           <ConfirmationAction variant="outline" @click="deny">
             Deny
           </ConfirmationAction>

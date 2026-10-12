@@ -8,6 +8,7 @@
 // resolved the request server-side — Tony could approve an email he never saw. State is therefore
 // kept PER REQUEST (keyed by the approval's requestId = the UI part's `approval.id`), each card
 // renders from its own entry, and a non-exec card with no entry offers Deny only.
+import type { ApprovalVerdictDTO, ToolApprovalNote } from '@mymind/core/lib/agent/judge/types'
 
 export interface PendingApprovalDetails {
   requestId: string
@@ -19,6 +20,12 @@ export interface PendingApprovalDetails {
   /** Per-tool card heading (cycle 79 review m1) — e.g. gmail_send's "Send this email?". Falls
    *  back to the generic "Run this?" when absent. */
   title?: string
+  /** Cycle 84: the judge's latest state for this card (the `approval-verdict` frame) — a spinner
+   *  while pending, then risk / recommendation / reasons. Reasons are model output: plain text. */
+  judge?: ApprovalVerdictDTO
+  /** Cycle 84: the judge approved it (`approval-resolved` with `decidedBy: 'judge'`). The card
+   *  stays on screen as "⚖ auto-approved (0.94)" — no buttons — until the call's result lands. */
+  auto?: ToolApprovalNote
 }
 
 /** requestId → that request's details. A plain record (not a Map) so Vue tracks it deeply. */
@@ -36,6 +43,26 @@ export function removeApproval(state: PendingApprovals, requestId: string): Pend
   return rest
 }
 
+/** An `approval-verdict` frame: the latest replaces the earlier, on its OWN card only. A verdict for
+ *  a card this page never saw (or already resolved) is dropped — it must not resurrect one. */
+export function setApprovalVerdict(state: PendingApprovals, requestId: string, judge: ApprovalVerdictDTO): PendingApprovals {
+  const cur = state[requestId]
+  if (!cur || cur.auto) return state
+  return { ...state, [requestId]: { ...cur, judge } }
+}
+
+/** `approval-resolved` decided by the judge: keep the card, flipped to its auto-approved state. Any
+ *  other resolution (Tony, a timeout, a cancel) removes it as before. */
+export function resolveApproval(
+  state: PendingApprovals,
+  requestId: string,
+  auto?: ToolApprovalNote | null
+): PendingApprovals {
+  const cur = state[requestId]
+  if (cur && auto && auto.decidedBy === 'judge') return { ...state, [requestId]: { ...cur, auto } }
+  return removeApproval(state, requestId)
+}
+
 /** The details belonging to ONE card (its part's approval.id), or null. */
 export function approvalFor(state: PendingApprovals | null | undefined, requestId: string | undefined): PendingApprovalDetails | null {
   if (!state || !requestId) return null
@@ -46,6 +73,7 @@ export function approvalFor(state: PendingApprovals | null | undefined, requestI
  *  card even without details; every other dangerous tool's args (gmail_send's {account, draftId})
  *  say nothing about what will be sent, so without its details the only safe answer is Deny. */
 export function canApprove(toolName: string, details: PendingApprovalDetails | null): boolean {
+  if (details?.auto) return false // the judge already approved it — nothing left to decide
   return details !== null || toolName === 'exec'
 }
 
@@ -66,5 +94,6 @@ export function orphanApprovals(
       if (p.type === 'dynamic-tool' && p.state === 'approval-requested' && p.approval) onParts.add(p.approval.id)
     }
   }
-  return all.filter(a => !onParts.has(a.requestId))
+  // An auto-approved card is no longer waiting on anyone — never re-raise it on its own.
+  return all.filter(a => !a.auto && !onParts.has(a.requestId))
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET, RESUME_EXTENSION, ZERO_USED } from '@mymind/core/shared/types/workstreams'
 import {
-  BUDGET_NOTES, canCancel, canResume, childModelLabel, elapsedMs, eventDisplay, formatCost, formatDuration, hiddenChildren,
+  BUDGET_NOTES, EVALUATING_META, STATE_META, stateMeta, canCancel, canResume, childModelLabel, elapsedMs, eventDisplay, formatCost, formatDuration, hiddenChildren,
   nestWorkstreams, resumeAdds, resumeLabel, startedWorkstream
 } from './display'
 import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
@@ -217,5 +217,18 @@ describe('childModelLabel', () => {
     // C2: the model it resolves to now is named instead of "default model".
     expect(childModelLabel({ modelLabel: null, resolvedModel: 'Qwen 32B' })).toBe('Qwen 32B')
     expect(childModelLabel({ modelLabel: 'gone', resolvedModel: 'Qwen 32B' })).toBe('Qwen 32B')
+  })
+})
+
+describe('stateMeta (cycle 84: evaluating)', () => {
+  it('running with the judge deciding reads "evaluating"', () => {
+    expect(stateMeta({ state: 'running', stateDetail: 'evaluating' })).toBe(EVALUATING_META)
+    expect(EVALUATING_META).toMatchObject({ label: 'evaluating', color: 'info' })
+  })
+  it('otherwise the plain state — a stale detail on any other state is ignored', () => {
+    expect(stateMeta({ state: 'running', stateDetail: null })).toBe(STATE_META.running)
+    expect(stateMeta({ state: 'running' })).toBe(STATE_META.running)
+    expect(stateMeta({ state: 'attention', stateDetail: 'evaluating' })).toBe(STATE_META.attention)
+    expect(stateMeta({ state: 'done', stateDetail: 'evaluating' })).toBe(STATE_META.done)
   })
 })

@@ -20,7 +20,7 @@
  */
 import { toUIMessages } from '~/lib/agent/to-ui-messages'
 import { MessageResponse } from '@/components/ai-elements/message'
-import { STATE_META, canCancel, canResume, isTerminal, resumeAdds, resumeLabel } from '~/lib/workstreams/display'
+import { stateMeta, canCancel, canResume, isTerminal, resumeAdds, resumeLabel } from '~/lib/workstreams/display'
 
 definePageMeta({ title: 'Workstream' })
 
@@ -32,7 +32,7 @@ const { data: ws, error } = useWorkstream(id)
 watch(error, (err) => {
   if (err) toast.add({ color: 'error', title: 'Could not load the workstream', description: workstreamErrorOf(err).message })
 })
-const meta = computed(() => (ws.value ? STATE_META[ws.value.state] : null))
+const meta = computed(() => (ws.value ? stateMeta(ws.value) : null))
 
 // ── Coordinator / child (cycle 83) ───────────────────────────────────────
 const isCoordinator = computed(() => !!ws.value && (!!ws.value.treeBudget || ws.value.childCount > 0))
@@ -267,6 +267,18 @@ async function send() {
         >
           The budget is used up. Resume gives it {{ [adds.steps ? `${adds.steps} more steps` : '', adds.minutes ? `${adds.minutes} more minutes of active time` : ''].filter(Boolean).join(' and ') }}.
         </p>
+        <!-- Cycle 84: the judge is deciding whether a call needs Tony (Smart Approvals). -->
+        <p
+          v-if="ws.state === 'running' && ws.stateDetail === 'evaluating'"
+          class="flex items-center gap-1.5 text-xs text-muted"
+          data-testid="workstream-evaluating"
+        >
+          <UIcon
+            name="i-lucide-loader-circle"
+            class="size-3.5 animate-spin text-info"
+          />
+          ⚖ The judge is checking a call — Smart Approvals may run it without you.
+        </p>
         <!-- What it is waiting on. The question / approval text is model-written → hardened. -->
         <UAlert
           v-if="ws.state === 'attention' && ws.attention"
@@ -281,6 +293,11 @@ async function send() {
               :key="`att-${ws.id}-${ws.attention.requestId ?? ws.updatedAt}`"
               :content="ws.attention.text"
               class="text-sm text-default"
+            />
+            <AgentJudgeVerdict
+              v-if="ws.attention.kind === 'approval' && ws.attention.judge"
+              :judge="ws.attention.judge"
+              class="mt-2"
             />
             <p class="mt-1 text-xs text-muted">
               {{ ws.attention.kind === 'approval' ? 'Approve or deny the card in the log below.' : 'Answer in the box at the bottom.' }}

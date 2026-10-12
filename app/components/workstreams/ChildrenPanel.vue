@@ -5,7 +5,7 @@
 // Cancel are the child's own control routes — the same ones its detail page uses (steer needs a
 // session). The goal is the coordinator's own text and renders as an escaped interpolation.
 import { committedOf, reservationOf, type WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
-import { STATE_META, canCancel, childModelLabel, formatDuration, isTerminal } from '~/lib/workstreams/display'
+import { stateMeta, canCancel, childModelLabel, formatDuration, isTerminal } from '~/lib/workstreams/display'
 
 const props = defineProps<{ coordinator: WorkstreamDTO }>()
 
@@ -117,11 +117,11 @@ async function sendSteer(k: WorkstreamDTO) {
           class="size-4 shrink-0 text-dimmed"
         />
         <UBadge
-          :color="STATE_META[k.state].color"
-          :icon="STATE_META[k.state].icon"
+          :color="stateMeta(k).color"
+          :icon="stateMeta(k).icon"
           variant="subtle"
           size="sm"
-          :label="STATE_META[k.state].label"
+          :label="stateMeta(k).label"
           data-testid="child-state"
         />
         <ULink

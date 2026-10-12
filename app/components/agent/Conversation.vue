@@ -10,6 +10,7 @@ import { Conversation, ConversationContent, ConversationScrollButton } from '@/c
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning'
 import { subagentSteps } from '~/lib/agent/render'
+import { outputWarningFor } from '~/lib/agent/judge-display'
 import { eventDisplay } from '~/lib/workstreams/display'
 import type { MessageDeliveryDTO } from '@mymind/core/shared/types/conversation'
 import { deliveryBadge, summarizeDeliveries } from '~/lib/channels/delivery-badge'
@@ -268,6 +269,7 @@ function coordinatorEvent(id: string): EventOf<'coordinator'> | null {
                   :steps="subagentSteps(m, p.toolCallId)"
                   :undone="undone?.has(p.toolCallId)"
                   :approvals="approvals"
+                  :warning="outputWarningFor(m, p.toolCallId)"
                   @undo="(t: string) => emit('undo', p.toolCallId, t)"
                   @approve="(id: string, opts) => emit('approve', id, opts)"
                   @deny="(id: string) => emit('deny', id)"
