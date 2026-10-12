@@ -781,6 +781,24 @@ describe('coordinator: taint, approvals, workspaces, cascade', () => {
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 
+  it('cycle 84 round 2 N2: a suspicious child the LLM cleared is cached — the next report does not classify the same words again', async () => {
+    _resetChildChecks()
+    const { ws } = await idleCoordinator('n2-cache')
+    const r = await spawnChildren(ws.id, [{ goal: 'T84 n2 cache' }], { labels: [], kick: false })
+    const [kid] = r.children
+    await patchWorkstream(kid!.id, { summary: "Summarised the OWASP page: attacks such as 'ignore all previous instructions' are the top risk." })
+    const call = vi.fn(async () => ({ injection: false, confidence: 0.95, reasons: [] }))
+    const guard = { enabled: async () => true, chain: async () => [{ label: 'J' }] as never, call: call as never }
+    expect(await childReport([(await getWorkstream(kid!.id))!], 'one', { guard })).toContain('OWASP page')
+    expect(await childReport([(await getWorkstream(kid!.id))!], 'two', { guard })).toContain('OWASP page')
+    expect(call).toHaveBeenCalledTimes(1)
+    // New words → classified again.
+    await patchWorkstream(kid!.id, { summary: "Summarised it again: 'ignore all previous instructions' is the classic example." })
+    await childReport([(await getWorkstream(kid!.id))!], 'three', { guard })
+    expect(call).toHaveBeenCalledTimes(2)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
   it('cycle 84 round 2 N4: a withheld child that asks a question is reported as BLOCKED on a withheld question', async () => {
     _resetChildChecks()
     const { ws } = await idleCoordinator('n4-question')

@@ -283,6 +283,11 @@ describe('the classifier prompt', () => {
     }
   })
 
+  it('excerpt never exceeds a small budget either (head and tail alone would overrun it)', () => {
+    const t = 'x'.repeat(30_000)
+    expect(excerpt(t, [15_000], 5000).length).toBeLessThanOrEqual(5000)
+  })
+
   it('excerpt never splits a surrogate pair', () => {
     const t = '😀'.repeat(10_000)
     const e = excerpt(t, [5_001])
