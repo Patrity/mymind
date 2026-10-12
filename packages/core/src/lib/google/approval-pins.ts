@@ -18,6 +18,9 @@ export interface NoncePinStore<T> {
   remember(nonce: string | undefined, value: T): void
   /** Returns THIS nonce's live pin and consumes it (one-shot) regardless of outcome. */
   take(nonce: string | undefined): T | undefined
+  /** Reads THIS nonce's live pin WITHOUT consuming it (cycle 84: the judge's rule tier compares the
+   *  draft revision it checked with the one the card pinned). */
+  peek(nonce: string | undefined): T | undefined
   /** Test seam: forget every pin, as a restart would. */
   clear(): void
 }
@@ -42,6 +45,11 @@ export function createNoncePinStore<T>(ttlMs: number = APPROVAL_PIN_TTL_MS): Non
       pins.delete(nonce)
       if (!pin || pin.expiresAt <= now) return undefined
       return pin.value
+    },
+    peek(nonce) {
+      if (!nonce) return undefined
+      const pin = pins.get(nonce)
+      return pin && pin.expiresAt > Date.now() ? pin.value : undefined
     },
     clear() {
       pins.clear()

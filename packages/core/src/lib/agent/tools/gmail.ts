@@ -100,6 +100,13 @@ const sendPins = createNoncePinStore<string>()
 const rememberPin = (nonce: string, messageId: string): void => sendPins.remember(nonce, messageId)
 const takePin = (nonce: string): string | undefined => sendPins.take(nonce)
 
+/** Cycle 84 (Task 1 fix round 1, R3): the draft message id gmail_send's card pinned for this
+ *  approval nonce, WITHOUT consuming it — the judge's rule tier must have checked the recipients of
+ *  exactly this revision (bindGmailRuleToPin). undefined = no live pin. */
+export function pinnedSendMessageId(nonce: string | undefined): string | undefined {
+  return sendPins.peek(nonce)
+}
+
 /** Test seam: forget every pin, as a restart would. */
 export function _resetSendPins(): void {
   sendPins.clear()

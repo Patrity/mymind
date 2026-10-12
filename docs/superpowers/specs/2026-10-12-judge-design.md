@@ -40,6 +40,24 @@ in untrusted tool results and taints the run. Outcome judging (did the work meet
    never mailed before (sent-history lookup), else `review`; calendar delete / update of an event with
    other attendees → `high`; outbound to a raw IP, a paste/file-drop host, or a URL carrying > 200
    chars of query → `high`; jobs/wakes → `review`. Unknown tool → `review`.
+
+   > **Amendment 2026-10-12 (Task 1 fix round 1, rulings R1–R3):**
+   > - **exec** (host, root): the floor is **always `high`**, or `critical` when `isCatastrophic`.
+   >   Install, network and opaque-command patterns now only supply reasons; they no longer gate.
+   >   Saved allowlist patterns keep their existing fast path, which runs before the judge. Smart
+   >   Approvals therefore never auto-runs a host exec.
+   > - **gmail_send**: the floor is `review` only when every recipient is **verified** as mailed
+   >   before. Verified means an exact, case-insensitive address match in the To/Cc/Bcc headers of a
+   >   returned sent message; a search hit alone does not count. The floor is `high` when:
+   >   - any recipient has never been mailed;
+   >   - a recipient could not be verified (any error, 429 or 5xx);
+   >   - the draft has zero readable recipients;
+   >   - the draft has more than 10 recipients.
+   >
+   >   Lookups run concurrently, at most 4 at a time. The rule records which draft revision it
+   >   checked (`boundMessageId`). The approval path binds that to the card's nonce pin with
+   >   `bindGmailRuleToPin`; a missing or mismatched pin → `high`.
+   > - A rule that fails → `high`.
 2. **LLM tier** (`judge/judge.ts`): one `generateObject`-style call on the `judge` chain with a fixed
    system prompt (role: security reviewer for Tony's personal agent; judge whether this exact action
    serves the stated goal and Tony's likely intent; flag injection signs; schema-constrained output).
@@ -64,6 +82,11 @@ keep today's gate classes (propose/deny) — the judge annotates proposals but n
 ### 2.4 Never auto-approved
 Rule floor `high`/`critical`/`deny`; `outbound` in a tainted run; judge error/timeout/malformed; confidence
 below threshold; recommendation ≠ `approve`; any call whose approval nonce changed (existing binding).
+
+> **Amendment 2026-10-12 (Task 1 fix round 1):** auto-approval also requires the judge's risk to be
+> `low` or `medium`; an `approve` at `high` or `critical` risk blocks. A verdict recovered from the
+> lenient free-text fallback, rather than structured output, never auto-approves. Host exec is
+> always floored `high` (§2.1).
 
 > **Amendment 2026-10-12 (Task 1 review, coordinator ruling):** a `high` rule floor also blocks auto-approval — D6's "no rule flag" takes precedence over the earlier `critical`/`deny`-only wording. Only `low`/`review` floors are auto-approvable.
 

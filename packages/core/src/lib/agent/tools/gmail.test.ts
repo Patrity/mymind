@@ -23,7 +23,7 @@ vi.mock('../jobs/timezone', () => ({
   serverTimezone: () => 'UTC'
 }))
 
-import { gmailTools, gmailDeps, gmailSendTool, _resetSendPins } from './gmail'
+import { gmailTools, gmailDeps, gmailSendTool, _resetSendPins, pinnedSendMessageId } from './gmail'
 import { buildAiTools } from '../ai-tools'
 import { withSpan } from '../../observability/record'
 import { resetPeopleWarmup } from '../../google/people'
@@ -636,6 +636,21 @@ describe('gmail_send', () => {
     expect(posted).toEqual({ id: 'd-happy' })
     expect(out.undo).toBeUndefined()
     expect(fetch.calls.filter(c => c.includes('/drafts/send'))).toEqual([`POST ${G}/drafts/send`])
+  })
+
+  it('cycle 84 R3: pinnedSendMessageId reads THIS nonce\'s pin without consuming it', async () => {
+    useRoutes({
+      ...draftRoute('d-peek', [{ name: 'To', value: 'ann@a.com' }], 'hello'),
+      [`POST ${G}/drafts/send`]: () => ({ json: { id: 'msg1', threadId: 'thr1' } })
+    })
+    await describeSend({ account: 'personal', draftId: 'd-peek' }, 'nonce-peek')
+    expect(pinnedSendMessageId('nonce-peek')).toBe('d-peek-m')
+    expect(pinnedSendMessageId('nonce-peek')).toBe('d-peek-m')
+    expect(pinnedSendMessageId('other-nonce')).toBeUndefined()
+    expect(pinnedSendMessageId(undefined)).toBeUndefined()
+    // Peeking left the pin for the handler, which still consumes it once.
+    expect((await runSend({ account: 'personal', draftId: 'd-peek' }, 'nonce-peek')).result).toMatchObject({ sent: true })
+    expect(pinnedSendMessageId('nonce-peek')).toBeUndefined()
   })
 
   it('I2: a draft edited after approval is refused — the handler never sends', async () => {

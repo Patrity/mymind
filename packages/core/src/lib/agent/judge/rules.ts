@@ -1,9 +1,13 @@
 // Cycle 84 (spec §2.1 step 1, D4): the judge's instant RULE TIER. Deterministic checks per tool give
-// a floor — `critical`/`deny` are never auto-approvable, whatever the LLM judge says; `high` flags
-// the call (for the judge's prompt, the card and Tony). Everything here is pure except gmail_send's
-// recipient check, which needs the account's sent history — injected through `ctx.gmail` (the
-// default, sent-history.ts, asks Gmail). Any failure in that lookup degrades to `review`, never to
-// an exception and never to `low`.
+// a floor — `high`/`critical`/`deny` are never auto-approvable (C1), whatever the LLM judge says.
+// Everything here is pure except gmail_send's recipient check, which needs the account's sent
+// history — injected through `ctx.gmail` (the default, sent-history.ts, asks Gmail). Anything that
+// cannot be verified there is `high` (fix round 1, R2), never an exception and never `review`.
+//
+// Host `exec` (root on the MyMind LXC) is ALWAYS at least `high` (fix round 1, R1): a regex can't
+// reliably tell a network/install command from a harmless one (`/usr/bin/curl`, `bash -c '…'`,
+// `c''url`), so the patterns below only supply REASONS for the card and the judge, never the gate.
+// Saved allowlist patterns keep their own fast-path in exec.autoApprove, before the judge.
 import { posix } from 'node:path'
 import { isCatastrophic } from '../../exec/outbound'
 import type { RuleFloor, RuleVerdict } from './types'
@@ -14,10 +18,17 @@ export interface RuleTool {
   outbound?: boolean
 }
 
+/** The draft revision a recipient check read: its message id (Gmail mints a new one per edit) and
+ *  every To/Cc/Bcc address, lowercased. */
+export interface DraftRecipients {
+  messageId: string | null
+  addresses: string[]
+}
+
 /** gmail_send's sent-history lookup (sent-history.ts is the Gmail-backed default). */
 export interface GmailHistoryLookup {
-  /** Every To/Cc/Bcc address of the draft that would be sent, lowercased. */
-  recipients(account: string, draftId: string): Promise<string[]>
+  /** The draft that would be sent: its revision id and recipients. */
+  recipients(account: string, draftId: string): Promise<DraftRecipients>
   /** Has this account ever sent mail to `address`? */
   mailedBefore(account: string, address: string): Promise<boolean>
 }
@@ -63,7 +74,10 @@ const INSTALL: RegExp[] = [
 ]
 
 /** Commands that reach the network. */
-const NETWORK = /(?:^|[\s;&|(`$])(?:sudo\s+)?(curl|wget|nc|ncat|netcat|ssh|scp|sftp|rsync|ftp|telnet|socat|nmap|aria2c)(?=\s|$)/i
+const NETWORK = /(?:^|[\s;&|(`$'"/])(?:sudo\s+)?(curl|wget|nc|ncat|netcat|ssh|scp|sftp|rsync|ftp|telnet|socat|nmap|aria2c)(?=[\s'"]|$)/i
+/** A command whose real work is hidden from the patterns: a nested shell script, eval, command
+ *  substitution as the command word, or quote / backslash splicing inside a word. */
+const OPAQUE = /\b(?:ba|z|da|k)?sh\s+-\w*c\b|\beval\b|(?:^|[;&|]\s*)(?:\$\(|`)|\w(?:''|""|\\)\w/
 const GIT_NETWORK = /\bgit\b[^;&|\n]*?\s(?:clone|fetch|pull|push|ls-remote|submodule\s+update)\b/i
 
 /** Where exec writes are expected (the default cwd is the workspace). */
@@ -113,15 +127,19 @@ export function execWriteTargets(command: string, cwd?: string): string[] {
   return out
 }
 
-/** Pure: the exec rule (spec §2.1): catastrophic → critical; installs / network / writes outside
- *  the workspace and /tmp → high; otherwise review. */
+/** The floor every host exec call starts from (R1). */
+export const EXEC_BASE_REASON = 'runs as root on the MyMind host'
+
+/** Pure: the exec rule (spec §2.1 as amended 2026-10-12, R1): always at least `high`; catastrophic →
+ *  critical. Installs, network, opaque commands and writes outside the workspace and /tmp add reasons. */
 export function execRule(command: string, cwd?: string): RuleVerdict {
-  const findings: Finding[] = []
+  const findings: Finding[] = [{ floor: 'high', reason: EXEC_BASE_REASON }]
   if (isCatastrophic(command)) findings.push({ floor: 'critical', reason: 'catastrophic command (wipes, formats or powers off the host)' })
   if (INSTALL.some(re => re.test(command))) findings.push({ floor: 'high', reason: 'installs or runs a downloaded package' })
   const net = NETWORK.exec(command)
   if (net) findings.push({ floor: 'high', reason: `reaches the network (${net[1]!.toLowerCase()})` })
   else if (GIT_NETWORK.test(command)) findings.push({ floor: 'high', reason: 'reaches the network (git remote)' })
+  if (OPAQUE.test(command)) findings.push({ floor: 'high', reason: 'opaque command (nested shell, eval, substitution or spliced words)' })
   const outside = execWriteTargets(command, cwd).filter(p => !underKnownRoot(p))
   if (outside.length) findings.push({ floor: 'high', reason: `writes outside the workspace and /tmp (${outside.slice(0, 3).join(', ')})` })
   findings.push(...urlFindings(command))
@@ -219,26 +237,72 @@ export function calendarRule(toolName: string, input: Record<string, unknown>): 
 /** A recipient that may safely go into a Gmail search query. Anything else counts as never mailed. */
 const PLAIN_ADDRESS = /^[^\s"{}()<>:,;\\]+@[^\s"{}()<>:,;\\]+\.[^\s"{}()<>:,;\\]+$/
 
-/** gmail_send: any recipient this account has never mailed → high; all known → review; the lookup
- *  failing (or none given) → review with the reason. */
+/** More recipients than this are not looked up at all → high (R2). */
+export const MAX_CHECKED_RECIPIENTS = 10
+/** At most this many sent-history lookups in flight (R2). */
+export const RECIPIENT_LOOKUP_CONCURRENCY = 4
+
+const UNVERIFIED = 'could not verify recipient history'
+
+/** Run `fn` over `items` with at most `limit` in flight; rejects on the first failure. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length)
+  let next = 0
+  async function worker() {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i]!)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
+}
+
+/**
+ * gmail_send (R2): `review` only when every recipient is VERIFIED as mailed before. `high` when any
+ * recipient was never mailed, when the recipients cannot be read or verified (no lookup, a Gmail
+ * error, a 429/5xx), when the draft has no readable recipient, or when it has more than
+ * MAX_CHECKED_RECIPIENTS. The verdict carries `boundMessageId` — the draft revision that was checked.
+ */
 export async function gmailSendRule(input: Record<string, unknown>, lookup?: GmailHistoryLookup): Promise<RuleVerdict> {
   const account = typeof input.account === 'string' ? input.account : ''
   const draftId = typeof input.draftId === 'string' ? input.draftId : ''
-  if (!lookup) return { floor: 'review', reasons: ['recipient history not checked'] }
+  if (!lookup) return { floor: 'high', reasons: [UNVERIFIED] }
+  let draft: DraftRecipients
   try {
-    const recipients = await lookup.recipients(account, draftId)
-    const never: string[] = []
-    for (const r of recipients) {
-      const addr = r.trim().toLowerCase()
-      if (!PLAIN_ADDRESS.test(addr) || !(await lookup.mailedBefore(account, addr))) never.push(addr)
-    }
-    if (never.length) {
-      return { floor: 'high', reasons: [`first email to ${never.slice(0, 3).join(', ')}${never.length > 3 ? ` (+${never.length - 3} more)` : ''}`] }
-    }
-    return { floor: 'review', reasons: [] }
+    draft = await lookup.recipients(account, draftId)
   } catch {
-    return { floor: 'review', reasons: ['could not check recipient history'] }
+    return { floor: 'high', reasons: [UNVERIFIED] }
   }
+  const bound = { boundMessageId: draft.messageId }
+  const addrs = [...new Set(draft.addresses.map(a => a.trim().toLowerCase()).filter(Boolean))]
+  if (addrs.length === 0) return { floor: 'high', reasons: ['no recipients could be read from the draft'], ...bound }
+  if (addrs.length > MAX_CHECKED_RECIPIENTS) {
+    return { floor: 'high', reasons: [`${addrs.length} recipients (over ${MAX_CHECKED_RECIPIENTS}) — history not checked`], ...bound }
+  }
+  let mailed: boolean[]
+  try {
+    mailed = await mapLimit(addrs, RECIPIENT_LOOKUP_CONCURRENCY, a => (PLAIN_ADDRESS.test(a) ? lookup.mailedBefore(account, a) : Promise.resolve(false)))
+  } catch {
+    return { floor: 'high', reasons: [UNVERIFIED], ...bound }
+  }
+  const never = addrs.filter((_, i) => mailed[i] !== true)
+  if (never.length) {
+    return { floor: 'high', reasons: [`first email to ${never.slice(0, 3).join(', ')}${never.length > 3 ? ` (+${never.length - 3} more)` : ''}`], ...bound }
+  }
+  return { floor: 'review', reasons: [], ...bound }
+}
+
+/**
+ * R3 (for Task 2): bind a gmail_send rule verdict to the draft revision the approval card pinned for
+ * this nonce (tools/gmail.ts pinnedSendMessageId). No pin, or a pin for a different revision than the
+ * one whose recipients were checked → at least `high` (the recipients judged are not the ones that
+ * would be sent).
+ */
+export function bindGmailRuleToPin(rule: RuleVerdict, pinnedMessageId: string | null | undefined): RuleVerdict {
+  if (pinnedMessageId && rule.boundMessageId && rule.boundMessageId === pinnedMessageId) return rule
+  const reason = 'the draft changed after its recipients were checked'
+  return { ...rule, floor: maxFloor(rule.floor, 'high'), reasons: rule.reasons.includes(reason) ? rule.reasons : [...rule.reasons, reason] }
 }
 
 // --- the tier ---------------------------------------------------------------------------------------
@@ -248,7 +312,8 @@ const CALENDAR_TOOLS = new Set(['calendar_guest_event', 'calendar_write_event', 
 
 /**
  * The rule tier's floor for one call. Never throws. Unknown tools → `review`.
- *   exec → execRule; gmail_send → gmailSendRule (sent-history lookup); calendar → calendarRule;
+ *   exec → execRule (always ≥ high); gmail_send → gmailSendRule (sent-history lookup; Task 2 then
+ *   applies bindGmailRuleToPin); calendar → calendarRule;
  *   jobs / wakes → review (plus the URL checks — a job body can carry a URL);
  *   any other `outbound` tool → outboundRule.
  */
@@ -265,6 +330,7 @@ export async function ruleVerdict(tool: RuleTool, input: Record<string, unknown>
     if (JOB_TOOLS.has(tool.name) || tool.outbound) return outboundRule(tool.name, input)
     return { floor: 'review', reasons: [] }
   } catch {
-    return { floor: 'review', reasons: ['rule check failed'] }
+    // A rule that crashed has verified nothing.
+    return { floor: 'high', reasons: ['rule check failed'] }
   }
 }

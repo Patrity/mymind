@@ -2,7 +2,8 @@
 // straight from the global constraint:
 //   settings.judge.enabled ∧ surfaceEnabled ∧ verdict.recommendation==='approve'
 //   ∧ verdict.confidence ≥ settings.judge.confidence ∧ !verdict.error ∧ ruleFloor ∉ {high, critical, deny}
-//   ∧ !(tool.outbound ∧ runTainted) ∧ nonce unchanged;  headless never.
+//   ∧ !(tool.outbound ∧ runTainted) ∧ nonce unchanged ∧ verdict.risk ∈ {low, medium} ∧ !verdict.lenient;
+//   headless never.  (risk/lenient: fix round 1 rulings.)
 import { describe, it, expect } from 'vitest'
 import { autoApprovePredicate, autoApproveBlocker, type AutoApproveInput } from './auto-approve'
 import { RULE_FLOORS, type ApprovalSurface, type JudgeSettings, type JudgeVerdict } from './types'
@@ -14,6 +15,9 @@ const VERDICTS: Array<[string, JudgeVerdict | null]> = [
   ['approve 0.90', { ...base, recommendation: 'approve', confidence: 0.9 }],
   ['approve 0.89', { ...base, recommendation: 'approve', confidence: 0.89 }],
   ['approve 0.99 + error', { ...base, recommendation: 'approve', confidence: 0.99, error: 'timeout' }],
+  ['approve 0.99 medium risk', { ...base, risk: 'medium', recommendation: 'approve', confidence: 0.99 }],
+  ['approve 0.99 high risk', { ...base, risk: 'high', recommendation: 'approve', confidence: 0.99 }],
+  ['approve 0.99 lenient', { ...base, recommendation: 'approve', confidence: 0.99, lenient: true }],
   ['review 0.99', { ...base, recommendation: 'review', confidence: 0.99 }],
   ['deny 0.99', { ...base, recommendation: 'deny', confidence: 0.99 }]
 ]
@@ -25,7 +29,7 @@ function oracle(i: AutoApproveInput): boolean {
   const surfaceEnabled = i.surface === 'workstream' ? s.smartApprovals.workstreams : i.surface === 'chat' ? s.smartApprovals.chat : false
   const v = i.verdict
   return s.enabled && surfaceEnabled && !!v && v.recommendation === 'approve' && v.confidence >= s.confidence
-    && !v.error && i.ruleFloor !== 'high' && i.ruleFloor !== 'critical' && i.ruleFloor !== 'deny' && !(i.outbound && i.runTainted) && i.nonceUnchanged
+    && !v.error && !v.lenient && (v.risk === 'low' || v.risk === 'medium') && i.ruleFloor !== 'high' && i.ruleFloor !== 'critical' && i.ruleFloor !== 'deny' && !(i.outbound && i.runTainted) && i.nonceUnchanged
 }
 
 function* allInputs(): Generator<[string, AutoApproveInput]> {
@@ -42,8 +46,8 @@ function* allInputs(): Generator<[string, AutoApproveInput]> {
 describe('autoApprovePredicate — full truth table', () => {
   const rows = [...allInputs()]
 
-  it('covers every combination (2·2·2·2 settings × 3 surfaces × 7 verdicts × 5 floors × 2·2·2)', () => {
-    expect(rows).toHaveLength(16 * 3 * 7 * 5 * 8)
+  it('covers every combination (2·2·2·2 settings × 3 surfaces × 10 verdicts × 5 floors × 2·2·2)', () => {
+    expect(rows).toHaveLength(16 * 3 * 10 * 5 * 8)
   })
 
   it('matches the spec formula on every row', () => {
@@ -89,7 +93,21 @@ describe('autoApprovePredicate — each exclusion on its own (spec §2.4)', () =
     ['confidence NaN', { verdict: { ...base, recommendation: 'approve', confidence: Number.NaN } }, 'low-confidence'],
     ['confidence over 1', { verdict: { ...base, recommendation: 'approve', confidence: 5 } }, 'low-confidence'],
     ['a stored threshold below the floor is read as 0.5', { settings: { ...ok.settings, confidence: 0.1 }, verdict: { ...base, recommendation: 'approve', confidence: 0.4 } }, 'low-confidence'],
-    ['a NaN stored threshold blocks', { settings: { ...ok.settings, confidence: Number.NaN } }, 'low-confidence']
+    ['a NaN stored threshold blocks', { settings: { ...ok.settings, confidence: Number.NaN } }, 'low-confidence'],
+    ['approve at high risk', { verdict: { ...base, risk: 'high', recommendation: 'approve', confidence: 0.99 } }, 'risk-too-high'],
+    ['approve at critical risk', { verdict: { ...base, risk: 'critical', recommendation: 'approve', confidence: 0.99 } }, 'risk-too-high'],
+    ['approve with no risk', { verdict: { ...base, risk: null, recommendation: 'approve', confidence: 0.99 } }, 'risk-too-high'],
+    ['a lenient (text-fallback) verdict', { verdict: { ...base, recommendation: 'approve', confidence: 0.99, lenient: true } }, 'lenient-verdict'],
+    ['an unknown rule floor', { ruleFloor: 'weird' as never }, 'rule-floor'],
+    ['an undefined rule floor', { ruleFloor: undefined as never }, 'rule-floor'],
+    ['outbound undefined in a tainted run', { outbound: undefined as never, runTainted: true }, 'tainted-outbound'],
+    ['tainted undefined on an outbound call', { outbound: true, runTainted: undefined as never }, 'tainted-outbound'],
+    ['both undefined', { outbound: undefined as never, runTainted: undefined as never }, 'tainted-outbound'],
+    ['nonceUnchanged undefined', { nonceUnchanged: undefined as never }, 'nonce-changed'],
+    ['smartApprovals missing', { settings: { enabled: true, confidence: 0.9 } as never }, 'surface-disabled'],
+    ['settings missing', { settings: undefined as never }, 'judge-disabled'],
+    ['enabled a truthy non-boolean', { settings: { ...ok.settings, enabled: 'yes' as never } }, 'judge-disabled'],
+    ['confidence a numeric string', { verdict: { ...base, recommendation: 'approve', confidence: '0.99' as never } }, 'low-confidence']
   ])('%s → never auto', (_name, patch, blocker) => {
     const i = { ...ok, ...patch }
     expect(autoApproveBlocker(i)).toBe(blocker)
@@ -98,6 +116,14 @@ describe('autoApprovePredicate — each exclusion on its own (spec §2.4)', () =
 
   it('chat auto-approves once Tony turns chat on', () => {
     expect(autoApprovePredicate({ ...ok, surface: 'chat', settings: { ...ok.settings, smartApprovals: { workstreams: false, chat: true } } })).toBe(true)
+  })
+
+  it('a medium-risk approve stays auto-approvable', () => {
+    expect(autoApprovePredicate({ ...ok, verdict: { ...base, risk: 'medium', recommendation: 'approve', confidence: 0.95 } })).toBe(true)
+  })
+
+  it('a missing input object never throws and never approves', () => {
+    expect(autoApprovePredicate(undefined as never)).toBe(false)
   })
 
   it('outbound in an untainted run, a tainted non-outbound call and a low floor stay auto-approvable', () => {

@@ -119,14 +119,19 @@ export async function getDraft(c: Connection, draftId: string, deps: GoogleDeps 
   return google(c, deps).get<GmailDraft>(`${BASE}/drafts/${encodeURIComponent(draftId)}`, { format })
 }
 
-/** Has this account ever SENT mail to `address` (To, Cc or Bcc)? One `messages.list` with
- *  maxResults 1 — the judge's rule tier (cycle 84) flags a send to someone never mailed before.
- *  `address` must already be a plain address (the caller validates it): it goes into a Gmail query. */
-export async function hasSentTo(c: Connection, address: string, deps: GoogleDeps = {}): Promise<boolean> {
-  const res = await google(c, deps).get<{ messages?: { id: string }[] }>(`${BASE}/messages`, {
-    q: `in:sent {to:${address} cc:${address} bcc:${address}}`, maxResults: 1
+/** Sent messages Gmail's search returns for `address` (To, Cc or Bcc), with their To/Cc/Bcc
+ *  headers — the judge's rule tier (cycle 84) then checks the headers itself: Gmail's `to:` search is
+ *  token-based, so a search hit alone is not proof the exact address was mailed. `address` must already
+ *  be a plain address (the caller validates it): it goes into a Gmail query. */
+export async function sentMessagesTo(c: Connection, address: string, deps: GoogleDeps = {}, max = 5): Promise<GmailMessage[]> {
+  const g = google(c, deps)
+  const res = await g.get<{ messages?: { id: string }[] }>(`${BASE}/messages`, {
+    q: `in:sent {to:${address} cc:${address} bcc:${address}}`, maxResults: max
   })
-  return (res.messages?.length ?? 0) > 0
+  const ids = (res.messages ?? []).slice(0, max)
+  return Promise.all(ids.map(m => g.get<GmailMessage>(`${BASE}/messages/${encodeURIComponent(m.id)}`, {
+    format: 'metadata', metadataHeaders: ['To', 'Cc', 'Bcc']
+  })))
 }
 
 export async function sendDraft(c: Connection, draftId: string, deps: GoogleDeps = {}): Promise<GmailMessage> {

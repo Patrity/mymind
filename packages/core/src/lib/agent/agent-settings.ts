@@ -4,9 +4,10 @@
 // (the web's PUT route refreshes its own copy and sends the worker an `invalidate` for
 // 'agent-settings').
 //
-// Reading never throws and never trusts the stored JSON: each field falls back to its default on
-// its own when missing or invalid (an out-of-range confidence reads as the default, never as a
-// lower threshold). Writing validates strictly.
+// Reading never throws and never trusts the stored JSON (fix round 1): a MISSING field reads as its
+// default; a PRESENT but invalid one fails closed — a boolean reads as `false` (a corrupt row never
+// switches auto-approval on) and a confidence reads as the strictest allowed threshold (0.99).
+// Writing validates strictly.
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { useDb } from '../../db'
@@ -44,14 +45,22 @@ export const agentSettingsPatchSchema = z.object({
 }).strict()
 export type AgentSettingsPatch = z.infer<typeof agentSettingsPatchSchema>
 
-const bool = (v: unknown, d: boolean): boolean => (typeof v === 'boolean' ? v : d)
+/** Missing → the default; present but not a boolean → false (fail closed). */
+const bool = (v: unknown, d: boolean): boolean => (v === undefined ? d : v === true)
 
 /** Pure: stored JSON → settings, field by field, defaults for anything missing or invalid. */
 export function readAgentSettings(raw: unknown): AgentSettings {
   const d = defaultAgentSettings()
-  const j = (raw as { judge?: unknown } | null | undefined)?.judge as Record<string, unknown> | undefined
-  if (!j || typeof j !== 'object') return d
-  const sa = (j.smartApprovals ?? {}) as Record<string, unknown>
+  const off: AgentSettings = { judge: { enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: JUDGE_CONFIDENCE_LIMITS.max } }
+  if (raw === undefined || raw === null) return d // no row
+  if (typeof raw !== 'object' || Array.isArray(raw)) return off // a corrupt row: everything off
+  if (!('judge' in raw) || (raw as { judge?: unknown }).judge === undefined) return d
+  const j = (raw as { judge?: unknown }).judge as Record<string, unknown>
+  // A `judge` value that is not an object is corrupt: everything off.
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return off
+  const saRaw = j.smartApprovals
+  const saCorrupt = saRaw !== undefined && (saRaw === null || typeof saRaw !== 'object' || Array.isArray(saRaw))
+  const sa = (saCorrupt ? { workstreams: false, chat: false } : (saRaw ?? {})) as Record<string, unknown>
   const conf = confidenceSchema.safeParse(j.confidence)
   return {
     judge: {
@@ -60,7 +69,7 @@ export function readAgentSettings(raw: unknown): AgentSettings {
         workstreams: bool(sa?.workstreams, d.judge.smartApprovals.workstreams),
         chat: bool(sa?.chat, d.judge.smartApprovals.chat)
       },
-      confidence: conf.success ? conf.data : d.judge.confidence
+      confidence: j.confidence === undefined ? d.judge.confidence : conf.success ? conf.data : JUDGE_CONFIDENCE_LIMITS.max
     }
   }
 }

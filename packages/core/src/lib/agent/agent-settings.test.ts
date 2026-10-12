@@ -8,6 +8,7 @@ describe('agent settings — judge fields', () => {
     expect(readAgentSettings(undefined)).toEqual(defaultAgentSettings())
     expect(readAgentSettings(null)).toEqual(defaultAgentSettings())
     expect(readAgentSettings({ other: 1 })).toEqual(defaultAgentSettings())
+    expect(readAgentSettings({ judge: undefined })).toEqual(defaultAgentSettings())
   })
 
   it('defaults are fresh objects (no shared mutable state)', () => {
@@ -16,15 +17,30 @@ describe('agent settings — judge fields', () => {
     expect(defaultAgentSettings().judge.smartApprovals.chat).toBe(false)
   })
 
-  it('reads stored values, each invalid field falling back on its own', () => {
+  it('reads stored values; a missing field reads as its default', () => {
     expect(readAgentSettings({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: true }, confidence: 0.75 } }))
       .toEqual({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: true }, confidence: 0.75 } })
-    expect(readAgentSettings({ judge: { enabled: 'yes', smartApprovals: { chat: 1 }, confidence: 0.1 } }))
-      .toEqual(defaultAgentSettings())
+    expect(readAgentSettings({ judge: {} })).toEqual(defaultAgentSettings())
+    expect(readAgentSettings({ judge: { smartApprovals: {} } })).toEqual(defaultAgentSettings())
   })
 
-  it.each([0.49, 1, 0, -1, Number.NaN, '0.9'])('a stored confidence of %s reads as the default, never a lower threshold', (c) => {
-    expect(readAgentSettings({ judge: { confidence: c } }).judge.confidence).toBe(0.9)
+  it('a present but invalid field fails closed: booleans read false (fix round 1)', () => {
+    expect(readAgentSettings({ judge: { enabled: 'yes', smartApprovals: { workstreams: 1, chat: 'true' } } }).judge)
+      .toEqual({ enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9 })
+    expect(readAgentSettings({ judge: { smartApprovals: 'on' } }).judge.smartApprovals).toEqual({ workstreams: false, chat: false })
+    expect(readAgentSettings({ judge: { enabled: null } }).judge.enabled).toBe(false)
+  })
+
+  it.each([['a string', 'corrupt'], ['an array', []], ['a number', 7]])('a corrupt row (%s) reads as everything off', (_n, raw) => {
+    expect(readAgentSettings(raw)).toEqual({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.99 } })
+  })
+
+  it.each([['a string', 'x'], ['null', null], ['an array', [1]]])('a corrupt judge value (%s) reads as everything off', (_n, j) => {
+    expect(readAgentSettings({ judge: j }).judge.enabled).toBe(false)
+  })
+
+  it.each([0.49, 1, 0, -1, Number.NaN, '0.9', null])('a stored confidence of %s reads as the strictest threshold (0.99), never lower', (c) => {
+    expect(readAgentSettings({ judge: { confidence: c } }).judge.confidence).toBe(0.99)
   })
 
   it('accepts the bounds 0.5 and 0.99', () => {

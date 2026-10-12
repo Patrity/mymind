@@ -10,8 +10,12 @@ export type RuleFloor = (typeof RULE_FLOORS)[number]
 
 export interface RuleVerdict {
   floor: RuleFloor
-  /** Short, rule-authored (trusted) reasons — empty for a plain `review`. */
+  /** Short, rule-authored reasons — empty for a plain `review`. They may quote call-supplied text
+   *  (paths, hosts, addresses), so the judge prompt fences them as untrusted details. */
   reasons: string[]
+  /** gmail_send only: the draft message id whose recipients were checked. Task 2 binds it to the
+   *  card's nonce pin with bindGmailRuleToPin (fix round 1, R3). */
+  boundMessageId?: string | null
 }
 
 export const RISKS = ['low', 'medium', 'high', 'critical'] as const
@@ -38,6 +42,9 @@ export interface JudgeVerdict {
   model: string | null
   latencyMs: number
   error?: string
+  /** Set when the verdict came from the lenient text fallback (no structured output). Never
+   *  auto-approvable (fix round 1). */
+  lenient?: true
 }
 
 /** Smart Approvals (spec §2.3). Stored in the agent settings doc under `judge`. */

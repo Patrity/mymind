@@ -3,6 +3,8 @@
 //   settings.enabled ∧ surfaceEnabled ∧ verdict.recommendation==='approve'
 //   ∧ verdict.confidence ≥ settings.confidence ∧ !verdict.error ∧ ruleFloor ∉ {high, critical, deny}
 //   ∧ !(outbound ∧ runTainted) ∧ nonceUnchanged
+// plus (fix round 1 rulings): verdict.risk ∈ {low, medium}, and a verdict parsed by the lenient text
+// fallback never auto-approves.
 // where surfaceEnabled is smartApprovals.workstreams for a workstream, smartApprovals.chat for chat,
 // and always false for a headless run (jobs / wakes never auto-run).
 // Amended 2026-10-12 (coordinator ruling on spec D6 "no rule flag"): a `high` rule floor blocks too.
@@ -23,28 +25,40 @@ export interface AutoApproveInput {
 }
 
 export type AutoApproveBlocker =
-  | 'judge-disabled' | 'surface-disabled' | 'no-verdict' | 'verdict-error' | 'not-approve'
-  | 'low-confidence' | 'rule-floor' | 'tainted-outbound' | 'nonce-changed'
+  | 'judge-disabled' | 'surface-disabled' | 'no-verdict' | 'verdict-error' | 'lenient-verdict' | 'not-approve'
+  | 'risk-too-high' | 'low-confidence' | 'rule-floor' | 'tainted-outbound' | 'nonce-changed'
 
-/** Why a call may NOT be auto-approved, or null when it may. Checks are ordered, first hit wins. */
+/** Rule floors a call may be auto-approved at (an allow-list, so an unknown value blocks). */
+const AUTO_FLOORS: ReadonlySet<string> = new Set(['low', 'review'])
+/** Judge risks a call may be auto-approved at (fix round 1: approve at high/critical risk blocks). */
+const AUTO_RISKS: ReadonlySet<string> = new Set(['low', 'medium'])
+
+/**
+ * Why a call may NOT be auto-approved, or null when it may. Checks are ordered, first hit wins.
+ * Fail-closed on malformed input (fix round 1): every boolean that ALLOWS must be exactly `true`,
+ * every one that FORBIDS blocks unless it is exactly `false`, and a missing object blocks.
+ */
 export function autoApproveBlocker(i: AutoApproveInput): AutoApproveBlocker | null {
-  if (i.settings.enabled !== true) return 'judge-disabled'
+  const s = i?.settings
+  if (s?.enabled !== true) return 'judge-disabled'
   const surfaceEnabled = i.surface === 'workstream'
-    ? i.settings.smartApprovals.workstreams === true
+    ? s.smartApprovals?.workstreams === true
     : i.surface === 'chat'
-      ? i.settings.smartApprovals.chat === true
+      ? s.smartApprovals?.chat === true
       : false
   if (!surfaceEnabled) return 'surface-disabled'
   if (i.nonceUnchanged !== true) return 'nonce-changed'
-  if (i.ruleFloor === 'high' || i.ruleFloor === 'critical' || i.ruleFloor === 'deny') return 'rule-floor'
-  if (i.outbound && i.runTainted) return 'tainted-outbound'
+  if (!AUTO_FLOORS.has(i.ruleFloor)) return 'rule-floor'
+  if (!(i.outbound === false || i.runTainted === false)) return 'tainted-outbound'
   const v = i.verdict
   if (!v) return 'no-verdict'
   if (v.error !== undefined) return 'verdict-error'
+  if (v.lenient !== undefined) return 'lenient-verdict'
   if (v.recommendation !== 'approve') return 'not-approve'
+  if (!AUTO_RISKS.has(v.risk as string)) return 'risk-too-high'
   // A stored threshold below the settings floor (never valid) is read as the floor, never lower.
-  const threshold = Number.isFinite(i.settings.confidence) ? Math.max(i.settings.confidence, JUDGE_CONFIDENCE_LIMITS.min) : 1
-  if (!Number.isFinite(v.confidence) || v.confidence > 1 || v.confidence < threshold) return 'low-confidence'
+  const threshold = Number.isFinite(s.confidence) ? Math.max(s.confidence, JUDGE_CONFIDENCE_LIMITS.min) : 1
+  if (typeof v.confidence !== 'number' || !Number.isFinite(v.confidence) || v.confidence > 1 || v.confidence < threshold) return 'low-confidence'
   return null
 }
 
