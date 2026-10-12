@@ -106,6 +106,18 @@ const segRuns = (convId: string) => useDb().select().from(agentRuns)
 const thread = (convId: string) => useDb().select().from(conversationMessages)
   .where(eq(conversationMessages.conversationId, convId)).orderBy(asc(conversationMessages.createdAt))
 
+/** The manager's stopIf without Docker: guard → before → record the stop (the real one holds the
+ *  workspace lock around all three — manager.test.ts). */
+function guardedStop(stops: Array<[string, string]>) {
+  return async (id: string, guard: () => Promise<boolean>, before: () => Promise<void>, why: string) => {
+    if (!await guard()) return false
+    await before()
+    stops.push([id, why])
+    await dbWorkspaceStore.setContainer(id, null, 'stopped')
+    return true
+  }
+}
+
 describe('watch × workstreams', () => {
   it('a segment that ends with a watch armed waits (paused, no budget); the watch resumes it as an event', async () => {
     met = false
@@ -321,7 +333,7 @@ describe('watch × workstreams', () => {
 
   it('I2: a workstream that ends tears its workspace down at once (shells killed, watches cancelled quietly, container stopped); the minute tick catches the rest', async () => {
     const stops: Array<[string, string]> = []
-    const mgr = { ...fakeManager, stopContainer: async (id: string, why: string) => { stops.push([id, why]); await dbWorkspaceStore.setContainer(id, null, 'stopped') } } as unknown as SandboxManager
+    const mgr = { ...fakeManager, stopIf: guardedStop(stops) } as unknown as SandboxManager
     const local = createWorkspaceRuntime(mgr)
     const ws = await newWorkstream('teardown')
     const space = await ensureWorkstreamWorkspace(ws.id)
@@ -375,5 +387,28 @@ describe('watch × workstreams', () => {
     // Another namespace's rows are never swept from here (the dev worker vs a test run).
     setBusNs('t82-other-ns')
     try { expect((await dbWorkspaceStore.listExpired(new Date())).map(r => r.id)).not.toContain(b.id) } finally { setBusNs(NS) }
+  })
+
+  it('follow-up N4: a workstream resumed between "it ended" and the teardown keeps its watch, its shells and its sandbox', async () => {
+    const stops: Array<[string, string]> = []
+    const local = createWorkspaceRuntime({ ...fakeManager, stopIf: guardedStop(stops) } as unknown as SandboxManager)
+    const ws = await newWorkstream('n4-resume')
+    const space = await ensureWorkstreamWorkspace(ws.id)
+    await dbWorkspaceStore.setContainer(space.id, 'c-n4', 'running')
+    await patchWorkstream(ws.id, { state: 'cancelled', finishedAt: new Date() })
+    // The resume lands before the teardown acts (resumeWorkstream: cancelled → running).
+    await patchWorkstream(ws.id, { state: 'running', finishedAt: null })
+    const shell = await dbShellStore.create(space.id, 'npm run build', 8)
+    met = false
+    const watch = await local.watches.create({ workspaceId: space.id, workstreamId: ws.id, conversationId: null, command: 'false', until: { kind: 'exit0' }, intervalSec: 600, timeoutMin: 60 })
+    if ('refused' in watch) throw new Error('refused')
+    try {
+      expect(await teardownWorkstreamWorkspace(local, ws.id)).toBe(false)
+      expect(stops).toEqual([])
+      const { workspaceShells } = await import('@mymind/core/db/schema')
+      expect((await useDb().select().from(workspaceShells).where(eq(workspaceShells.id, shell!.id)))[0]!.state).toBe('running')
+      expect((await useDb().select().from(workspaceWatches).where(eq(workspaceWatches.id, watch.id)))[0]).toMatchObject({ state: 'armed', deliveredAt: null })
+      expect((await dbWorkspaceStore.get(space.id))!.state).toBe('running')
+    } finally { local.watches.stop() }
   })
 })

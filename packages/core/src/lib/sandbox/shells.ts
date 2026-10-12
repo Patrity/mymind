@@ -258,14 +258,18 @@ export function createShellRegistry(deps: ShellDeps) {
    * networked container is up and untainted (a stopped container's processes are already dead,
    * and exec would otherwise START it just to kill nothing).
    */
-  async function killAll(workspaceId: string, reason: string): Promise<number> {
+  async function killAll(workspaceId: string, reason: string, o: { noStart?: boolean } = {}): Promise<number> {
     const rows = await store.listRunning(workspaceId)
     if (!rows.length) return 0
     const ws = await deps.workspace(workspaceId)
     let n = 0
     for (const row of rows) {
       if (ws && ws.state === 'running' && !ws.tainted) {
-        try { await deps.exec(workspaceId, shellKillCommand(row.id), { timeoutSec: 30 }) } catch (err) {
+        // Follow-up N8 (`noStart`, the workstream teardown): kill through peek — a container that
+        // already died is NOT started (and nothing evicted) just to kill nothing.
+        try {
+          if (o.noStart) { if (deps.peek) await deps.peek(workspaceId, shellKillCommand(row.id)) } else await deps.exec(workspaceId, shellKillCommand(row.id), { timeoutSec: 30 })
+        } catch (err) {
           log.warn(`[sandbox] killing shell ${row.id} failed (marked killed anyway):`, (err as Error).message)
         }
       }

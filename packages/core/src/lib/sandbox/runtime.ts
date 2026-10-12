@@ -146,10 +146,19 @@ export const WORKSTREAM_ENDED_REASON = 'its workstream has ended'
 export async function teardownWorkstreamWorkspace(rt: Pick<WorkspaceRuntime, 'manager' | 'shells' | 'watches'>, workstreamId: string): Promise<boolean> {
   const [row] = await useDb().select().from(workspaces).where(and(eq(workspaces.workstreamId, workstreamId), isNull(workspaces.deletedAt))).limit(1)
   if (!row) return false
-  await rt.shells.killAll(row.id, `killed: ${WORKSTREAM_ENDED_REASON}`)
-  await rt.watches.cancelFor(row.id, WORKSTREAM_ENDED_REASON, { quiet: true })
-  if (row.state === 'running') await rt.manager.stopContainer(row.id, `killed: ${WORKSTREAM_ENDED_REASON}`)
-  return true
+  // Follow-up N4: re-checked UNDER the workspace lock right before acting — a workstream resumed
+  // since it ended (resumeWorkstream: failed/cancelled → running) keeps its watch, shells, sandbox.
+  const { getWorkstream } = await import('../agent/workstreams/store')
+  const { TERMINAL_WORKSTREAM_STATES } = await import('../../shared/types/workstreams')
+  const stillEnded = async () => {
+    const ws = await getWorkstream(workstreamId)
+    return !!ws && TERMINAL_WORKSTREAM_STATES.includes(ws.state)
+  }
+  return rt.manager.stopIf(row.id, stillEnded, async () => {
+    // N8: never starts a container to kill shells in it.
+    await rt.shells.killAll(row.id, `killed: ${WORKSTREAM_ENDED_REASON}`, { noStart: true })
+    await rt.watches.cancelFor(row.id, WORKSTREAM_ENDED_REASON, { quiet: true })
+  }, `killed: ${WORKSTREAM_ENDED_REASON}`)
 }
 
 /** The minute tick's backstop: workspaces of FINISHED workstreams that still have something live

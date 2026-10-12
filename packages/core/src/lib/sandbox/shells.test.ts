@@ -276,3 +276,22 @@ describe('final review I2: liveness refresh (the quota tick)', () => {
     expect(store.rows.get(b.id)!.state).toBe('running')
   })
 })
+
+describe('follow-up N8: the teardown kill never starts a container', () => {
+  it('killAll({ noStart }) kills through peek — a dead container is not started, the rows are still recorded', async () => {
+    const store = memShells()
+    const execs: string[] = []
+    let peeks = 0
+    const reg = createShellRegistry({
+      exec: async (_id, command) => { execs.push(command); return res() },
+      peek: async () => { peeks++; return null }, // the container already died
+      workspace: async () => ({ id: WS, state: 'running', tainted: false, deletedAt: null }) as WorkspaceRow,
+      store, secretValues: async () => [], log: { info: () => {}, warn: () => {}, error: () => {} }
+    })
+    const a = (await store.create(WS, 'python -m http.server', 8))!
+    expect(await reg.killAll(WS, 'killed: its workstream has ended', { noStart: true })).toBe(1)
+    expect(execs).toEqual([])
+    expect(peeks).toBe(1)
+    expect(store.rows.get(a.id)).toMatchObject({ state: 'killed', reason: 'killed: its workstream has ended' })
+  })
+})
