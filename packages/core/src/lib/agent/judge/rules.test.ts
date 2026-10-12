@@ -336,6 +336,11 @@ describe('jobs, wakes and unknown tools', () => {
   it('decide_review → review', async () => {
     expect((await ruleVerdict({ name: 'decide_review' }, { id: 'x', choice: 'approve' })).floor).toBe('review')
   })
+  it('a rule that throws → high (it verified nothing), never an exception', async () => {
+    const hostile = { get command(): string { throw new Error('boom') } }
+    expect(await ruleVerdict({ name: 'exec' }, hostile)).toEqual({ floor: 'high', reasons: ['rule check failed'] })
+  })
+
   it('never throws on odd input', async () => {
     expect((await ruleVerdict({ name: 'exec' }, { command: 42 as unknown as string })).floor).toBe('high')
   })
