@@ -54,7 +54,7 @@ import {
 import { promptInfo, segmentOrigin, segmentText, type SegmentWhy } from './prompt'
 import { noteOrigin, notifyTony, workstreamNotifyDeps } from './notify'
 import { ensureWorkstreamWorkspace } from '../../sandbox/store'
-import { takeWorkstreamWatchResults, untakeWatchResults, workstreamHasArmedWatch, workstreamHasWatchResults } from '../../sandbox/watches'
+import { claimWatchResults, peekWorkstreamWatchResults, untakeWatchResults, workstreamHasArmedWatch, workstreamHasWatchResults } from '../../sandbox/watches'
 import { stepCostUsd } from './cost'
 import { segmentPrimaryModelId } from '../runtime/pools'
 
@@ -956,16 +956,26 @@ async function watchContinuation(ws: WorkstreamRow, run: AgentRun, seg: Segment 
   return null
 }
 
+/** Seams for watch delivery (tests: a guard that dies mid-check). */
+export const watchDeliveryDeps: { guard: (text: string, o: { tool: string; source: 'workspace'; workspaceId: string }) => Promise<{ text: string }> } = {
+  guard: async (text, o) => (await import('../judge/guard')).guardDeliveredText(text, o)
+}
+
 /** Claim the pending watch results into one `segment:watch` segment. Undefined when there were none
  *  (someone else claimed them); null when a segment already exists (handed back for its boundary). */
 async function enqueueWatchResults(ws: WorkstreamRow): Promise<string | null | undefined> {
-  const results = await takeWorkstreamWatchResults(ws.id)
-  if (!results.length) return undefined
+  const pending = await peekWorkstreamWatchResults(ws.id)
+  if (!pending.length) return undefined
   // Cycle 84 fix round 1 (M4): a watch's output is workspace content — guarded before it becomes the
   // segment's prompt (flagged: the warning first, which taints the segment's run; the workspace too).
-  const { guardDeliveredText } = await import('../judge/guard')
-  const texts = await Promise.all(results.map(async r => (await guardDeliveredText(r.text, { tool: 'watch', source: 'workspace', workspaceId: r.workspaceId })).text))
-  const runId = await enqueueWhy(ws, 'watch', texts.join('\n\n'))
+  // Final fix wave (M1): guarded BEFORE it is claimed — the guard can take up to 15 s, and a restart or
+  // drain in that window used to drop a claimed result for good. Unclaimed, it is simply redelivered
+  // (and guarded again). Only what this call then claims goes into the segment.
+  const guarded = await Promise.all(pending.map(async r => ({ id: r.id, text: (await watchDeliveryDeps.guard(r.text, { tool: 'watch', source: 'workspace', workspaceId: r.workspaceId })).text })))
+  const won = new Set(await claimWatchResults(guarded.map(r => r.id)))
+  const results = guarded.filter(r => won.has(r.id))
+  if (!results.length) return undefined
+  const runId = await enqueueWhy(ws, 'watch', results.map(r => r.text).join('\n\n'))
   if (!runId) { await untakeWatchResults(results.map(r => r.id)); return null }
   await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
   return runId

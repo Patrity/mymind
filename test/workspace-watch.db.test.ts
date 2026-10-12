@@ -14,7 +14,7 @@ import { runTurn } from '@mymind/core/lib/agent/runtime/runner'
 import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { closeListener } from '@mymind/core/lib/bus/listen'
 import { createConversation } from '@mymind/core/services/conversations'
-import { pauseWorkstreamForTony, startWorkstream, WAITING_FOR_WATCH } from '@mymind/core/lib/agent/workstreams/loop'
+import { pauseWorkstreamForTony, startWorkstream, WAITING_FOR_WATCH, wakeWorkstreamForWatch, watchDeliveryDeps } from '@mymind/core/lib/agent/workstreams/loop'
 import { getWorkstream } from '@mymind/core/lib/agent/workstreams/store'
 import { workstreamNotifyDeps } from '@mymind/core/lib/agent/workstreams/notify'
 import { createWorkspaceRuntime, finishedWorkstreamsWithLiveWorkspaces, resolveWorkspace, runtimeHooks, setWorkspaceRuntime, startWorkspaceRuntime, TAINTED_REASON, teardownWorkstreamWorkspace, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
@@ -174,6 +174,43 @@ describe('watch × workstreams', () => {
     const msgs = await thread(ws.conversationId)
     const ev = msgs.find(m => m.content.startsWith('The watch you set is done'))
     expect(ev).toMatchObject({ role: 'event', origin: 'segment:watch' })
+  })
+
+  it('final fix wave M1: a worker that dies while the result is being guarded leaves it UNDELIVERED — the next wake guards and delivers it', async () => {
+    met = false
+    let watchId = ''
+    const { drive } = harness(async function* (ctx, _m, seg) {
+      step(ctx)
+      if (seg === 0) {
+        const w = await callTool(ctx, 'watch', { command: 'test -f dist/ok', until: 'exit0', intervalSec: 600 })
+        watchId = w.watchId
+        yield { type: 'tool-result', name: 'watch', summary: 'watching' }
+      } else await callTool(ctx, 'finish_workstream', { summary: 'built' })
+      yield { type: 'done' }
+    })
+    const ws = await newWorkstream('m1-crash-mid-guard')
+    await drive(ws.conversationId, 1)
+    expect((await getWorkstream(ws.id))!.state).toBe('paused')
+    // The watch ends while the workstream waits — and the process "dies" inside the guard.
+    const realGuard = watchDeliveryDeps.guard
+    let guarded = 0
+    watchDeliveryDeps.guard = async () => { guarded++; throw new Error('worker killed mid-guard') }
+    met = true
+    try {
+      await rt.watches.poll(watchId).catch(() => 'threw')
+      await wakeWorkstreamForWatch(ws.id).catch(() => 'threw')
+    } finally { watchDeliveryDeps.guard = realGuard }
+    expect(guarded).toBeGreaterThan(0)
+    const [w] = await useDb().select().from(workspaceWatches).where(eq(workspaceWatches.id, watchId))
+    expect(w).toMatchObject({ state: 'met', deliveredAt: null })        // never claimed: not lost
+    expect((await segRuns(ws.conversationId)).filter(r => r.status === 'queued')).toEqual([])
+    // The next worker's wake: guarded again, claimed, delivered.
+    expect(await wakeWorkstreamForWatch(ws.id)).toBe('resumed')
+    const [d] = await useDb().select().from(workspaceWatches).where(eq(workspaceWatches.id, watchId))
+    expect(d!.deliveredAt).not.toBeNull()
+    expect(((await segRuns(ws.conversationId)).at(-1)!.input as { eventOrigin?: string }).eventOrigin).toBe('segment:watch')
+    await drive(ws.conversationId)
+    expect((await getWorkstream(ws.id))!.state).toBe('done')
   })
 
   it('a watch that fires while a segment runs waits for that segment to end, then becomes the next one', async () => {

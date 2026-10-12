@@ -138,15 +138,24 @@ export const dbWatchStore: WatchStore = {
   }
 }
 
-/**
- * A workstream's ended-but-undelivered watch results, claimed atomically (delivered_at set in the
- * same statement — a segment boundary and a wake racing for them never both get them). Oldest first.
- */
-export async function takeWorkstreamWatchResults(workstreamId: string): Promise<Array<{ id: string; text: string; workspaceId: string }>> {
-  const rows = await useDb().update(workspaceWatches).set({ deliveredAt: new Date() })
+/** Final fix wave (M1): a workstream's ended-but-undelivered watch results WITHOUT claiming them — the
+ *  caller guards them first and claims only then (claimWatchResults), so a crash or drain mid-guard
+ *  leaves them deliverable (re-guarded on redelivery). Oldest first. */
+export async function peekWorkstreamWatchResults(workstreamId: string): Promise<Array<{ id: string; text: string; workspaceId: string }>> {
+  const rows = await useDb().select({ id: workspaceWatches.id, text: workspaceWatches.resultText, endedAt: workspaceWatches.endedAt, workspaceId: workspaceWatches.workspaceId })
+    .from(workspaceWatches)
     .where(and(eq(workspaceWatches.workstreamId, workstreamId), sql`${workspaceWatches.state} <> 'armed'`, isNull(workspaceWatches.deliveredAt), isNotNull(workspaceWatches.resultText)))
-    .returning({ id: workspaceWatches.id, text: workspaceWatches.resultText, endedAt: workspaceWatches.endedAt, workspaceId: workspaceWatches.workspaceId })
   return rows.sort((a, b) => (a.endedAt?.getTime() ?? 0) - (b.endedAt?.getTime() ?? 0)).map(r => ({ id: r.id, text: r.text ?? '', workspaceId: r.workspaceId }))
+}
+
+/** Final fix wave (M1): claim exactly these results (delivered_at set atomically) — the ids this call
+ *  won; a result someone else claimed meanwhile is not returned. */
+export async function claimWatchResults(ids: string[]): Promise<string[]> {
+  if (!ids.length) return []
+  const rows = await useDb().update(workspaceWatches).set({ deliveredAt: new Date() })
+    .where(and(inArray(workspaceWatches.id, ids), isNull(workspaceWatches.deliveredAt)))
+    .returning({ id: workspaceWatches.id })
+  return rows.map(r => r.id)
 }
 
 /** Hand claimed results back (the segment they were for could not be queued). */
