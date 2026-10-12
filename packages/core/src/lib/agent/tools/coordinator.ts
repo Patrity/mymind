@@ -190,7 +190,8 @@ export const steerWorkstreamTool: AgentTool = {
       // Tony's Stop is his own act: the coordinator does not override it.
       if (child.state === 'paused' && child.lastOutcome === 'aborted') return { result: { ok: false, error: 'Tony stopped that child himself — ask him (ask_tony) or cancel it' }, summary: 'steer_workstream: stopped by Tony' }
       const { replyToWorkstream, kick } = await loop()
-      const r = await replyToWorkstream(child, { text: `Message from your coordinator: ${(a.message as string).trim()}`, modality: 'text' })
+      // Final fix wave (M2): a `coordinator` event row in the child's thread, never Tony's words.
+      const r = await replyToWorkstream(child, { text: (a.message as string).trim(), modality: 'text' }, { from: 'coordinator' })
       if (!r) return { result: { ok: false, error: 'that child has ended' }, summary: 'steer_workstream: ended' }
       await kick()
       return { result: { ok: true, delivered: r.steered ? 'at its next step' : 'as its next segment' }, summary: `steered: ${clip(child.goal)}` }
@@ -220,7 +221,8 @@ export const answerChildTool: AgentTool = {
         return { result: { ok: false, error: `that child is not waiting on a question (it is ${child.state}) — Tony may have answered it` }, summary: 'answer_child: no question' }
       }
       const { replyToWorkstream, kick } = await loop()
-      const r = await replyToWorkstream(child, { text: `Your coordinator answers: ${(a.answer as string).trim()}`, modality: 'text' })
+      // Final fix wave (M2/C4): its own event row, after the question turn it answers.
+      const r = await replyToWorkstream(child, { text: `Answer to your question: ${(a.answer as string).trim()}`, modality: 'text' }, { from: 'coordinator-answer' })
       if (!r) return { result: { ok: false, error: 'that child has ended' }, summary: 'answer_child: ended' }
       await kick()
       return { result: { ok: true, state: 'running' }, summary: `answered: ${clip(child.goal)}` }

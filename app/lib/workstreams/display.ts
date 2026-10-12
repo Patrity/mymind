@@ -1,7 +1,7 @@
 // Cycle 81 Task 6: pure display helpers for workstreams (spec §5.5) — kept out of the SFCs so the
 // labels, the budget maths and the event parsing are unit-tested.
 import {
-  BUDGET_LIMITS, resumeBudget,
+  BUDGET_LIMITS, COORDINATOR_ORIGIN, resumeBudget,
   type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
 } from '@mymind/core/shared/types/workstreams'
 import { splitOrigin } from '@mymind/core/shared/utils/event-origin'
@@ -102,6 +102,9 @@ export type EventDisplay =
   /** Cycle 83: a `segment:children` report (the wake prompt, or one steered into a running segment).
    *  Its body holds text CHILD runs wrote — untrusted; rendered only as escaped plain text. */
   | { kind: 'report'; title: string; body: string }
+  /** Cycle 83 final fix wave (M2): in a CHILD's thread, what its coordinator said (answer_child /
+   *  steer_workstream) — its own "Coordinator" bubble, never Tony's. Plain text. */
+  | { kind: 'coordinator'; body: string }
 
 /** The coordinator's lifecycle notes (coordinator.ts noteText): `Child workstream "<goal>" (id <id>) <what>`. */
 const LIFECYCLE: Array<{ test: (rest: string) => boolean; label: string; tone: Color; icon: string }> = [
@@ -154,6 +157,7 @@ export function eventDisplay(origin: string | null | undefined, text: string): E
     const icon = tone === 'success' ? 'i-lucide-circle-check' : tone === 'error' ? 'i-lucide-circle-x' : tone === 'neutral' ? 'i-lucide-reply' : 'i-lucide-hand'
     return { kind: 'workstream', workstreamId: detail, tone, icon, title, body }
   }
+  if (kind === COORDINATOR_ORIGIN) return { kind: 'coordinator', body: text }
   if (kind === 'segment' && detail === 'children') {
     const [head = '', ...rest] = text.split('\n')
     return { kind: 'report', title: clip(head.trim() || 'Child reports', 120), body: rest.join('\n').replace(/^\n+|\s+$/g, '') }

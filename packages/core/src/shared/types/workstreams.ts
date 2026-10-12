@@ -47,6 +47,11 @@ export interface ChildWait { ids: string[]; until: 'all' | 'any'; deadlineAt: nu
 
 export type WorkspaceMode = 'own' | 'shared'
 
+/** Cycle 83 final fix wave (M2): the origin of an event row in a CHILD's thread that its coordinator
+ *  wrote (answer_child / steer_workstream) — shown as a "Coordinator" bubble, never as Tony's, and read
+ *  by the child's model as `[from your coordinator] …`, never with Tony's user-role authority. */
+export const COORDINATOR_ORIGIN = 'coordinator'
+
 export interface WorkstreamDTO {
   id: string
   conversationId: string

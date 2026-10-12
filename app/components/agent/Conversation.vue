@@ -142,6 +142,10 @@ function reportEvent(id: string): EventOf<'report'> | null {
   const e = eventsById.value[id]
   return e?.kind === 'report' ? e : null
 }
+function coordinatorEvent(id: string): EventOf<'coordinator'> | null {
+  const e = eventsById.value[id]
+  return e?.kind === 'coordinator' ? e : null
+}
 </script>
 
 <template>
@@ -180,6 +184,10 @@ function reportEvent(id: string): EventOf<'report'> | null {
         <WorkstreamsReportCard
           v-else-if="reportEvent(m.id)"
           :event="reportEvent(m.id)!"
+        />
+        <WorkstreamsCoordinatorMessage
+          v-else-if="coordinatorEvent(m.id)"
+          :event="coordinatorEvent(m.id)!"
         />
         <USeparator
           v-else-if="dividerEvent(m.id)"

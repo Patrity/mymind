@@ -28,6 +28,7 @@ import { busApprovalChannel } from './bus-approvals'
 import { drainInboxFor } from './inbox'
 import { headlessTools } from './gate'
 import { eventModelText, wakeOrigin } from './event-text'
+import { COORDINATOR_ORIGIN } from '../../../shared/types/workstreams'
 import { groupTurns, costTurns, keepTrailingTurns, LIGHT_CONTEXT_TURNS, RUNTIME_CONTEXT_BUDGET } from './history'
 import { isSuppressedReply } from './suppress'
 import type { RunInput, RunOutcome } from './types'
@@ -291,9 +292,11 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       attachments: turnAttachments, signal: ac.signal, emit, runAgent: deps.runAgent,
       drainSteer: async () => {
         const fresh = await drainInboxFor(run.id)
-        drainedSteers.push(...fresh.map((i): Steer => i.kind === 'report' ? { event: i.text, origin: REPORT_ORIGIN } : i.text))
-        // The model reads a report exactly as it will read the persisted event row on every later turn.
-        return fresh.map(i => i.kind === 'report' ? eventModelText(REPORT_ORIGIN, i.text) : i.text)
+        // Reports and (final fix wave M2) a coordinator's steer into its child are EVENT rows.
+        const originOf = (i: { kind: string }) => i.kind === 'report' ? REPORT_ORIGIN : i.kind === 'coordinator' ? COORDINATOR_ORIGIN : null
+        drainedSteers.push(...fresh.map((i): Steer => { const o = originOf(i); return o ? { event: i.text, origin: o } : i.text }))
+        // The model reads them exactly as it will read the persisted event rows on every later turn.
+        return fresh.map((i) => { const o = originOf(i); return o ? eventModelText(o, i.text) : i.text })
       }, wake: isWake ? { reason: run.wakeReason ?? 'unspecified' } : undefined,
       runId: run.id, toolsets,
       ...(seg ? { maxSteps: seg.maxSteps, shouldStop: seg.shouldStop, onStep: seg.onStep, workstream: seg.promptInfo } : {}),

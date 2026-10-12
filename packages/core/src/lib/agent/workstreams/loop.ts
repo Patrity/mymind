@@ -32,7 +32,7 @@ import { agentRuns, channelApprovals, conversationMessages, conversations, works
 import { publishChange } from '../../../utils/live-bus'
 import { createRun } from '../runtime/runs'
 import { abortRun } from '../runtime/aborts'
-import { drainReportsFor, drainSteerFor, pushSteer } from '../runtime/inbox'
+import { drainCoordinatorFor, drainReportsFor, drainSteerFor, pushSteer } from '../runtime/inbox'
 import { busApprovalChannel, decideBusApproval, pendingBusApprovals } from '../runtime/bus-approvals'
 import { createRunEventWriter, type HubFrame, type RunEventWriter } from '../../bus/events'
 import { APPROVAL_WITHDRAWN } from '../../channels/approvals'
@@ -42,7 +42,7 @@ import type { StepUsage } from '../run'
 import type { WorkstreamPromptInfo } from '../prompt'
 import type { RunInput, RunOutcome } from '../runtime/types'
 import {
-  BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, normalizeTreeBudget, resumeBudget, ZERO_USED, type ChildWait, type StoredApprovalRequest, type TreeBudget, type WorkstreamAttention,
+  BUDGET_LIMITS, COORDINATOR_ORIGIN, DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, normalizeTreeBudget, resumeBudget, ZERO_USED, type ChildWait, type StoredApprovalRequest, type TreeBudget, type WorkstreamAttention,
   type WorkstreamBudget, type WorkstreamDTO, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 import {
@@ -451,7 +451,8 @@ async function appendEvent(conversationId: string, content: string, origin: stri
 async function foldIntoQueued(ws: WorkstreamRow, text: string): Promise<string | null> {
   return withQueuedSegment(ws.conversationId, async (run, tx) => {
     const input = run.input as RunInput
-    if (input.eventOrigin === 'segment:children' || input.eventOrigin === 'segment:watch') {
+    // Final fix wave (M2): a coordinator's words queued as a child's segment are kept the same way.
+    if (input.eventOrigin === 'segment:children' || input.eventOrigin === 'segment:watch' || input.eventOrigin === COORDINATOR_ORIGIN) {
       await appendEvent(ws.conversationId, input.text, input.eventOrigin, { tx })
       const { eventOrigin: _drop, ...rest } = input
       await tx.update(agentRuns).set({ input: { ...rest, text } }).where(eq(agentRuns.id, run.id))
@@ -528,8 +529,13 @@ export function threadTitle(goal: string): string {
 
 /** What a message typed into a workstream's thread does (spec §5.4): while a segment runs it is a
  *  steer; while queued it joins the queued segment; in attention (or stalled) it starts the next
- *  segment. Null for a finished workstream — the caller treats it as an ordinary chat turn. */
-export async function replyToWorkstream(ws: WorkstreamRow, input: RunInput): Promise<{ runId: string; steered: boolean } | null> {
+ *  segment. Null for a finished workstream — the caller treats it as an ordinary chat turn.
+ *  Cycle 83 final fix wave (M2/C4) — `o.from`: the CHILD's coordinator is speaking (answer_child /
+ *  steer_workstream), never Tony. Its words are a `coordinator` event row (a "Coordinator" bubble;
+ *  `[from your coordinator] …` to the model), never his user row: a steer is spliced into the running
+ *  turn, an answer waits for the question turn to end (so it follows the question), a queued segment
+ *  gets the row before it is claimed, and otherwise the row is the next segment's prompt. */
+export async function replyToWorkstream(ws: WorkstreamRow, input: RunInput, o: { from?: 'coordinator' | 'coordinator-answer' } = {}): Promise<{ runId: string; steered: boolean } | null> {
   if (isTerminal(ws.state)) return null
   const plain = !input.attachments?.length && !input.skill
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -537,17 +543,21 @@ export async function replyToWorkstream(ws: WorkstreamRow, input: RunInput): Pro
       .where(and(eq(agentRuns.conversationId, ws.conversationId), eq(agentRuns.kind, 'workstream'), inArray(agentRuns.status, ['queued', 'running'])))
       .limit(1)
     if (seg?.status === 'running' && plain) {
-      if (await pushSteer(seg.id, ws.conversationId, input.text, 'user')) return { runId: seg.id, steered: true }
+      if (await pushSteer(seg.id, ws.conversationId, input.text, o.from ?? 'user')) return { runId: seg.id, steered: true }
       continue // it just finished: look again
     }
     if (seg?.status === 'queued' && plain) {
-      const id = await foldIntoQueued(ws, input.text)
+      const id = o.from
+        ? await withQueuedSegment(ws.conversationId, async (_run, tx) => { await appendEvent(ws.conversationId, input.text, COORDINATOR_ORIGIN, { tx }) })
+        : await foldIntoQueued(ws, input.text)
       if (id) return { runId: id, steered: false }
       continue // claimed meanwhile: steer instead
     }
     // No segment (attention, stalled), or attachments/skill that can't ride a steer: its own segment
     // (with one already there, enqueueSegment folds the text into a queued one instead).
-    const runId = await enqueueSegment(ws, { text: input.text, ...(input.attachments?.length ? { attachments: input.attachments } : {}), ...(input.origin ? { origin: input.origin } : {}) })
+    const runId = o.from
+      ? await enqueueSegment(ws, { text: input.text, eventOrigin: COORDINATOR_ORIGIN })
+      : await enqueueSegment(ws, { text: input.text, ...(input.attachments?.length ? { attachments: input.attachments } : {}), ...(input.origin ? { origin: input.origin } : {}) })
     if (runId) {
       // His message moves the work on: a card parked over a restart is withdrawn (the model can ask again).
       if (!seg) await releaseParked(ws)
@@ -600,6 +610,29 @@ function replyHint(tag?: number | null): string {
   return tag ? `Reply to answer (#${tag} — start your reply with #${tag} when other questions are waiting too).` : 'Reply to answer.'
 }
 
+/** What a finished segment never read: Tony's typed words, and (final fix wave M2/C4) what its
+ *  coordinator sent it — an answer_child answer always waits for here. */
+interface Unread { typed: string[]; coordinator: string[]; any: boolean }
+async function drainUnread(runId: string): Promise<Unread> {
+  const typed = await drainSteerFor(runId)
+  const coordinator = await drainCoordinatorFor(runId)
+  return { typed, coordinator, any: typed.length + coordinator.length > 0 }
+}
+
+/** The next segment from what a segment never read. Tony's words are its prompt (his user row), the
+ *  coordinator's words their own event row before it; the coordinator's words alone are the prompt as
+ *  that event row. No segment runs now (every caller is past a segment's end), so a row appended here
+ *  never forks the thread; with one already queued, it is written before that segment is claimed. */
+async function enqueueUnread(ws: WorkstreamRow, u: Unread): Promise<string | null> {
+  const from = u.coordinator.join('\n\n')
+  if (u.typed.length) {
+    if (from) await appendEvent(ws.conversationId, from, COORDINATOR_ORIGIN)
+    return enqueueSegment(ws, { text: u.typed.join('\n\n') })
+  }
+  return (await enqueueSegment(ws, { text: from, eventOrigin: COORDINATOR_ORIGIN }))
+    ?? withQueuedSegment(ws.conversationId, async (_run, tx) => { await appendEvent(ws.conversationId, from, COORDINATOR_ORIGIN, { tx }) })
+}
+
 /** After a segment's run has finished (queue.ts execute, after finishRun committed). Returns the
  *  next segment's run id, if one was queued (the caller's re-pump claims it). */
 export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Promise<string | null> {
@@ -640,10 +673,10 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
 
   // Waiting on Tony (ask_tony). Words he sent while the segment was wrapping up ARE the answer.
   if (current.state === 'attention') {
-    const unread = await drainSteerFor(run.id)
+    const unread = await drainUnread(run.id)
     await patchWorkstream(ws.id, { lastOutcome: outcome.status, failures: 0 })
-    if (!unread.length) return null
-    const next = await enqueueSegment(current, { text: unread.join('\n\n') })
+    if (!unread.any) return null
+    const next = await enqueueUnread(current, unread)
     if (next) await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
     return next
   }
@@ -651,10 +684,10 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   // Paused DURING the segment by one of its own tools (fix round 1, I2: a watch over the
   // workstream's lifetime caps). It stays paused for Tony; his unread words resume it.
   if (current.state === 'paused') {
-    const unread = await drainSteerFor(run.id)
+    const unread = await drainUnread(run.id)
     await patchWorkstream(ws.id, { lastOutcome: outcome.status })
-    if (!unread.length) return null
-    const next = await enqueueSegment(current, { text: unread.join('\n\n') })
+    if (!unread.any) return null
+    const next = await enqueueUnread(current, unread)
     if (next) await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
     return next
   }
@@ -662,9 +695,9 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   // Cycle 83: wait_for_workstreams ended the segment — park until the children answer (Tony's
   // unread words first: the model can wait again after reading them).
   if (stop === 'wait' && outcome.status === 'done' && seg?.wait) {
-    const unread = await drainSteerFor(run.id)
+    const unread = await drainUnread(run.id)
     await patchWorkstream(ws.id, { failures: 0, lastOutcome: 'wait' })
-    if (unread.length) return enqueueSegment(current, { text: unread.join('\n\n') })
+    if (unread.any) return enqueueUnread(current, unread)
     // Fix round 3: child reports were steered in but never read (the segment stopped on this very
     // wait) — they are in the thread now, and their questions count as shown: never park on them.
     if (leftoverReports) return enqueueWhy(current, 'children', 'Child reports arrived after you called wait_for_workstreams — they are above.')
@@ -680,10 +713,10 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
 
   if (outcome.status === 'aborted') {
     // Not cancel, not budget, not a drain: Tony pressed Stop in the thread. Pause, don't lose it.
-    const unread = await drainSteerFor(run.id)
-    if (unread.length) {
+    const unread = await drainUnread(run.id)
+    if (unread.any) {
       await patchWorkstream(ws.id, { lastOutcome: 'aborted' })
-      return enqueueSegment(current, { text: unread.join('\n\n') })
+      return enqueueUnread(current, unread)
     }
     await pauseWorkstream(current, 'Stopped. Resume it, reply in this thread to continue, or cancel it.', 'aborted')
     return null
@@ -699,8 +732,8 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   // instead of burning the budget on empty segments (a pause, not a question: I3).
   const idle = stop !== 'yield' && (seg?.toolCalls ?? 1) === 0
   if (idle && current.lastOutcome === 'idle') {
-    const unread = await drainSteerFor(run.id)
-    if (unread.length) return enqueueSegment(current, { text: unread.join('\n\n') })
+    const unread = await drainUnread(run.id)
+    if (unread.any) return enqueueUnread(current, unread)
     const why = 'Paused: the last two segments made no progress (no tool calls, no finish). Resume it, reply in its thread with what to do next, or cancel it.'
     await pauseWorkstream(current, why, 'idle', `⚙ Workstream paused — ${current.goal}\n\n${why}`)
     return null
@@ -742,9 +775,9 @@ async function watchContinuation(ws: WorkstreamRow, run: AgentRun, seg: Segment 
   const ownEnd = !!seg && seg.stepsTaken() < seg.maxSteps
   const wait = !fired && ownEnd && await workstreamHasArmedWatch(ws.id)
   if (!fired && !wait) return undefined
-  const unread = await drainSteerFor(run.id)
+  const unread = await drainUnread(run.id)
   await patchWorkstream(ws.id, { failures: 0, lastOutcome: 'done' })
-  if (unread.length) return enqueueSegment(ws, { text: unread.join('\n\n') })
+  if (unread.any) return enqueueUnread(ws, unread)
   if (fired) {
     const next = await enqueueWatchResults(ws)
     if (next !== undefined) return next
@@ -850,8 +883,8 @@ export async function onSegmentHandlerFailed(run: AgentRun, err: unknown): Promi
 
 /** The next segment: Tony's unread words if there are any, else the system continuation. */
 async function continueWith(ws: WorkstreamRow, run: AgentRun, why: SegmentWhy, detail?: string): Promise<string | null> {
-  const unread = await drainSteerFor(run.id)
-  if (unread.length) return enqueueSegment(ws, { text: unread.join('\n\n') })
+  const unread = await drainUnread(run.id)
+  if (unread.any) return enqueueUnread(ws, unread)
   return enqueueWhy(ws, why, detail)
 }
 
@@ -888,13 +921,13 @@ export async function onSegmentInterrupted(run: AgentRun): Promise<string | null
   const waitingOnTony = ws.state === 'attention' && (att?.kind === 'question' || (att?.kind === 'approval' && !!att.request))
   if (waitingOnTony) {
     // Words he sent to the dead segment are his answer (review M7).
-    const unread = await drainSteerFor(run.id)
-    if (!unread.length) {
+    const unread = await drainUnread(run.id)
+    if (!unread.any) {
       await patchWorkstream(ws.id, { lastOutcome: att?.kind === 'approval' ? 'parked' : 'interrupted' })
       return null
     }
     await releaseParked(ws)
-    const next = await enqueueSegment(ws, { text: unread.join('\n\n') })
+    const next = await enqueueUnread(ws, unread)
     if (next) await patchWorkstream(ws.id, { state: 'running', attention: null, lastOutcome: 'interrupted' }, RUNNABLE)
     return next
   }

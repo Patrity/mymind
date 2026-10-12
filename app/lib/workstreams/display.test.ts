@@ -172,6 +172,12 @@ describe('eventDisplay: segment:children reports', () => {
   })
 })
 
+describe('eventDisplay: a coordinator\'s words in its child\'s thread (final fix wave M2)', () => {
+  it('is its own Coordinator bubble (plain text), not a divider and not Tony\'s', () => {
+    expect(eventDisplay('coordinator', 'Answer to your question: use the BLUE one\n<b>x</b>')).toEqual({ kind: 'coordinator', body: 'Answer to your question: use the BLUE one\n<b>x</b>' })
+  })
+})
+
 const dto = (o: Partial<WorkstreamDTO>): WorkstreamDTO => ({
   id: ID, conversationId: ID, originConversationId: null, goal: 'g', state: 'running', toolsets: [],
   budget: { maxSteps: 200, maxWallMs: 3_600_000 }, used: { ...ZERO_USED }, attention: null, summary: null, failureReason: null,

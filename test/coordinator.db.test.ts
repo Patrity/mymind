@@ -559,7 +559,10 @@ describe('coordinator: questions, answers and routing (spec D8)', () => {
     expect(coordSegs[1]!.last).toContain('WHICH COLOUR?')
     expect(answered).toMatchObject({ ok: true })
     const childSegs = seen.filter(s => s.conv === childConv)
-    expect(childSegs[1]!.last).toBe('Your coordinator answers: use the BLUE one')
+    // Final fix wave (M2): the coordinator's words reach the child labelled as its coordinator's, not Tony's.
+    expect(childSegs[1]!.last).toBe('[from your coordinator] Answer to your question: use the BLUE one')
+    const childRows = await thread(childConv)
+    expect(childRows.filter(m => m.content.includes('use the BLUE one')).map(m => [m.role, m.origin])).toEqual([['event', 'coordinator']])
     // Tony never heard about the child's question (only the coordinator's own done).
     expect(texts.join('\n')).not.toContain('WHICH COLOUR')
     expect((await thread(origin)).some(m => m.content.includes('WHICH COLOUR'))).toBe(false)
@@ -634,8 +637,12 @@ describe('coordinator: questions, answers and routing (spec D8)', () => {
     const call = async (name: string, args: Record<string, unknown>) => (await tool(name).handler(args, { signal: new AbortController().signal, runId: seg.runId })).result as Record<string, any>
     // The child's first segment is still queued: the message joins it.
     expect(await call('steer_workstream', { id: r.children[0]!.id, message: 'focus on X' })).toMatchObject({ ok: true })
-    const q = (await activeSegs((await getWorkstream(r.children[0]!.id))!.conversationId))[0]!
-    expect((q.input as { text: string }).text).toContain('Message from your coordinator: focus on X')
+    const steeredConv = (await getWorkstream(r.children[0]!.id))!.conversationId
+    const q = (await activeSegs(steeredConv))[0]!
+    // Final fix wave (M2): its own `coordinator` event row, written before the queued segment is claimed;
+    // the segment's prompt is untouched (never folded into anything that reads as Tony's).
+    expect((q.input as { text: string }).text).not.toContain('focus on X')
+    expect((await thread(steeredConv)).map(m => [m.role, m.origin, m.content])).toEqual([['event', 'coordinator', 'focus on X']])
     expect(await call('steer_workstream', { id: ro.children[0]!.id, message: 'x' })).toMatchObject({ ok: false, error: expect.stringMatching(/not one of your child workstreams/) })
     const stopped = (await getWorkstream(r.children[1]!.id))!
     await settleSegments(stopped.conversationId)
@@ -1443,5 +1450,71 @@ describe('final fix wave', () => {
     await patchWorkstream(a.ws.id, { state: 'running', attention: null })
     expect(await tagQuestion(a.ws.id)).toBeNull()         // not a question any more
     for (const x of [a, b]) await controlWorkstream({ workstreamId: x.ws.id, action: 'cancel' })
+  })
+
+  it('M2 + C4: answer_child while the child\'s question turn is still running — never drained mid-turn, it becomes the next segment AFTER the question; a Coordinator row (never Tony\'s), read as [from your coordinator]', async () => {
+    const { ws } = await idleCoordinator('m2')
+    const coordSeg = await segmentFor(ws.id)
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 m2 child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    let midTurn: string[] | undefined
+    let answered: Record<string, any> | undefined
+    const { seen, drive } = harness(() => async function* (ctx, _m, seg) {
+      step(ctx)
+      if (seg === 0) {
+        await callTool(ctx, 'ask_tony', { question: 'M2-Q: red or blue?' })
+        // The coordinator answers while this (the question) turn is still running…
+        answered = (await tool('answer_child').handler({ id: kid.id, answer: 'BLUE' }, { signal: new AbortController().signal, runId: coordSeg.runId })).result as Record<string, any>
+        // …and a step boundary here must NOT splice it in (it would land before the question).
+        midTurn = await ctx.drainSteer?.()
+        yield { type: 'text-delta', text: 'I asked my coordinator.' }
+      } else {
+        await callTool(ctx, 'finish_workstream', { summary: 'painted blue' })
+      }
+      yield { type: 'done' }
+    })
+    await drive(kid.conversationId)
+    expect(answered).toMatchObject({ ok: true })
+    expect(midTurn).toEqual([])
+    expect((await getWorkstream(kid.id))!.state).toBe('done')
+    // The model read it labelled as its coordinator's words.
+    expect(seen.filter(x => x.conv === kid.conversationId)[1]!.last).toBe('[from your coordinator] Answer to your question: BLUE')
+    // Persisted as a coordinator event row AFTER the question turn's reply, never as a user row.
+    const rows = await thread(kid.conversationId)
+    const at = rows.findIndex(m => m.origin === 'coordinator')
+    expect(rows[at]).toMatchObject({ role: 'event', content: 'Answer to your question: BLUE' })
+    expect(rows.findIndex(m => m.role === 'assistant' && m.content.includes('I asked my coordinator.'))).toBeLessThan(at)
+    expect(rows.some(m => m.role === 'user' && m.content.includes('BLUE'))).toBe(false)
+    // The UI maps it to its own Coordinator bubble (a system/event message the display turns into one).
+    const ui = toUIMessages((await getConversation(kid.conversationId))!.messages as never)
+    const coordMsg = ui.find(m => (m.metadata as { event?: { origin: string | null } } | undefined)?.event?.origin === 'coordinator')!
+    expect(coordMsg.role).toBe('system')
+    const { eventDisplay } = await import('../app/lib/workstreams/display')
+    expect(eventDisplay('coordinator', (coordMsg.parts.find(p => p.type === 'text') as { text: string }).text)).toEqual({ kind: 'coordinator', body: 'Answer to your question: BLUE' })
+    await coordSeg.release()
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M2: steer_workstream into a RUNNING child is spliced as a coordinator event row (the model reads [from your coordinator] …), never a user row', async () => {
+    const { ws } = await idleCoordinator('m2-steer')
+    const coordSeg = await segmentFor(ws.id)
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 m2 steered' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    let spliced: string[] | undefined
+    const { drive } = harness(() => async function* (ctx, _m, seg) {
+      step(ctx)
+      if (seg === 0) {
+        await tool('steer_workstream').handler({ id: kid.id, message: 'ALSO CHECK Y' }, { signal: new AbortController().signal, runId: coordSeg.runId })
+        spliced = await ctx.drainSteer?.()
+        await callTool(ctx, 'finish_workstream', { summary: 'ok' })
+      }
+      yield { type: 'done' }
+    })
+    await drive(kid.conversationId)
+    expect(spliced).toEqual(['[from your coordinator] ALSO CHECK Y'])
+    const rows = await thread(kid.conversationId)
+    expect(rows.filter(m => m.content.includes('ALSO CHECK Y')).map(m => [m.role, m.origin, m.content])).toEqual([['event', 'coordinator', 'ALSO CHECK Y']])
+    await coordSeg.release()
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 })

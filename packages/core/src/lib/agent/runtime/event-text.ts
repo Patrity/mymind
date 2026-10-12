@@ -13,5 +13,7 @@ export function eventModelText(origin: string | null, content: string): string {
   // Cycle 81: a workstream's report into the chat it was started from (the detail is its id — not
   // for the model).
   if (kind === 'workstream') return `Workstream update: ${content}`
+  // Cycle 83 final fix wave (M2): a child workstream's coordinator speaking — not Tony.
+  if (kind === 'coordinator') return `[from your coordinator] ${content}`
   return `Note: ${content}`
 }
