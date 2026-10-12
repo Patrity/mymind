@@ -2,10 +2,10 @@
 title: Coordinator — child workstreams, a `subagents` model class, per-model in-flight pools, budget-governed fan-out (cycle 83, harness step 4)
 cycle: 83
 date: 2026-10-12
-status: built, awaiting deploy
+status: deployed  # 2026-10-12 CD 38255467372; Tony UI fan-out acceptance pending
 branch: feat/coordinator (worktree .claude/worktrees/feat+sandbox, base 6fe0595)
-merged: false
-deployed: false
+merged: true  # ff to master c973a52
+deployed: true  # CD run 38255467372 (2026-10-12)
 specs:
   - ../superpowers/specs/2026-10-12-coordinator-design.md
 plans:
@@ -254,6 +254,12 @@ whole generation (4.5–5.5 s) for a server slot, with no further aggregate gain
 for a default "just below that knee," which Task 1 initially read as 16; the fix round corrected
 the shipped constant to **6** (`DEFAULT_MAX_IN_FLIGHT`), deliberately below 8 so chat keeps
 headroom on a fully-pooled model (ruling C1).
+
+## Deploy results (2026-10-12)
+- **LXC 114 resized** to 6 cores / 16 GB / 64 GB (`pct set` + `pct resize`, online); `SANDBOX_MAX_RUNNING=4` in `.env.native`; `pct reboot 114`.
+- **Cycle 82 persistence probe passed:** after the reboot docker, mymind, mymind-worker and mymind-sandbox-net came back active; `-A FORWARD -j DOCKER-USER` first; MYMIND-SANDBOX-FWD/-IN present; worker `preflight ok`; every isolation probe still blocked, internet 200.
+- **CD 38255467372** green (test + deploy): migrations 0077–0080 applied (81 total), `worker healthy`, `sandbox ok`, `/api/health` 200, 0 worker errors in the first 10 min. `workstreams.is_child`/`parent_id`/`tree_away_at` and `workstream_question_tags` present.
+- **Not yet run:** the real ≥ 6-child fan-out and pool-queue probes need a session (start_workstream is session-only) — Tony's UI acceptance.
 
 ## Prod acceptance checklist
 

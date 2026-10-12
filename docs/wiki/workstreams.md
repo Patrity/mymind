@@ -4,7 +4,7 @@ status: shipped
 cycle: 81 (workspace integration: cycle 82; coordinator + child workstreams: cycle 83)
 updated: 2026-10-12
 mymind_id: a5fa582b-9998-41b3-a9b3-53a41c8a0642
-mymind_hash: 9ffce1a1409b822df9142338a471ec0fc37f83aa16a760fb40d92ce1ccbf3bcf
+mymind_hash: 661e764e2cd69d0a041a18a85ba9b4c2caf67aad15b56ee4b20c5b3c20871330
 ---
 
 # Workstreams
