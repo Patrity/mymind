@@ -124,3 +124,14 @@ describe('TailBuffer', () => {
     expect(b.truncated).toBe(true)
   })
 })
+
+describe('follow-up N5: the limits probe is not a workspace container', () => {
+  it('carries mymind.probe, never mymind.workspace (the boot reconcile lists by the latter)', async () => {
+    const { limitsProbeArgs } = await import('./docker')
+    const a = limitsProbeArgs({ name: 'mymind-wsprobe-x', image: 'img', workspaceId: 'limits-probe', hostDir: '/tmp/p', labels: { 'mymind.test': 'r' }, probe: true })
+    const labels = a.flatMap((x, i) => (x === '--label' ? [a[i + 1]] : []))
+    expect(labels).toContain('mymind.probe=1')
+    expect(labels).toContain('mymind.test=r')
+    expect(labels.some(l => l!.startsWith('mymind.workspace='))).toBe(false)
+  })
+})

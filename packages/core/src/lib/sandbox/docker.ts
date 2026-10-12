@@ -11,6 +11,9 @@ export const WORKSPACE_MOUNT = '/workspace'
 export const LABEL_WORKSPACE = 'mymind.workspace'
 export const LABEL_TAINTED = 'mymind.tainted'
 export const LABEL_TEST = 'mymind.test'
+/** Follow-up N5: the limits-probe container's own label — NOT mymind.workspace, so the boot
+ *  reconcile (which lists by mymind.workspace) never removes a probe mid-run. */
+export const LABEL_PROBE = 'mymind.probe'
 export const SANDBOX_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
 /** The base env of every sandbox process — nothing else unless a secret is opted in (spec §6). */
@@ -44,6 +47,8 @@ export interface ContainerSpec {
   dns?: readonly string[]
   network?: string
   limits?: SandboxLimits
+  /** The limits probe: labelled LABEL_PROBE instead of LABEL_WORKSPACE (N5). */
+  probe?: boolean
 }
 
 /** RLIMIT_FSIZE for every sandbox process (review I2): no single file can outgrow 1 GiB. */
@@ -53,7 +58,7 @@ export const LABEL_FLAGS = 'mymind.flags'
 /** Flags shared by the long-lived workspace container and the one-off tainted container. */
 function isolationFlags(spec: ContainerSpec): string[] {
   const l = spec.limits ?? SANDBOX_LIMITS
-  const labels = { [LABEL_WORKSPACE]: spec.workspaceId, ...spec.labels }
+  const labels = { ...(spec.probe ? { [LABEL_PROBE]: '1' } : { [LABEL_WORKSPACE]: spec.workspaceId }), ...spec.labels }
   return [
     '--user', `${SANDBOX_UID}:${SANDBOX_UID}`,
     '--cap-drop', 'ALL',
