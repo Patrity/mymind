@@ -4,7 +4,7 @@ status: shipped
 cycle: 80 (bus, env mapper, worker: cycle 81; sandbox: cycle 82)
 updated: 2026-10-11
 mymind_id: 4c23fd31-c5f1-4648-868a-b584ffa5f308
-mymind_hash: 53b7ea0f157bcf6e1f72c6d7acfa0ce08ed5cfd67b12113f4ab0f334df77e3ce
+mymind_hash: dd4c583a9b4b5b2fed24e03fcce095a978b40496a8f0f58d8a0467bfcb640f6a
 ---
 
 # `@mymind/core`

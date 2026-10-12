@@ -3,6 +3,8 @@ title: Agent Exec — Credentialed Native-Root Exec (Cycle B3.2; always-armed si
 status: shipped
 cycle: 42 (toolset: cycle 82)
 updated: 2026-10-11
+mymind_id: 7cd33c6b-16d2-44be-988d-05fab734e28e
+mymind_hash: 871a7ce7b60dedfff25c3889f8ba024150070101dff3c064c45ce85203382a69
 ---
 
 # Agent Exec — Credentialed Native-Root Exec

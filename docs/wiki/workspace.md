@@ -3,6 +3,8 @@ title: Sandboxed workspace (per-workspace Docker sandbox)
 status: shipped
 cycle: 82
 updated: 2026-10-11
+mymind_id: 63317625-315e-4c8d-afab-8014d4dfeeda
+mymind_hash: a391a34511ead9a4deabc89f7f3c97fe19300e137c492a8cc0e84767d9164c40
 ---
 
 # Sandboxed workspace
