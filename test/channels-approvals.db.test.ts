@@ -184,14 +184,15 @@ describe('imessageApprovalChannel', () => {
     const p = imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(REQ)
     const { promptGuid } = await promptFor(run)
     await resolveTapback(tapback(promptGuid, { tapback: 'dislike' }))
-    expect(await p).toMatchObject({ approved: false })
+    expect(await p).toEqual({ approved: false, decidedBy: 'tony' })
     expect((await rowsFor(run))[0]!.status).toBe('denied')
   })
 
   it('no tapback → expired and denied', async () => {
     const run = await newRun()
     const t0 = Date.now()
-    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(REQ)).toMatchObject({ approved: false })
+    // Fix round 2: an unanswered prompt reports a timeout — a mirrored prompt never forwards it as Tony's no.
+    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(REQ)).toEqual({ approved: false, decidedBy: 'timeout' })
     expect(Date.now() - t0).toBeGreaterThanOrEqual(450)
     const [row] = await rowsFor(run)
     expect(row!.status).toBe('expired')
@@ -601,7 +602,7 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     const p = imessageApprovalChannel(run, CHAT, { ...SLOW, client: bb, signal: ac.signal })(RSVP, { judge })
     await promptFor(run)
     ac.abort()
-    expect(await p).toMatchObject({ approved: false })
+    expect(await p).toEqual({ approved: false, decidedBy: 'system' })
     await judge.writes()
     expect(decisions).toEqual([['cancelled', 'system']])
   })
