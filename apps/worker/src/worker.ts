@@ -101,7 +101,7 @@ export function commandHandlers(deps: CommandDeps): CommandHandlers {
       return deps.workspaceReenableNetwork(p)
     },
     'workspace-read-text': async (p) => {
-      if (!p || typeof p.workspaceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(p.workspaceId) || typeof p.path !== 'string' || !p.path || p.path.length > 4096 || (p.tainted !== undefined && typeof p.tainted !== 'boolean')) throw new Error('workspace-read-text: bad payload')
+      if (!p || typeof p.workspaceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(p.workspaceId) || typeof p.path !== 'string' || !p.path || p.path.length > 4096 || (p.tainted !== undefined && typeof p.tainted !== 'boolean') || (p.offline !== undefined && typeof p.offline !== 'boolean')) throw new Error('workspace-read-text: bad payload')
       return deps.workspaceReadText(p)
     },
     'workspace-view': async (p) => {

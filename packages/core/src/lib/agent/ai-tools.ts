@@ -10,7 +10,7 @@ import { publishActivity } from './bus'
 import { registerUndo } from './undo'
 import { recordEvent, withSpan } from '../observability/record'
 import type { ToolsetId } from './toolsets'
-import { carriesInjectionWarning, carriesWorkspaceTaint, producedContent } from './tool-history'
+import { carriesInjectionWarning, carriesWorkspaceTaint, childTaintOf, producedContent } from './tool-history'
 import { guardOutput, guardReasons, guardWarning, outputWarningDTO, wrapFlagged, type GuardInput, type GuardVerdict } from './judge/guard'
 import { RUN_CALL_ARGS_CHARS, TAINT_SOURCES, type OutputWarningDTO, type RunCall, type RunTaint, type TaintFlag, type TaintSource } from './judge/types'
 import { cutAt } from './judge/verdict'
@@ -84,6 +84,12 @@ export const TAINT_TITLES: Record<TaintSource, { web: string; background: string
     background: 'Background work from a tainted workspace',
     command: 'Command from a tainted workspace',
     clause: 'Bridget used a workspace that has handled untrusted content'
+  },
+  unverified: {
+    web: 'Web request after unchecked content',
+    background: 'Background work after unchecked content',
+    command: 'Command after unchecked content',
+    clause: 'Bridget read content the injection check could not verify (it timed out or was unavailable)'
   }
 }
 
@@ -198,7 +204,10 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
     }
     if (!v.flagged && nestedFlagged) v = { ...v, flagged: true, by: 'nested' }
     if (!v.flagged) return null
-    addTaint('flagged')
+    // Final follow-up (N2): only a REAL verdict (flag-alone heuristic, classifier, a flagged nested
+    // source) is `flagged` — persisted on a workstream for life. A fail-closed flag (the check could not
+    // run) is `unverified`: this run only, never persisted or inherited.
+    addTaint(v.by === 'fail-closed' ? 'unverified' : 'flagged')
     // Final fix wave (I5): only a REAL verdict — a flag-alone heuristic signal or the classifier saying
     // injection — takes the workspace offline (persistent). A fail-closed flag (the classifier timed
     // out, waited too long for a slot, errored, was off, or Stop cancelled it) decided nothing about
@@ -326,6 +335,8 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           // (its files may be mail-derived) — the result says so with `workspaceTainted`.
           if (t.taints && producedContent(exec.result)) addTaint('mail')
           if (carriesWorkspaceTaint(exec.result)) addTaint('workspace')
+          // Final follow-up: a tainted child's persisted sources (mail / flagged) taint this run too.
+          for (const x of childTaintOf(exec.result)) addTaint(x)
           // Cycle 84 Task 3: the output guard, BEFORE the model (or the history) sees the result.
           const guarded = t.guard ? await guardResult(t, exec.result, callId, nestedFlagged) : null
           if (guarded) trailEntry.flagged = true

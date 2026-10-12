@@ -194,6 +194,26 @@ describe('exec', () => {
     expect((await m.exec(WS, 'echo back')).tainted).toBe(false)
     expect(d.containers.get(`mymind-ws-${WS}`)!.State.Running).toBe(true)
   })
+  it('final follow-up (I5): offline-only — a one-off --network none run, no secrets; the workspace is NOT flagged and its networked container keeps running', async () => {
+    const d = fakeDocker()
+    const store = memStore()
+    const m = mgr(d, store)
+    await m.exec(WS, 'echo hi')
+    expect(d.containers.get(`mymind-ws-${WS}`)!.State.Running).toBe(true)
+    d.calls.length = 0
+    const r = await m.exec(WS, 'curl x', { offline: true, secrets: { TOKEN: 't' } })
+    expect(r).toMatchObject({ tainted: false, offline: true })
+    const run = d.calls.find(c => c[0] === 'run')!
+    expect(run[run.indexOf('--network') + 1]).toBe('none')
+    expect(run.join(' ')).not.toContain('TOKEN')
+    expect(d.calls.some(c => c[0] === 'kill')).toBe(false)
+    expect(store.rows.get(WS)!.tainted).toBeFalsy()
+    expect(d.containers.get(`mymind-ws-${WS}`)!.State.Running).toBe(true)
+    // `tainted` wins when both are set.
+    expect((await m.exec(WS, 'cat evil', { tainted: true, offline: true })).tainted).toBe(true)
+    expect(store.rows.get(WS)!.tainted).toBe(true)
+  })
+
   it('taint fails closed when the networked container cannot be stopped', async () => {
     const d = fakeDocker()
     const m = mgr(d)

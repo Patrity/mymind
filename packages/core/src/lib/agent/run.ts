@@ -179,6 +179,8 @@ export interface RunDeps {
   /** Test-only override for the reasoning chain (model + registry modelDefId pairs), used
    *  in place of reasoningChain() when present. */
   chain?: { model: unknown; modelDefId: string }[]
+  /** Test-only: the output guard (default judge/guard.ts guardOutput). */
+  guard?: import('./ai-tools').RunHooks['guard']
 }
 
 /** One finished model step's usage (AI SDK `finish-step`), for per-step accounting (workstreams). */
@@ -256,8 +258,12 @@ export async function* runAgent(
   // Task 4 fix round 0 (C1/C2): with its reasons — the card heading and the judge read them.
   const seen = historyTaint(policed, tainting)
   // C1: plus the caller's sticky taint (a workstream's stored sources) — never decays.
+  // Final follow-up (N1): a caller that passes its own taint (a workstream segment) derives `workspace`
+  // LIVE from the workspace's flag — a `workspaceTainted` result still in the history window must not
+  // re-taint a workspace Tony has re-enabled. (A tainted child's mail/flagged arrive as `childTaint`.)
+  const fromHistory = ctx.taint ? seen.sources.filter(x => x !== 'workspace') : seen.sources
   const initialTaint: import('./judge/types').RunTaint = {
-    sources: TAINT_SOURCES.filter(x => seen.sources.includes(x) || (ctx.taint?.initial ?? []).includes(x)),
+    sources: TAINT_SOURCES.filter(x => fromHistory.includes(x) || (ctx.taint?.initial ?? []).includes(x)),
     flags: seen.flags
   }
   const initiallyTainted = initialTaint.sources.length > 0
@@ -275,7 +281,7 @@ export async function* runAgent(
         recentMessages: judgeMessages(messages)
       }
     : undefined
-  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted, initialTaint, judge, onTaint: ctx.taint?.onChange, ...(ctx.nestedGuard ? { nestedGuard: true } : {}) })
+  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted, initialTaint, judge, onTaint: ctx.taint?.onChange, ...(ctx.nestedGuard ? { nestedGuard: true } : {}), ...(deps.guard ? { guard: deps.guard } : {}) })
 
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).

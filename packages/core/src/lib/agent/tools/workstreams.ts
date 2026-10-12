@@ -11,7 +11,7 @@ import { eq } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentRuns } from '../../../db/schema'
 import type { AgentTool, ToolContext } from '../types'
-import type { TaintSource } from '../judge/types'
+import { persistableTaint, type TaintSource } from '../judge/types'
 import { ON_DEMAND_TOOLSETS, type ToolsetId } from '../toolsets'
 import { getWorkstream, patchWorkstream } from '../workstreams/store'
 import { BUDGET_LIMITS, DEFAULT_TREE_BUDGET, TREE_BUDGET_LIMITS, workstreamPath } from '../../../shared/types/workstreams'
@@ -26,8 +26,8 @@ const NOT_IN_WORKSTREAM = 'only works inside a workstream'
 /** Final fix wave (I1): the calling run's taint sources — inherited by work it starts. A run that
  *  reports tainted without reasons reads as a mail read (the 79b meaning). */
 export function runTaintSources(ctx: Pick<ToolContext, 'isTainted' | 'taint'>): TaintSource[] {
-  const sources = ctx.taint?.().sources ?? []
-  if (sources.length) return [...sources]
+  // Follow-up (N1/N2): only the persisted kinds are inherited — `workspace` and `unverified` never.
+  if (ctx.taint) return persistableTaint(ctx.taint().sources)
   return ctx.isTainted?.() ? ['mail'] : []
 }
 

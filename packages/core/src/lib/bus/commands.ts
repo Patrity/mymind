@@ -56,7 +56,7 @@ export interface CommandPayloads {
   'workspace-reenable-network': { workspaceId: string }
   /** Cycle 82 Task 2: read a text file of a workspace (the sandbox lives in the worker) — what an
    *  approved export_to_document proposal, replayed in the web, copies into a document. */
-  'workspace-read-text': { workspaceId: string; path: string; tainted?: boolean }
+  'workspace-read-text': { workspaceId: string; path: string; tainted?: boolean; offline?: boolean }
   /** Cycle 82 Task 3: the Files / Shells UI reads a workspace — in the sandbox, so in the worker
    *  (lib/sandbox/view.ts). `chunk` with length 0 = the file's size only. */
   // `noStart` (final review M5): an API-token read — never start a stopped sandbox for it.

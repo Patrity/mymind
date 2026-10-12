@@ -9,7 +9,7 @@ import {
   DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, ZERO_USED, normalizeTreeBudget,
   type TreeBudget, type WorkstreamAttention, type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
-import { TAINT_SOURCES, type ApprovalVerdictDTO, type TaintSource } from '../judge/types'
+import { persistableTaint, TAINT_SOURCES, type ApprovalVerdictDTO, type TaintSource } from '../judge/types'
 
 export type { WorkstreamRow }
 
@@ -201,7 +201,9 @@ export async function patchAttentionJudge(id: string, requestId: string, judge: 
  * dropped; order is TAINT_SOURCES'.
  */
 export function storedTaintSources(row: Pick<WorkstreamRow, 'tainted' | 'taintSources'>): TaintSource[] {
-  const have = new Set((row.taintSources ?? []).filter((x): x is TaintSource => (TAINT_SOURCES as readonly string[]).includes(x)))
+  // Final follow-up (N1): only the persisted kinds count — a `workspace` written by the first fix wave
+  // is ignored (it is derived live from the workspace's own flag now).
+  const have = new Set(persistableTaint(row.taintSources ?? []))
   if (row.tainted && !have.size) have.add('mail')
   return TAINT_SOURCES.filter(x => have.has(x))
 }
@@ -222,7 +224,8 @@ export async function workstreamWorkspaceTainted(row: Pick<WorkstreamRow, 'id' |
  * writers can never shrink the set; never cleared). Publishes the row. False: no such workstream.
  */
 export async function addWorkstreamTaint(id: string, sources: readonly TaintSource[]): Promise<boolean> {
-  const add = TAINT_SOURCES.filter(x => sources.includes(x))
+  const add = persistableTaint(sources)
+  if (!add.length) return false
   const rows = await useDb().update(workstreams).set({
     tainted: true,
     taintSources: sql`(select coalesce(array_agg(distinct x order by x), '{}'::text[]) from unnest(${workstreams.taintSources} || ${sql.param(add)}::text[]) as x)`,

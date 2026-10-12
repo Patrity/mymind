@@ -17,7 +17,7 @@ import { messageText } from '../run'
 import type { AgentMessage } from '../run'
 import { bridgetProfile, childWorkstreamProfile, coordinatorProfile, TAINTING_TOOL_NAMES, type AgentProfile } from '../profile'
 import { listSubagentModels } from '../../ai/registry/resolve'
-import { carriesInjectionWarning, carriesWorkspaceTaint, producedContent } from '../tool-history'
+import { childTaintOf, injectionWarningOf, producedContent, warningTaintOf } from '../tool-history'
 import { beginSegment, type Segment } from '../workstreams/loop'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import type { RunPublisher } from './stream'
@@ -199,11 +199,15 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         // Cycle 83: the same rule as the run-level taint (ai-tools.ts), persisted on the workstream —
         // a tainted child taints the coordinator run that reads its output. Cycle 84: so does a result
         // the output guard flagged.
-        // Final fix wave (C1): with its source (runAgent's onTaint below is the primary path; this
-        // catches a result carrying taint the run did not count, e.g. a nested one).
+        // Final fix wave (C1): runAgent's onTaint below is the primary path; this backstop covers a
+        // mail read only. Follow-up (N1/N2): `workspace` is never persisted (derived live) and a guard
+        // flag is persisted by onTaint only when it is a REAL verdict (`flagged`, not `unverified`).
         if (TAINTING_TOOL_NAMES.has(e.name) && producedContent(e.result)) seg.markTainted(['mail'])
-        if (carriesWorkspaceTaint(e.result)) seg.markTainted(['workspace'])
-        if (carriesInjectionWarning(e.result)) seg.markTainted(['flagged'])
+        // A tainted child's persisted sources (a coordinator reading it), and a REAL guard verdict
+        // (a fail-closed warning reads `unverified` — run-only, never persisted).
+        const fromChild = childTaintOf(e.result)
+        if (fromChild.length) seg.markTainted(fromChild)
+        if (warningTaintOf(injectionWarningOf(e.result) ?? '') === 'flagged') seg.markTainted(['flagged'])
       }
       if (e.type === 'reasoning') reasoningText += e.text
       // Overwrite, not accumulate: at most one usage event per turn in the common

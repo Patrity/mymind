@@ -29,7 +29,7 @@ import { withJudgeSlot } from './limiter'
 import { GUARD_LABELS, resultText, scoreText, stripOwnNotes, type GuardLabel, type HeuristicResult } from './guard-rules'
 import { cutAt, jsonFromText } from './verdict'
 import { recordEvent } from '../../observability/record'
-import { GUARD_WARNING_LEAD } from '../tool-history'
+import { GUARD_FAIL_CLOSED_REASON, GUARD_WARNING_LEAD } from '../tool-history'
 import { MAX_REASONS, REASON_MAX_CHARS, type GuardSource, type OutputWarningDTO } from './types'
 
 export type { GuardSource } from './types'
@@ -358,7 +358,7 @@ export async function guardOutput(input: GuardInput, deps: GuardDeps = {}): Prom
 export function guardReasons(v: Pick<GuardVerdict, 'labels' | 'llm' | 'by'>): string[] {
   const out = v.labels.map(l => GUARD_LABELS[l])
   if (v.by === 'llm' && v.llm) out.push(`an injection classifier flagged it (confidence ${v.llm.confidence.toFixed(2)})`)
-  if (v.by === 'fail-closed') out.push('the injection classifier was unavailable, so the pattern check decided')
+  if (v.by === 'fail-closed') out.push(GUARD_FAIL_CLOSED_REASON)
   if (v.by === 'nested') out.push('a source the subagent read was flagged')
   return out.length ? out : ['flagged by the injection check']
 }
@@ -386,7 +386,7 @@ export function wrapFlagged(result: unknown, warning: string): Record<string, un
 export function outputWarningDTO(toolCallId: string, source: GuardSource, v: GuardVerdict): OutputWarningDTO {
   const reasons = guardReasons(v)
   if (v.by === 'llm' && v.llm) reasons.push(...v.llm.reasons)
-  return { toolCallId, source, reasons, score: v.score, ...(v.llm && !v.llm.error ? { llm: { confidence: v.llm.confidence } } : {}) }
+  return { toolCallId, source, reasons, score: v.score, ...(v.llm && !v.llm.error ? { llm: { confidence: v.llm.confidence } } : {}), ...(v.by === 'fail-closed' ? { unverified: true as const } : {}) }
 }
 
 /**

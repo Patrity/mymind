@@ -100,7 +100,7 @@ function oneLine(s: string, max = 200): string {
  * Null when there is no judge (it is off, or the call has none). Plain text: the reason is model output.
  */
 /** Parked Task 4 item: how the texted prompt names why the run is tainted (same words as the card chip). */
-const TAINT_TEXT: Record<TaintSource, string> = { flagged: 'flagged content', mail: 'mail read', workspace: 'tainted workspace' }
+const TAINT_TEXT: Record<TaintSource, string> = { flagged: 'flagged content', mail: 'mail read', workspace: 'tainted workspace', unverified: 'unchecked content' }
 
 export function verdictLine(v: ApprovalVerdictDTO | null | undefined): string | null {
   if (!v) return null

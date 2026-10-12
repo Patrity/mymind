@@ -239,12 +239,12 @@ export class WorkspaceFileError extends Error { override name = 'WorkspaceFileEr
  * process (an approved export_to_document proposal is replayed there) the worker does the read —
  * the sandbox is the worker's.
  */
-export async function readWorkspaceText(workspaceId: string, path: string, o: Pick<ExecOptions, 'tainted' | 'signal'> = {}): Promise<{ content: string; bytes: number; path: string; tainted: boolean }> {
+export async function readWorkspaceText(workspaceId: string, path: string, o: Pick<ExecOptions, 'tainted' | 'offline' | 'signal'> = {}): Promise<{ content: string; bytes: number; path: string; tainted: boolean }> {
   if (executionMode() === 'remote') {
     const { sendCommand } = await import('../bus/commands')
     // Fix round 1 (M3): the taint travels with the command (the worker runs it no-network). The
     // abort signal can't cross the bus: the worker's own 60s exec timeout bounds the read.
-    const r = await sendCommand('workspace-read-text', { workspaceId, path, ...(o.tainted ? { tainted: true } : {}) }, { awaitResult: true, timeoutMs: 75_000 })
+    const r = await sendCommand('workspace-read-text', { workspaceId, path, ...(o.tainted ? { tainted: true } : {}), ...(o.offline ? { offline: true } : {}) }, { awaitResult: true, timeoutMs: 75_000 })
     if (!r) throw new WorkspaceFileError('the agent worker returned nothing')
     return r
   }

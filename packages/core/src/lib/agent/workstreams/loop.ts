@@ -39,7 +39,7 @@ import { createRunEventWriter, type HubFrame, type RunEventWriter } from '../../
 import { APPROVAL_WITHDRAWN, type ImessageApprovalResult } from '../../channels/approvals'
 import { parseToolsetIds } from '../toolsets'
 import type { ApprovalOptions, ApprovalRequest } from '../types'
-import { TAINT_SOURCES, type ApprovalVerdictDTO, type TaintSource } from '../judge/types'
+import { persistableTaint, TAINT_SOURCES, type ApprovalVerdictDTO, type TaintSource } from '../judge/types'
 import type { StepUsage } from '../run'
 import type { WorkstreamPromptInfo } from '../prompt'
 import type { RunInput, RunOutcome } from '../runtime/types'
@@ -77,7 +77,7 @@ export const WALL_HARD_GRACE_MS = 60_000
 export const FINAL_STEP_MAX_MS = 10 * 60_000
 
 type Channel = (req: ApprovalRequest, opts?: ApprovalOptions) => Promise<{ approved: boolean }>
-type StopReason = 'finished' | 'attention' | 'cancel' | 'budget' | 'yield' | 'park' | 'wait'
+type StopReason = 'finished' | 'attention' | 'cancel' | 'budget' | 'yield' | 'park' | 'wait' | 'taint-failed'
 /** Non-terminal: what a reply/resume may move on from. */
 const RUNNABLE: Array<WorkstreamRow['state']> = ['queued', 'running', 'attention', 'paused']
 
@@ -142,10 +142,14 @@ export interface Segment {
    *  life: it never decays out of the history window, across segments, yields, restarts or wakes. */
   initialTaint: TaintSource[]
   /** Cycle 83: a run of this segment became tainted — persisted AT ONCE (C1: not at segment end), as
-   *  a union with the stored sources. No sources given: `mail` (the cycle-83 meaning). */
+   *  a union with the stored sources. Only the persisted kinds (mail, real-verdict flagged) are
+   *  written; `workspace`/`unverified` are dropped. No sources given: `mail` (the cycle-83 meaning).
+   *  Follow-up N3: a source counts as stored only once the write succeeded; a write that still fails
+   *  after 3 retries stops and aborts the run (fail closed). */
   markTainted(sources?: readonly TaintSource[]): void
-  /** Fix round 1 (M7): resolves once the taint bit is on the row — finish_workstream / ask_tony
-   *  await it, so a coordinator can never read a child's words before the child counts as tainted. */
+  /** Fix round 1 (M7): resolves once every taint write so far is on the row — finish_workstream /
+   *  ask_tony await it, so a coordinator can never read a child's words before the child counts as
+   *  tainted. Follow-up N3: REJECTS when a taint could not be persisted (they then refuse). */
   taintSettled(): Promise<void>
 }
 
@@ -234,7 +238,11 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
   const tonyChat = ws.isChild ? parent?.originConversationId ?? null : ws.originConversationId
   // C1: what the row already says (sources only grow) — a write goes out only for a NEW source.
   const taintStored = new Set<TaintSource>(storedTaintSources(ws))
-  let taintWrite: Promise<void> = Promise.resolve()
+  const taintPending = new Set<TaintSource>()
+  // N4: a row tainted before the sources were stored reads as `mail` — the first write keeps it.
+  let legacyMail = ws.tainted && !persistableTaint(ws.taintSources ?? []).length
+  let taintChain: Promise<void> = Promise.resolve()
+  let taintFailure: Error | null = null
   const budget = budgetOf(ws)
   let steps = 0
   let inputTokens = 0
@@ -317,12 +325,35 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
     child: ws.isChild ? { modelLabel: ws.modelLabel, workspaceMode: ws.workspaceMode } : null,
     initialTaint: o.initialTaint ?? [],
     markTainted(sources) {
-      const add = (sources?.length ? sources : ['mail' as const]).filter(x => !taintStored.has(x))
+      const want = sources === undefined ? ['mail' as const] : persistableTaint(sources)
+      let add = want.filter(x => !taintStored.has(x) && !taintPending.has(x))
       if (!add.length) return
-      for (const x of add) taintStored.add(x)
-      taintWrite = serial(() => addWorkstreamTaint(ws.id, add))
+      if (legacyMail) add = TAINT_SOURCES.filter(x => add.includes(x) || x === 'mail')
+      for (const x of add) taintPending.add(x)
+      // N3: persisted FIRST, recorded as stored only after; retried 3 times, then the run is stopped.
+      taintChain = taintChain.then(async () => {
+        if (taintFailure) throw taintFailure
+        let last: unknown
+        for (let attempt = 0; attempt <= TAINT_WRITE_RETRIES; attempt++) {
+          try {
+            if (!await segmentTaintDeps.write(ws.id, add)) throw new Error('the workstream row is gone')
+            for (const x of add) { taintStored.add(x); taintPending.delete(x) }
+            legacyMail = false
+            return
+          } catch (err) {
+            last = err
+            if (attempt < TAINT_WRITE_RETRIES) await new Promise(r => setTimeout(r, segmentTaintDeps.retryMs * (attempt + 1)))
+          }
+        }
+        taintFailure = new Error(`could not record that this run read untrusted content (${(last as Error)?.message ?? 'write failed'})`)
+        recordEvent({ kind: 'tool', name: 'judge:taint-persist-failed', severity: 'error', meta: { workstreamId: ws.id, runId: run.id, sources: add, error: taintFailure.message.slice(0, 300) } })
+        if (seg.stop !== 'cancel') seg.stop = 'taint-failed'
+        abortRun(run.id)
+        throw taintFailure
+      })
+      taintChain.catch(() => {}) // observed by taintSettled / onSegmentFinished
     },
-    taintSettled: () => taintWrite,
+    taintSettled: () => taintChain,
     toolCalls: 0,
     stepsTaken: () => steps,
     shouldStop() {
@@ -777,6 +808,10 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   // Follow-up N3: it still waits on Tony (its card) — reports it never read go to him too.
   if (stop === 'park') { await patchWorkstream(ws.id, { lastOutcome: 'parked' }); await unshowLeftover(ws, leftover.childIds); return null }
 
+  // Follow-up N3: a taint the segment could not persist stopped it — a failed segment (retried; the
+  // workstream fails after repeated failures), never a finish or a question on an unpersisted taint.
+  if (stop === 'taint-failed') return countFailure(ws, run, 'could not record that the run read untrusted content')
+
   // The final summary step ended (or the loop restarted into it): failed, with whatever it wrote.
   if (ws.failureReason) {
     const summary = outcome.status === 'done' ? await assistantText(outcome.assistantMessageId) : null
@@ -973,6 +1008,14 @@ async function watchContinuation(ws: WorkstreamRow, run: AgentRun, seg: Segment 
     if (row) return (await enqueueWatchResults(row)) ?? null
   }
   return null
+}
+
+/** Follow-up N3: a taint write is retried this many times before the segment is stopped. */
+export const TAINT_WRITE_RETRIES = 3
+/** Seams (tests: a failing write, no backoff). */
+export const segmentTaintDeps: { write: (id: string, sources: readonly TaintSource[]) => Promise<boolean>; retryMs: number } = {
+  write: (id, sources) => addWorkstreamTaint(id, sources),
+  retryMs: 250
 }
 
 /** Seams for watch delivery (tests: a guard that dies mid-check). */

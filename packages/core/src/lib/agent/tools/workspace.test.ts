@@ -70,7 +70,7 @@ beforeEach(() => {
   execResult = (command, o) => {
     if (command === WRITE_SCRIPT) return res({ stdout: JSON.stringify({ ok: true, path: '/workspace/a', bytes: 1, created: true }), tainted: !!o.tainted })
     if (command.startsWith('python3 -I -c')) return res({ stdout: JSON.stringify({ content: '     1\tx', lines: 1, totalLines: 1, truncated: false }), tainted: !!o.tainted })
-    return res({ stdout: 'ok\n', tainted: !!o.tainted })
+    return res({ stdout: 'ok\n', tainted: !!o.tainted, ...(o.offline ? { offline: true } : {}) })
   }
   install()
 })
@@ -120,6 +120,38 @@ describe('tainted runs (spec D5 + carry-over)', () => {
   })
 })
 
+describe('final follow-up (I5): a run tainted ONLY `unverified` runs offline without tainting the workspace', () => {
+  const unverified = (): ToolContext => ({ signal: new AbortController().signal, isTainted: () => true, taint: () => ({ sources: ['unverified'], flags: [] }) })
+  const alsoMail = (): ToolContext => ({ signal: new AbortController().signal, isTainted: () => true, taint: () => ({ sources: ['mail', 'unverified'], flags: [] }) })
+  it('bash: exec offline (not tainted), no secrets; the result says no network and does NOT carry workspaceTainted', async () => {
+    secretStore.opted = { TOKEN: 'sekrit-token-value' }; secretStore.all = { TOKEN: 'sekrit-token-value' }
+    const r = await run('bash', { command: 'curl example.com' }, unverified())
+    expect(calls.map(c => [c.o.tainted, c.o.offline])).toEqual([[false, true]])
+    expect(calls[0]!.o.secrets).toBeUndefined()
+    expect(r).not.toHaveProperty('workspaceTainted')
+    expect(r).toMatchObject({ networkOff: true })
+    expect(String(r.networkNote)).toMatch(/could not verify.*the workspace itself stays online/)
+  })
+  it('background shells and watches are refused like in a tainted run', async () => {
+    expect((await run('bash', { command: 'npm run dev', run_in_background: true }, unverified())).error).toMatch(/background shells are not available/)
+    expect((await run('watch', { command: 'true', until: 'exit0' }, unverified())).error).toMatch(/watches are not available/)
+    expect(started).toEqual([])
+    expect(armed).toEqual([])
+  })
+  it('any other source alongside it → the ordinary tainted path (the workspace is tainted)', async () => {
+    await run('bash', { command: 'ls' }, alsoMail())
+    expect(calls.map(c => [c.o.tainted, c.o.offline])).toEqual([[true, undefined]])
+  })
+  it('runNetworkMode: clean / offline / tainted, and fail closed with no isTainted', async () => {
+    const { runNetworkMode } = await import('./workspace')
+    expect(runNetworkMode({ isTainted: () => false })).toBe('clean')
+    expect(runNetworkMode(unverified())).toBe('offline')
+    expect(runNetworkMode(alsoMail())).toBe('tainted')
+    expect(runNetworkMode({ isTainted: () => true })).toBe('tainted')
+    expect(runNetworkMode({})).toBe('tainted')
+  })
+})
+
 describe('over quota (fix round 1, I1 ruling: deny by default)', () => {
   beforeEach(() => { over = true })
   it('write_file / edit_file are refused with the quota error', async () => {
@@ -155,7 +187,7 @@ describe('over quota (fix round 1, I1 ruling: deny by default)', () => {
   })
   it('a tainted run measures the quota without the networked container (M8): checkQuota gets the run\'s taint', async () => {
     await run('write_file', { path: 'a', content: 'x' }, ctx(true))
-    expect(rtNow.manager.checkQuota).toHaveBeenLastCalledWith(WS, { tainted: true })
+    expect(rtNow.manager.checkQuota).toHaveBeenLastCalledWith(WS, { tainted: true, offline: false })
   })
 })
 

@@ -133,6 +133,8 @@ export interface OutputWarningDTO {
   reasons: string[]
   score: number
   llm?: { confidence: number }
+  /** Final follow-up: a fail-closed flag (the check could not run) — taints the run `unverified`. */
+  unverified?: true
 }
 
 /**
@@ -140,9 +142,22 @@ export interface OutputWarningDTO {
  * (79b); `flagged` — the output guard flagged a result as aimed at the agent (cycle 84 §3.3);
  * `workspace` — a workspace that handled untrusted content (cycle 82).
  */
-export type TaintSource = 'mail' | 'flagged' | 'workspace'
-/** Display / prompt order: the most specific reason first. */
-export const TAINT_SOURCES: readonly TaintSource[] = ['flagged', 'mail', 'workspace']
+export type TaintSource = 'mail' | 'flagged' | 'workspace' | 'unverified'
+/** Display / prompt order: the most specific reason first. Final follow-up: `unverified` — the guard
+ *  could not check a result (timeout, slot wait expired, judge down) and failed closed. Run-only. */
+export const TAINT_SOURCES: readonly TaintSource[] = ['flagged', 'mail', 'workspace', 'unverified']
+/** Final follow-up (rulings N1/N2): the only sources ever persisted on a workstream row (and inherited
+ *  by work it starts): a mail/calendar read, and `flagged` from a REAL verdict. `workspace` is derived
+ *  live from the workspace's own flag; `unverified` lives and dies with its run. */
+export const PERSISTED_TAINT_SOURCES: readonly TaintSource[] = ['flagged', 'mail']
+export function persistableTaint(sources: readonly string[] | null | undefined): TaintSource[] {
+  return PERSISTED_TAINT_SOURCES.filter(x => sources?.includes(x))
+}
+/** Final follow-up: a run whose only taint is `unverified` runs workspace commands offline WITHOUT
+ *  marking the workspace tainted. */
+export function onlyUnverified(sources: readonly TaintSource[]): boolean {
+  return sources.length > 0 && sources.every(x => x === 'unverified')
+}
 
 /** One guard flag that tainted the run. `reasons` include classifier text — MODEL OUTPUT steered by
  *  the flagged content: fenced as untrusted in the judge prompt, escaped text in the UI. */

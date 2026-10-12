@@ -37,7 +37,7 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
       return { id: row.id, tainted: row.tainted }
     },
     // Task 2: export_to_document replayed in the web reads its file here, in the sandbox.
-    workspaceReadText: p => readWorkspaceText(p.workspaceId, p.path, { tainted: p.tainted === true }),
+    workspaceReadText: p => readWorkspaceText(p.workspaceId, p.path, { tainted: p.tainted === true, offline: p.offline === true }),
     // Task 3: the Files / Shells UI (lib/sandbox/view.ts) — every read runs in the sandbox.
     workspaceView: async (p) => {
       const o = { noStart: p.noStart === true }

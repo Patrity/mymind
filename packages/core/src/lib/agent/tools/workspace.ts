@@ -20,6 +20,7 @@
 // 5s free-space watchdog.
 import { z } from 'zod'
 import type { AgentTool, ToolContext, ToolExecution } from '../types'
+import { onlyUnverified } from '../judge/types'
 import {
   DELETE_MAX_PATHS, DELETE_SCRIPT, EDIT_SCRIPT, LIST_SCRIPT, READ_CAP_BYTES, READ_MAX_LINES, READ_SCRIPT, WRITE_MAX_BYTES, WRITE_SCRIPT, GREP_MAX,
   diffCommand, grepCommand, parseDiff
@@ -38,16 +39,23 @@ import { docReceipt, docNotFound } from '../receipt'
 /** On every result that carries workspace content (shared with the watch wake notes). */
 export { WORKSPACE_UNTRUSTED_NOTE }
 const TAINTED_RUN = 'This conversation read Tony\'s mail, calendar or contacts, so workspace commands run without network'
+const UNVERIFIED_RUN = 'This run read content the injection check could not verify, so its workspace commands run without network (the workspace itself stays online)'
 const TAINTED_WS = 'This workspace handled mail/calendar content, so its network is off until Tony re-enables it (Workspace → Re-enable network)'
 
 const clip = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
-/** The run's taint, read now. Absent (not called through buildAiTools) → fail closed. */
-function runTainted(ctx: ToolContext): boolean {
-  return ctx.isTainted ? ctx.isTainted() : true
+/** Final follow-up (I5): how this run's commands run. `tainted` — no network and the workspace becomes
+ *  tainted (cycle 82; also when called outside buildAiTools: fail closed). `offline` — the run is
+ *  tainted ONLY `unverified` (a guard check could not run): no network and no secrets, but the
+ *  workspace is not marked. `clean` — as usual. */
+export function runNetworkMode(ctx: Pick<ToolContext, 'isTainted' | 'taint'>): 'clean' | 'offline' | 'tainted' {
+  if (!ctx.isTainted) return 'tainted'
+  if (!ctx.isTainted()) return 'clean'
+  return ctx.taint && onlyUnverified(ctx.taint().sources) ? 'offline' : 'tainted'
 }
 
-interface Call { ref: WorkspaceRef; tainted: boolean; opts: ExecOptions }
+/** `tainted`: this run's commands taint the workspace; `offline`: they run without network only. */
+interface Call { ref: WorkspaceRef; tainted: boolean; offline: boolean; opts: ExecOptions }
 
 /** Which workspace a tool call reached (set before any sandbox command runs) — guard() reads it to
  *  taint an ERROR result too (final review I1). */
@@ -56,8 +64,10 @@ interface Scope { workspaceId?: string }
 async function begin(ctx: ToolContext, scope: Scope): Promise<Call> {
   const ref = await workspaceRuntime().resolve(ctx.runId)
   scope.workspaceId = ref.workspaceId
-  const tainted = runTainted(ctx)
-  return { ref, tainted, opts: { tainted, signal: ctx.signal } }
+  const mode = runNetworkMode(ctx)
+  const tainted = mode === 'tainted'
+  const offline = mode === 'offline'
+  return { ref, tainted, offline, opts: { tainted, ...(offline ? { offline: true } : {}), signal: ctx.signal } }
 }
 
 function exec(c: Call, command: string, o: ExecOptions = {}): Promise<SandboxExecResult> {
@@ -99,14 +109,14 @@ async function guard(name: string, ctx: ToolContext, fn: (scope: Scope) => Promi
 /** An error result from this workspace must carry the taint flag: the run is tainted, or the
  *  workspace is (fail closed — an unreadable row counts as tainted). */
 async function errorTainted(ctx: ToolContext, workspaceId: string): Promise<boolean> {
-  if (runTainted(ctx)) return true
+  if (runNetworkMode(ctx) === 'tainted') return true
   try { return (await dbWorkspaceStore.get(workspaceId))?.tainted !== false } catch { return true }
 }
 
 /** Opted-in sandbox secrets for a command — none when the run OR the workspace is tainted (the
  *  manager drops them for tainted commands too; this is the first gate). */
 async function secretsFor(c: Call): Promise<Pick<ExecOptions, 'secrets'>> {
-  if (c.tainted || (await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return {}
+  if (c.tainted || c.offline || (await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return {}
   const secrets = await sandboxSecretEnv({ tainted: false })
   return Object.keys(secrets).length ? { secrets } : {}
 }
@@ -141,7 +151,7 @@ function scriptError(name: string, r: SandboxExecResult, j: Record<string, unkno
 }
 
 async function overQuota(c: Call): Promise<SandboxQuotaError | null> {
-  try { await workspaceRuntime().manager.checkQuota(c.ref.workspaceId, { tainted: c.tainted }); return null } catch (err) {
+  try { await workspaceRuntime().manager.checkQuota(c.ref.workspaceId, { tainted: c.tainted, offline: c.offline }); return null } catch (err) {
     if (err instanceof SandboxQuotaError) return err
     throw err
   }
@@ -317,7 +327,7 @@ export const bashTool: AgentTool = {
     const command = a.command as string
     const c = await begin(ctx, scope)
     if (a.run_in_background === true) {
-      if (c.tainted) return { result: { ok: false, error: `${TAINTED_RUN} in a throwaway container — background shells are not available. Run it in the foreground (timeout up to 600s).` }, summary: 'bash: background refused (tainted run)' }
+      if (c.tainted || c.offline) return { result: { ok: false, error: `${c.offline ? UNVERIFIED_RUN : TAINTED_RUN} in a throwaway container — background shells are not available. Run it in the foreground (timeout up to 600s).` }, summary: 'bash: background refused (tainted run)' }
       if ((await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return { result: { ok: false, error: `${TAINTED_WS} — background shells need it. Run it in the foreground instead.` }, summary: 'bash: background refused (workspace offline)' }
       await assertQuota(c)
       const s = await workspaceRuntime().shells.start(c.ref.workspaceId, command, await secretsFor(c))
@@ -333,10 +343,10 @@ export const bashTool: AgentTool = {
         exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr,
         ...(r.timedOut ? { timedOut: true } : {}), ...(r.oom ? { oom: true, note: 'killed: the sandbox ran out of memory (2 GB)' } : {}),
         ...(r.aborted ? { aborted: true } : {}), ...(r.truncated ? { truncated: true } : {}),
-        ...(r.tainted ? { networkOff: true, networkNote: c.tainted ? `${TAINTED_RUN}.` : `${TAINTED_WS}.` } : {}),
+        ...(r.tainted || r.offline ? { networkOff: true, networkNote: r.offline ? `${UNVERIFIED_RUN}.` : c.tainted ? `${TAINTED_RUN}.` : `${TAINTED_WS}.` } : {}),
         untrusted: WORKSPACE_UNTRUSTED_NOTE
       }),
-      summary: `ran \`${clip(command)}\` → exit ${r.exitCode}${r.timedOut ? ' (timed out)' : ''}${r.oom ? ' (out of memory)' : ''}${r.tainted ? ' (no network)' : ''}`
+      summary: `ran \`${clip(command)}\` → exit ${r.exitCode}${r.timedOut ? ' (timed out)' : ''}${r.oom ? ' (out of memory)' : ''}${r.tainted || r.offline ? ' (no network)' : ''}`
     }
   })
 }
@@ -410,7 +420,7 @@ export const watchTool: AgentTool = {
     const pattern = a.pattern as string | undefined
     if (until === 'match' && !pattern) return { result: { ok: false, error: 'until="match" needs a pattern' }, summary: 'watch: no pattern' }
     const c = await begin(ctx, scope)
-    if (c.tainted) return { result: { ok: false, error: `${TAINTED_RUN} in throwaway containers — watches are not available. Check with a foreground bash command instead.` }, summary: 'watch: refused (tainted run)' }
+    if (c.tainted || c.offline) return { result: { ok: false, error: `${c.offline ? UNVERIFIED_RUN : TAINTED_RUN} in throwaway containers — watches are not available. Check with a foreground bash command instead.` }, summary: 'watch: refused (tainted run)' }
     if (!c.ref.workstreamId && !c.ref.conversationId) return { result: { ok: false, error: 'watch needs a conversation or workstream to report back to' }, summary: 'watch: nowhere to report' }
     // Fix round 1 (M2): a tainted workspace runs every poll in a fresh no-network container — no watches there.
     if ((await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return { result: { ok: false, error: `${TAINTED_WS} — watches need it. Check with a foreground bash command instead.` }, summary: 'watch: refused (workspace offline)' }
@@ -475,7 +485,8 @@ export const exportToDocumentTool: AgentTool = {
     }
     scope.workspaceId = workspaceId
     // Reading moves nothing off the box; the run's taint applies when there is one (replay has none).
-    const f = await readWorkspaceText(workspaceId, a.path as string, { tainted: ctx.isTainted?.() ?? false, signal: ctx.signal })
+    const mode = ctx.isTainted ? runNetworkMode(ctx) : 'clean'
+    const f = await readWorkspaceText(workspaceId, a.path as string, { tainted: mode === 'tainted', ...(mode === 'offline' ? { offline: true } : {}), signal: ctx.signal })
     // Ruling C3: the document must not carry an opted-in secret a command wrote into the file —
     // values are masked before it is written. Fails closed: no readable store, no export.
     let values: string[]
@@ -623,7 +634,7 @@ export const exportToCoordinatorTool: AgentTool = {
     // Fix round 1 (M4): the UNCOMPRESSED size must fit the coordinator's remaining quota (and a
     // per-export ceiling) — ~700 KB of gzip can expand far past it.
     const m = workspaceRuntime().manager
-    await m.checkQuota(dest.id, { tainted })
+    await m.checkQuota(dest.id, { tainted, offline: c.offline })
     const used = (await dbWorkspaceStore.get(dest.id))?.bytesUsed ?? 0
     const limit = Math.min(EXPORT_MAX_UNPACKED_BYTES, m.settings.quotaBytes - used)
     const tooBig = (n: number) => ({ result: withTaint({ tainted }, { ok: false, error: `too large to export: ${n} bytes uncompressed, and the coordinator's workspace takes at most ${Math.max(0, limit)} more — export less` }), summary: 'export_to_coordinator: too large' })
@@ -633,7 +644,7 @@ export const exportToCoordinatorTool: AgentTool = {
     // INSIDE the coordinator's sandbox the decompression is cut at the limit, and an archive holding
     // anything but plain files and directories (links, devices — its tar could have been swapped) is
     // refused before anything is extracted.
-    const unpack = await m.exec(dest.id, exportUnpackCommand(dir, limit), { tainted, signal: ctx.signal, input: archive, timeoutSec: 120 })
+    const unpack = await m.exec(dest.id, exportUnpackCommand(dir, limit), { tainted, ...(c.offline && !tainted ? { offline: true } : {}), signal: ctx.signal, input: archive, timeoutSec: 120 })
     if (unpack.exitCode === 3) return tooBig(limit + 1)
     if (unpack.exitCode !== 0) return failed('export_to_coordinator', { ...unpack, tainted: tainted || unpack.tainted })
     return {

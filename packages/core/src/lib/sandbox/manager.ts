@@ -125,6 +125,9 @@ export interface SandboxExecResult {
   truncated: boolean
   /** Ran with no network and no secrets (the run or the workspace is tainted). */
   tainted: boolean
+  /** Final follow-up: ran with no network and no secrets in a throwaway container because the run is
+   *  tainted ONLY `unverified` (a guard check that could not run) — the workspace was NOT tainted. */
+  offline?: boolean
 }
 
 export interface ExecOptions {
@@ -134,6 +137,9 @@ export interface ExecOptions {
   secrets?: Record<string, string>
   /** The run has read untrusted content: no network (spec D5) — and the workspace becomes tainted. */
   tainted?: boolean
+  /** Final follow-up (I5): the run is tainted only `unverified` — no network and no secrets (a one-off
+   *  container), but the workspace is NOT marked tainted. `tainted` wins when both are set. */
+  offline?: boolean
   /** Fed to the command's stdin (file contents — never in argv: 128 KB cap and visible in /proc). */
   input?: string
   /** Output cap per stream (tail kept). Default settings.outputCapBytes (64 KB); at most 1 MB. */
@@ -785,7 +791,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     const secrets = o.secrets ?? {}
     for (const k of Object.keys(secrets)) assertSecretName(k)
     const row = await liveRow(id)
-    if (o.noStart && (o.tainted || row.tainted)) throw new SandboxStoppedError()
+    if (o.noStart && (o.tainted || o.offline || row.tainted)) throw new SandboxStoppedError()
     const runTainted = async () => {
       const ctrl = await taint(id)
       // Fix round 1 (M2): the workspace is offline now — its watches are cancelled and its shells
@@ -802,6 +808,17 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
       } finally { releaseTainted(id, ctrl) }
     }
     if (o.tainted || row.tainted) return runTainted()
+    // Follow-up (I5): offline only — a one-off with no network and no secrets; no flag, no kill.
+    if (o.offline) {
+      try {
+        await store.touch(id)
+        const r = await execOneOff(id, command, timeoutSec, o.signal, { ...io, deadline })
+        return { ...result(r, false, r.abortedHere), offline: true }
+      } catch (e) {
+        if (e instanceof SlotWaitAborted) return { ...abortedWait(), offline: true }
+        throw e
+      }
+    }
 
     // In flight from BEFORE the container is ensured until the command returns: an idle stop or a
     // capacity eviction never picks a workspace a command is about to run in (M1, I3).
@@ -942,7 +959,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   /** Before a write: refuse when over quota (measured within the last minute, else now). A
    *  measurement that fails or times out counts as OVER (fail closed — rereview #1: `du` timing out
    *  is exactly what millions of files look like). */
-  async function checkQuota(id: string, o: { tainted?: boolean } = {}): Promise<void> {
+  async function checkQuota(id: string, o: { tainted?: boolean; offline?: boolean } = {}): Promise<void> {
     assertDiskOk()
     const row = await liveRow(id)
     let used = { bytes: row.bytesUsed, inodes: row.inodesUsed }
@@ -950,7 +967,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     if (at === undefined || now() - at >= 60_000) {
       // A tainted RUN measures in a no-network one-off (fix round 1, M8): never start the networked
       // container just to measure, right before the tainted command stops it again.
-      const oneOff = row.tainted || o.tainted === true
+      const oneOff = row.tainted || o.tainted === true || o.offline === true
       if (!oneOff) {
         try { await ensureContainer(id) } catch (e) { if (!(e instanceof WorkspaceTaintedError)) throw e }
       }
