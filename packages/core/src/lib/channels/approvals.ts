@@ -178,7 +178,9 @@ function logOutcome(runId: string, req: ApprovalRequest, outcome: string, reason
  *  it the moment `signal` aborts (the run was stopped: nothing may approve it afterwards). */
 /** What a wait ended in: a row status, or `withdrawn` — the prompt was withdrawn (APPROVAL_WITHDRAWN)
  *  and this wait's own `expired` write is the one the row committed (fix round 1, I1/M5). */
-type WaitResult = ApprovalStatus | 'withdrawn'
+/** `denied-system`: the wait ended denied with no tapback behind it (the row vanished, a withdrawal or
+ *  a status read failed) — fail closed, but never recorded as Tony's "no" (parked Task 2 item). */
+type WaitResult = ApprovalStatus | 'withdrawn' | 'denied-system'
 
 function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSignal): Promise<WaitResult> {
   return new Promise((resolve) => {
@@ -207,10 +209,10 @@ function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSi
         // decides: if it lost, whatever the row says is the outcome (the DB wins). A tapback that
         // wakes the waiter meanwhile finishes it first, with its own status.
         settle(id, 'expired')
-          .then(async won => finish(won ? 'withdrawn' : ((await statusOf(id)) ?? 'denied')))
+          .then(async won => finish(won ? 'withdrawn' : ((await statusOf(id)) ?? 'denied-system')))
           .catch((err) => {
             console.warn(`[channels] approval ${id} withdraw failed:`, err instanceof Error ? err.message : err)
-            finish('denied') // unknown: never read as an approval
+            finish('denied-system') // unknown: never read as an approval (nor as Tony's answer)
           })
         return
       }
@@ -221,7 +223,7 @@ function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSi
     waiters.set(id, finish)
     const poll = setInterval(() => {
       statusOf(id).then((s) => {
-        if (s === null) finish('denied') // row gone (its run was deleted): nothing can approve it
+        if (s === null) finish('denied-system') // row gone (its run was deleted): nothing can approve it
         // Fix round 2: while a withdrawal is in flight, an `expired` the poll sees may be that
         // withdrawal's OWN write — its settle() decides (withdrawn vs. a real expiry), not the poll.
         else if (s === 'expired' && withdrawing) return
@@ -231,7 +233,7 @@ function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSi
     const timer = setTimeout(() => {
       settle(id, 'expired')
         // The guarded update matched nothing: a tapback won the race — use its status.
-        .then(async won => finish(won ? 'expired' : ((await statusOf(id)) ?? 'denied')))
+        .then(async won => finish(won ? 'expired' : ((await statusOf(id)) ?? 'denied-system')))
         .catch((err) => {
           console.warn(`[channels] approval ${id} expiry failed:`, err instanceof Error ? err.message : err)
           finish('expired')
@@ -353,16 +355,18 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
       judge.settle('auto', 'judge')
       return { approved: true, decidedBy: 'judge' }
     }
-    const shown = status === 'withdrawn' ? 'expired' : status
-    logOutcome(runId, req, shown, stopped ? 'aborted' : undefined)
+    // Stop always beats a 👍 (fix round 2) — in the audit too (parked Task 2 item): a 👍 that a Stop
+    // overtook is cancelled / system, never Tony's approval of something that did not run.
+    const systemEnded = stopped || status === 'withdrawn' || status === 'denied-system'
+    const shown = stopped && status === 'approved' ? 'denied' : status === 'withdrawn' ? 'expired' : status === 'denied-system' ? 'denied' : status
+    logOutcome(runId, req, shown, stopped ? 'aborted' : status === 'denied-system' ? 'no-answer' : undefined)
     if (judge) {
-      if (status === 'approved') judge.settle('approved', 'tony')
-      else if (stopped || status === 'withdrawn') judge.settle('cancelled', 'system')
+      if (systemEnded) judge.settle('cancelled', 'system')
+      else if (status === 'approved') judge.settle('approved', 'tony')
       else if (status === 'expired') judge.settle('timeout', 'timeout')
       else judge.settle('denied', 'tony')
     }
-    // Stop always beats a 👍 (fix round 2): a stopped wait is never an approval.
-    const decidedBy = stopped || status === 'withdrawn' ? 'system' : status === 'expired' ? 'timeout' : 'tony'
+    const decidedBy = systemEnded ? 'system' : status === 'expired' ? 'timeout' : 'tony'
     return { approved: status === 'approved' && !stopped, decidedBy }
   }
 }

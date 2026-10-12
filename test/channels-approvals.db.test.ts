@@ -607,6 +607,32 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     expect(decisions).toEqual([['cancelled', 'system']])
   })
 
+  it('parked Task 2 item: a Stop that overtakes a 👍 already committed → denied, audited cancelled / system (never approved / tony)', async () => {
+    const run = await newRun()
+    const { judge, decisions } = judgeFor(false)
+    // The 👍 wakes the waiter; by the time the channel reads the run's signal, Stop has landed.
+    let tapped = false
+    const stopsAfterTap = { get aborted() { return tapped }, reason: undefined, addEventListener() {}, removeEventListener() {} } as unknown as AbortSignal
+    const p = imessageApprovalChannel(run, CHAT, { ...SLOW, client: bb, signal: stopsAfterTap })(RSVP, { judge })
+    const { promptGuid } = await promptFor(run)
+    tapped = true
+    await resolveTapback(tapback(promptGuid))
+    expect(await p).toEqual({ approved: false, decidedBy: 'system' })
+    await judge.writes()
+    expect(decisions).toEqual([['cancelled', 'system']])
+  })
+
+  it('parked Task 2 item: a denial with no tapback behind it (the row vanished mid-wait) → cancelled / system, not Tony\'s no', async () => {
+    const run = await newRun()
+    const { judge, decisions } = judgeFor(false)
+    const p = imessageApprovalChannel(run, CHAT, { ...SLOW, client: bb })(RSVP, { judge })
+    const { id } = await promptFor(run)
+    await db().delete(channelApprovals).where(eq(channelApprovals.id, id))
+    expect(await p).toEqual({ approved: false, decidedBy: 'system' })
+    await judge.writes()
+    expect(decisions).toEqual([['cancelled', 'system']])
+  })
+
   // Fix round 2 (Important): Stop beats a 👍 even when it lands before the prompt is texted.
   const recorded: string[] = []
   const rsvpTool: AgentTool = {
