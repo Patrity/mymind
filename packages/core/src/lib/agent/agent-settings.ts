@@ -13,6 +13,7 @@ import { z } from 'zod'
 import { useDb } from '../../db'
 import { settings } from '../../db/schema'
 import { DEFAULT_JUDGE_SETTINGS, JUDGE_CONFIDENCE_LIMITS, type JudgeSettings } from './judge/types'
+import { DEFAULT_JUDGE_MAX_IN_FLIGHT, JUDGE_MAX_IN_FLIGHT_LIMITS, setJudgeMaxInFlight } from './judge/limiter'
 
 export const AGENT_SETTINGS_KEY = 'agent_settings'
 
@@ -25,12 +26,14 @@ export function defaultAgentSettings(): AgentSettings {
     judge: {
       enabled: DEFAULT_JUDGE_SETTINGS.enabled,
       smartApprovals: { ...DEFAULT_JUDGE_SETTINGS.smartApprovals },
-      confidence: DEFAULT_JUDGE_SETTINGS.confidence
+      confidence: DEFAULT_JUDGE_SETTINGS.confidence,
+      maxInFlight: DEFAULT_JUDGE_MAX_IN_FLIGHT
     }
   }
 }
 
 const confidenceSchema = z.number().min(JUDGE_CONFIDENCE_LIMITS.min).max(JUDGE_CONFIDENCE_LIMITS.max)
+const maxInFlightSchema = z.number().int().min(JUDGE_MAX_IN_FLIGHT_LIMITS.min).max(JUDGE_MAX_IN_FLIGHT_LIMITS.max)
 
 /** A PUT body: any subset of the judge fields (merged onto the current settings), strictly typed. */
 export const agentSettingsPatchSchema = z.object({
@@ -40,7 +43,8 @@ export const agentSettingsPatchSchema = z.object({
       workstreams: z.boolean().optional(),
       chat: z.boolean().optional()
     }).strict().optional(),
-    confidence: confidenceSchema.optional()
+    confidence: confidenceSchema.optional(),
+    maxInFlight: maxInFlightSchema.optional()
   }).strict().optional()
 }).strict()
 export type AgentSettingsPatch = z.infer<typeof agentSettingsPatchSchema>
@@ -51,7 +55,7 @@ const bool = (v: unknown, d: boolean): boolean => (v === undefined ? d : v === t
 /** Pure: stored JSON → settings, field by field, defaults for anything missing or invalid. */
 export function readAgentSettings(raw: unknown): AgentSettings {
   const d = defaultAgentSettings()
-  const off: AgentSettings = { judge: { enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: JUDGE_CONFIDENCE_LIMITS.max } }
+  const off: AgentSettings = { judge: { enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: JUDGE_CONFIDENCE_LIMITS.max, maxInFlight: DEFAULT_JUDGE_MAX_IN_FLIGHT } }
   if (raw === undefined || raw === null) return d // no row
   if (typeof raw !== 'object' || Array.isArray(raw)) return off // a corrupt row: everything off
   if (!('judge' in raw) || (raw as { judge?: unknown }).judge === undefined) return d
@@ -69,7 +73,9 @@ export function readAgentSettings(raw: unknown): AgentSettings {
         workstreams: bool(sa?.workstreams, d.judge.smartApprovals.workstreams),
         chat: bool(sa?.chat, d.judge.smartApprovals.chat)
       },
-      confidence: j.confidence === undefined ? d.judge.confidence : conf.success ? conf.data : JUDGE_CONFIDENCE_LIMITS.max
+      confidence: j.confidence === undefined ? d.judge.confidence : conf.success ? conf.data : JUDGE_CONFIDENCE_LIMITS.max,
+      // A capacity knob, not a safety switch: an invalid value reads as the default.
+      maxInFlight: maxInFlightSchema.safeParse(j.maxInFlight).success ? j.maxInFlight as number : DEFAULT_JUDGE_MAX_IN_FLIGHT
     }
   }
 }
@@ -99,6 +105,7 @@ export function agentSettingsProblems(raw: unknown): string[] {
     }
   }
   if (o.confidence !== undefined && !confidenceSchema.safeParse(o.confidence).success) out.push('judge.confidence')
+  if (o.maxInFlight !== undefined && !maxInFlightSchema.safeParse(o.maxInFlight).success) out.push('judge.maxInFlight')
   return out
 }
 
@@ -119,7 +126,8 @@ export function mergeAgentSettings(current: AgentSettings, patch: AgentSettingsP
         workstreams: j.smartApprovals?.workstreams ?? current.judge.smartApprovals.workstreams,
         chat: j.smartApprovals?.chat ?? current.judge.smartApprovals.chat
       },
-      confidence: j.confidence ?? current.judge.confidence
+      confidence: j.confidence ?? current.judge.confidence,
+      maxInFlight: j.maxInFlight ?? current.judge.maxInFlight ?? DEFAULT_JUDGE_MAX_IN_FLIGHT
     }
   }
 }
@@ -130,6 +138,7 @@ export async function getAgentSettings(): Promise<AgentSettings> {
   if (cache) return cache
   const [row] = await useDb().select().from(settings).where(eq(settings.key, AGENT_SETTINGS_KEY)).limit(1)
   cache = readAgentSettings(row?.value)
+  setJudgeMaxInFlight(cache.judge.maxInFlight)
   return cache
 }
 
@@ -154,6 +163,7 @@ export async function saveAgentSettings(patch: unknown): Promise<AgentSettings> 
   await useDb().insert(settings).values({ key: AGENT_SETTINGS_KEY, value: next, updatedAt: new Date() })
     .onConflictDoUpdate({ target: settings.key, set: { value: next, updatedAt: new Date() } })
   cache = next
+  setJudgeMaxInFlight(next.judge.maxInFlight)
   return next
 }
 

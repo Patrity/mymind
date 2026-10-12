@@ -3,8 +3,8 @@ import { describe, it, expect } from 'vitest'
 import { agentSettingsPatchSchema, defaultAgentSettings, mergeAgentSettings, readAgentSettings } from './agent-settings'
 
 describe('agent settings — judge fields', () => {
-  it('defaults: judge on, workstreams on, chat off, confidence 0.9', () => {
-    expect(defaultAgentSettings()).toEqual({ judge: { enabled: true, smartApprovals: { workstreams: true, chat: false }, confidence: 0.9 } })
+  it('defaults (final fix wave M4): judge on, Smart Approvals OFF on both surfaces, confidence 0.9, 4 in flight', () => {
+    expect(defaultAgentSettings()).toEqual({ judge: { enabled: true, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9, maxInFlight: 4 } })
     expect(readAgentSettings(undefined)).toEqual(defaultAgentSettings())
     expect(readAgentSettings(null)).toEqual(defaultAgentSettings())
     expect(readAgentSettings({ other: 1 })).toEqual(defaultAgentSettings())
@@ -19,20 +19,21 @@ describe('agent settings — judge fields', () => {
 
   it('reads stored values; a missing field reads as its default', () => {
     expect(readAgentSettings({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: true }, confidence: 0.75 } }))
-      .toEqual({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: true }, confidence: 0.75 } })
+      .toEqual({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: true }, confidence: 0.75, maxInFlight: 4 } })
+    expect(readAgentSettings({ judge: { smartApprovals: { workstreams: true } } }).judge.smartApprovals).toEqual({ workstreams: true, chat: false })
     expect(readAgentSettings({ judge: {} })).toEqual(defaultAgentSettings())
     expect(readAgentSettings({ judge: { smartApprovals: {} } })).toEqual(defaultAgentSettings())
   })
 
   it('a present but invalid field fails closed: booleans read false (fix round 1)', () => {
     expect(readAgentSettings({ judge: { enabled: 'yes', smartApprovals: { workstreams: 1, chat: 'true' } } }).judge)
-      .toEqual({ enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9 })
+      .toEqual({ enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9, maxInFlight: 4 })
     expect(readAgentSettings({ judge: { smartApprovals: 'on' } }).judge.smartApprovals).toEqual({ workstreams: false, chat: false })
     expect(readAgentSettings({ judge: { enabled: null } }).judge.enabled).toBe(false)
   })
 
   it.each([['a string', 'corrupt'], ['an array', []], ['a number', 7]])('a corrupt row (%s) reads as everything off', (_n, raw) => {
-    expect(readAgentSettings(raw)).toEqual({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.99 } })
+    expect(readAgentSettings(raw)).toEqual({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.99, maxInFlight: 4 } })
   })
 
   it.each([['a string', 'x'], ['null', null], ['an array', [1]]])('a corrupt judge value (%s) reads as everything off', (_n, j) => {
@@ -41,6 +42,15 @@ describe('agent settings — judge fields', () => {
 
   it.each([0.49, 1, 0, -1, Number.NaN, '0.9', null])('a stored confidence of %s reads as the strictest threshold (0.99), never lower', (c) => {
     expect(readAgentSettings({ judge: { confidence: c } }).judge.confidence).toBe(0.99)
+  })
+
+  it.each([0, 17, 2.5, '4', null])('I5: a stored maxInFlight of %s reads as the default 4 (a capacity knob, not a switch)', (n) => {
+    expect(readAgentSettings({ judge: { maxInFlight: n } }).judge.maxInFlight).toBe(4)
+  })
+
+  it('I5: a stored maxInFlight in 1–16 is read as is', () => {
+    expect(readAgentSettings({ judge: { maxInFlight: 1 } }).judge.maxInFlight).toBe(1)
+    expect(readAgentSettings({ judge: { maxInFlight: 16 } }).judge.maxInFlight).toBe(16)
   })
 
   it('accepts the bounds 0.5 and 0.99', () => {
@@ -55,7 +65,10 @@ describe('agent settings — judge fields', () => {
     ['enabled not a boolean', { judge: { enabled: 'true' } }],
     ['unknown judge field', { judge: { auto: true } }],
     ['unknown smartApprovals field', { judge: { smartApprovals: { headless: true } } }],
-    ['unknown top-level field', { persona: 'x' }]
+    ['unknown top-level field', { persona: 'x' }],
+    ['maxInFlight 0', { judge: { maxInFlight: 0 } }],
+    ['maxInFlight 17', { judge: { maxInFlight: 17 } }],
+    ['maxInFlight fractional', { judge: { maxInFlight: 2.5 } }]
   ])('a patch with %s is rejected', (_n, body) => {
     expect(agentSettingsPatchSchema.safeParse(body).success).toBe(false)
   })
@@ -63,7 +76,8 @@ describe('agent settings — judge fields', () => {
   it('a patch merges onto the current settings, leaving the rest alone', () => {
     const cur = defaultAgentSettings()
     const patch = agentSettingsPatchSchema.parse({ judge: { smartApprovals: { chat: true } } })
-    expect(mergeAgentSettings(cur, patch)).toEqual({ judge: { enabled: true, smartApprovals: { workstreams: true, chat: true }, confidence: 0.9 } })
+    expect(mergeAgentSettings(cur, patch)).toEqual({ judge: { enabled: true, smartApprovals: { workstreams: false, chat: true }, confidence: 0.9, maxInFlight: 4 } })
+    expect(mergeAgentSettings(cur, agentSettingsPatchSchema.parse({ judge: { maxInFlight: 8 } })).judge.maxInFlight).toBe(8)
     expect(mergeAgentSettings(cur, agentSettingsPatchSchema.parse({}))).toEqual(cur)
   })
 })
@@ -85,6 +99,7 @@ describe('agentSettingsProblems (Task 4 fix round 1, M1)', () => {
     expect(agentSettingsProblems({ judge: null })).toEqual(['judge'])
     expect(agentSettingsProblems({ judge: { enabled: 'yes', smartApprovals: { workstreams: 1, chat: true }, confidence: 2 } }))
       .toEqual(['judge.enabled', 'judge.smartApprovals.workstreams', 'judge.confidence'])
+    expect(agentSettingsProblems({ judge: { maxInFlight: 0 } })).toEqual(['judge.maxInFlight'])
     expect(agentSettingsProblems({ judge: { smartApprovals: [] } })).toEqual(['judge.smartApprovals'])
     expect(agentSettingsProblems({ judge: { smartApprovals: { chat: 'no' } } })).toEqual(['judge.smartApprovals.chat'])
   })

@@ -12,6 +12,7 @@ import { z } from 'zod'
 import { languageModel, resolveJudgeChain, withFailoverOver } from '../../ai/registry/resolve'
 import type { ResolvedModel } from '../../ai/registry/types'
 import { fenceId, fenceUntrusted } from './fence'
+import { withJudgeSlot } from './limiter'
 import {
   MAX_REASONS, REASON_MAX_CHARS, RECOMMENDATIONS, RISKS,
   RUN_CALL_ARGS_CHARS, type JudgeVerdict, type Recommendation, type Risk, type RuleVerdict, type RunCall, type RunTaint, type TaintSource
@@ -235,9 +236,11 @@ export async function judgeVerdict(input: JudgeInput, deps: JudgeDeps = {}): Pro
   const call = deps.call ?? defaultCall
   const prompt: JudgePrompt = { system: JUDGE_SYSTEM, prompt: buildJudgePrompt(input) }
   let answeredBy: string | null = null
+  let slotted = false
   try {
+    // I5: one of judge.maxInFlight slots (shared with the guard); the wait counts toward the deadline.
     // Each model's call races the shared deadline, so a call that ignores its signal still ends.
-    const res = await withFailoverOver('judge', chain, async (m) => {
+    const res = await withJudgeSlot(signal, () => { slotted = true; return withFailoverOver('judge', chain, async (m) => {
       if (signal.aborted) throw signal.reason ?? new Error('aborted')
       let onAbort: (() => void) | undefined
       try {
@@ -253,12 +256,12 @@ export async function judgeVerdict(input: JudgeInput, deps: JudgeDeps = {}): Pro
       } finally {
         if (onAbort) signal.removeEventListener('abort', onAbort)
       }
-    })
+    }) })
     const v = normalizeVerdict(res?.output)
     if ('error' in v) return errorVerdict(v.error, now() - started, answeredBy)
     return { ...v, model: answeredBy, latencyMs: now() - started, ...(res?.lenient ? { lenient: true as const } : {}) }
   } catch (err) {
-    if (timeout.aborted) return errorVerdict('judge timed out', now() - started)
+    if (timeout.aborted) return errorVerdict(slotted ? 'judge timed out' : 'judge timed out waiting for a slot', now() - started)
     if (input.signal?.aborted) return errorVerdict('judge cancelled', now() - started)
     return errorVerdict(`judge failed: ${(err as Error).message.slice(0, 200)}`, now() - started)
   }

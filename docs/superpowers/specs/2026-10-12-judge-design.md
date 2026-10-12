@@ -24,7 +24,7 @@ in untrusted tool results and taints the run. Outcome judging (did the work meet
 | D3 | Judge context = the exact nonce-bound call args (as on the card), the tool's description, the run/workstream goal, the last ~20 messages trimmed; untrusted content stays fenced | full history |
 | D4 | **Rule tier** (instant) gives a floor: `critical`/`deny`/`review`/`low` per tool; rule `high`/`critical`/`deny` is **never** auto-approvable (amended 2026-10-12, see §2.4) | LLM only |
 | D5 | Verdict = risk `low|medium|high|critical`, recommendation `approve|review|deny`, confidence 0–1, 1–3 short reasons; shown on the web card (progressively), workstream attention, and one line in the iMessage approval prompt | — |
-| D6 | **Smart Approvals**: Settings toggle, **on for workstreams, off for chat** by default; auto-approve only when recommendation `approve` ∧ confidence ≥ **0.9** ∧ no rule flag ∧ **not (outbound ∧ tainted run)** — *amended 2026-10-12 (R-taint): ∧ **not tainted run** (any tool)*; judge error/timeout → human | always-human; auto in tainted outbound |
+| D6 | **Smart Approvals**: Settings toggle, **on for workstreams, off for chat** by default — *amended 2026-10-12 (final fix wave M4): **off for both** by default; Tony turns workstreams on after prod acceptance*; auto-approve only when recommendation `approve` ∧ confidence ≥ **0.9** ∧ no rule flag ∧ **not (outbound ∧ tainted run)** — *amended 2026-10-12 (R-taint): ∧ **not tainted run** (any tool)*; judge error/timeout → human | always-human; auto in tainted outbound |
 | D7 | Audit: `approval_verdicts` table (verdict, rule floor, human decision or `auto`, latency); thread shows "⚖ auto-approved (0.94): reason" | activity_log only |
 | D8 | **Output guard** scans untrusted results: web_fetch / web_search / research_web, Gmail + calendar reads, workspace `bash` / `read_file` / `bash_output`, `read_workstream` + child reports | all tool results |
 | D9 | Guard = heuristic patterns always; **synchronous** LLM classification (`judge` usage, 15 s timeout) only when heuristics are suspicious or the content is web-sourced and > 2 KB | async (too late — the next tool call already ran) |
@@ -78,6 +78,11 @@ Settings → Bridget (agent) gains: `judge.enabled` (default true), `judge.smart
 (default true), `judge.smartApprovals.chat` (default false), `judge.confidence` (default 0.9, 0.5–0.99).
 Stored in the existing agent settings doc; `invalidate` command on save. Headless runs (jobs/wakes)
 keep today's gate classes (propose/deny) — the judge annotates proposals but never auto-runs them.
+
+> **Amendment 2026-10-12 (final fix wave M4, I5):** `judge.smartApprovals.workstreams` defaults to
+> **false** — Smart Approvals is off on both surfaces until Tony turns it on after prod acceptance (the
+> judge and the guard still run). New: `judge.maxInFlight` (default 4, 1–16) caps judge + guard LLM calls
+> per process (FIFO; a queued call's wait counts toward its own deadline).
 
 ### 2.4 Never auto-approved
 Rule floor `high`/`critical`/`deny`; `outbound` in a tainted run (now: **any** call in a tainted run — see the

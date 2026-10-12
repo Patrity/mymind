@@ -52,21 +52,28 @@ export interface JudgeSettings {
   /** Run the judge at all (verdicts on cards). Off = no verdicts and no auto-approval. */
   enabled: boolean
   smartApprovals: {
-    /** Auto-approve in workstream runs (default on). */
+    /** Auto-approve in workstream runs (default OFF — final fix wave M4: Tony turns it on after prod
+     *  acceptance). */
     workstreams: boolean
     /** Auto-approve in chat runs (default off). */
     chat: boolean
   }
   /** Minimum verdict confidence for an auto-approval (default 0.9, 0.5–0.99). */
   confidence: number
+  /** Final fix wave (I5): judge + guard LLM calls running at once in one process (default 4, 1–16);
+   *  the rest queue (judge/limiter.ts). Absent → the default. */
+  maxInFlight?: number
 }
 
 export const JUDGE_CONFIDENCE_LIMITS = { min: 0.5, max: 0.99 } as const
 
+/** Final fix wave (M4, spec D6 amendment 2026-10-12): Smart Approvals ships OFF on both surfaces — the
+ *  judge still runs (verdicts on cards, the output guard); auto-approval is opt-in after acceptance. */
 export const DEFAULT_JUDGE_SETTINGS: Readonly<JudgeSettings> = Object.freeze({
   enabled: true,
-  smartApprovals: Object.freeze({ workstreams: true, chat: false }),
-  confidence: 0.9
+  smartApprovals: Object.freeze({ workstreams: false, chat: false }),
+  confidence: 0.9,
+  maxInFlight: 4
 })
 
 /** Where the approval was raised. Headless runs (jobs/wakes) are never auto-approved (spec §2.3). */

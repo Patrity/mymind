@@ -25,6 +25,7 @@ import { UNTRUSTED_NOTE } from '../../google/untrusted'
 import { WORKSPACE_UNTRUSTED_NOTE } from '../../sandbox/paths'
 import { getJudgeSettings } from '../agent-settings'
 import { fenceId, fenceUntrusted } from './fence'
+import { withJudgeSlot } from './limiter'
 import { GUARD_LABELS, resultText, scoreText, stripOwnNotes, type GuardLabel, type HeuristicResult } from './guard-rules'
 import { cutAt, jsonFromText } from './verdict'
 import { recordEvent } from '../../observability/record'
@@ -297,18 +298,21 @@ async function classify(
   const call = deps.call ?? defaultGuardCall
   const prompt: GuardPrompt = { system: GUARD_SYSTEM, prompt: buildGuardPrompt({ tool: input.tool, source: input.source, text, h }) }
   let answeredBy: string | null = null
+  let slotted = false
   try {
-    const raw = await withFailoverOver('judge', chain, async (m) => {
+    // I5: one of judge.maxInFlight slots (shared with the judge); the wait counts toward the 15 s.
+    const raw = await withJudgeSlot(signal, () => { slotted = true; return withFailoverOver('judge', chain, async (m) => {
       // Race the shared deadline: a call that ignores its signal still ends on time.
       const out = await beforeDeadline(call(m, prompt, signal), signal)
       answeredBy = m.label
       return out
-    })
+    }) })
     const v = normalizeGuardOutput(raw)
     if ('error' in v) return fail(v.error, answeredBy)
     return { ...v, model: answeredBy, latencyMs: now() - started }
   } catch (err) {
-    return fail(why('guard failed', err))
+    // A deadline that expired while still queued for a slot is a timeout too (I5: run fail-closed only).
+    return fail(!slotted && timeout.aborted ? 'guard timed out waiting for a slot' : why('guard failed', err))
   }
 }
 
