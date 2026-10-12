@@ -222,8 +222,13 @@ describe('coordinator: spawn + tree budget', () => {
 
   it('two spawns racing for the last of the tree: exactly one wins (tree lock), never both', async () => {
     const { ws } = await idleCoordinator('race', { maxSteps: 1400 }) // 600 steps left for children
-    const ask = () => spawnChildren(ws.id, [{ goal: 'T83 racer', budget: { maxSteps: 400, maxWallMs: 600_000 } }], { labels: [], kick: false })
-    const out = await Promise.allSettled([ask(), ask(), ask()])
+    // Deterministic (no luck involved): each racer, having passed the check, waits at a barrier for the
+    // others (≤ 1.5 s). With the tree lock only one is ever past the check at a time.
+    let arrived = 0
+    const barrier = async () => { arrived++; const end = Date.now() + 1500; while (arrived < 3 && Date.now() < end) await sleep(20) }
+    const ask = (b?: () => Promise<void>) => spawnChildren(ws.id, [{ goal: 'T83 racer', budget: { maxSteps: 400, maxWallMs: 600_000 } }], { labels: [], kick: false, ...(b ? { _afterCheck: b } : {}) })
+    const out = await Promise.allSettled([ask(barrier), ask(barrier), ask(barrier)])
+    expect(arrived).toBe(1)
     expect(out.filter(o => o.status === 'fulfilled')).toHaveLength(1)
     expect(out.filter(o => o.status === 'rejected').map(o => String((o as PromiseRejectedResult).reason.message))).toEqual([expect.stringMatching(/cannot cover/), expect.stringMatching(/cannot cover/)])
     expect((await workstreamDTO((await getWorkstream(ws.id))!)).childIds).toHaveLength(1)
@@ -428,6 +433,15 @@ describe('coordinator: wait / wake', () => {
     expect(got.filter(Boolean)).toHaveLength(1)
     expect(await wakes(ws.conversationId)).toHaveLength(1)
     expect(await activeSegs(ws.conversationId)).toHaveLength(1)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('a coordinator that is not parked is never woken, even with a stale wait on its row', async () => {
+    const { ws, kids } = await parkedTree('stale', 1)
+    await useDb().update(workstreams).set({ state: 'running' }).where(eq(workstreams.id, ws.id)) // attention left as it was
+    await useDb().update(workstreams).set({ state: 'done' }).where(eq(workstreams.id, kids[0]!.id))
+    expect(await wakeCoordinatorIfReady(ws.id)).toBeNull()
+    expect(await wakes(ws.conversationId)).toHaveLength(0)
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 

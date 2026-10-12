@@ -124,7 +124,7 @@ export interface SpawnedChild { id: string; goal: string; budget: WorkstreamBudg
  * budget reserved out of the tree — all or nothing. `labels` is the configured `subagents` labels
  * (listSubagentModels); the tool passes them, tests pin them.
  */
-export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o: { labels: string[]; kick?: boolean }): Promise<{ children: SpawnedChild[]; tree: { budget: WorkstreamBudget; remaining: Amount } }> {
+export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o: { labels: string[]; kick?: boolean; /** test seam: awaited after the check, before the insert */ _afterCheck?: () => Promise<void> }): Promise<{ children: SpawnedChild[]; tree: { budget: WorkstreamBudget; remaining: Amount } }> {
   if (!specs.length) throw new CoordinatorError('give at least one child')
   if (specs.length > MAX_SPAWN_PER_CALL) throw new CoordinatorError(`at most ${MAX_SPAWN_PER_CALL} children per call (got ${specs.length}) — spawn the rest in another call`)
   const prepared = specs.map((c, i) => {
@@ -154,6 +154,7 @@ export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o
     if (want.maxSteps > left.maxSteps || want.maxWallMs > left.maxWallMs) {
       throw new CoordinatorError(`the tree budget cannot cover these children: they need ${fmt(want)} and ${fmt(left)} is left (tree ${fmt(tree)}). Give them smaller budgets, spawn fewer, or wait for running children to end (unused budget comes back).`)
     }
+    await o._afterCheck?.()
     if (!p.treeBudget) await tx.update(workstreams).set({ treeBudget: tree }).where(eq(workstreams.id, p.id))
     const rows: WorkstreamRow[] = []
     for (const c of prepared) {

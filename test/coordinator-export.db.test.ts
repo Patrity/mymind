@@ -114,7 +114,8 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
     for (const bad of ['../x', '/etc/passwd', '.mymind/shells', 'a/../../b', '.']) {
       expect((await call('export_to_coordinator', { paths: [bad] })).ok, bad).toBe(false)
     }
-    expect(await call('export_to_coordinator', { paths: ['missing.txt'] })).toMatchObject({ ok: false, error: /export_to_coordinator failed/ })
+    // tar's own refusal (the missing path), not a later failure to unpack nothing.
+    expect(await call('export_to_coordinator', { paths: ['missing.txt'] })).toMatchObject({ ok: false, error: /export_to_coordinator failed: .*missing\.txt/ })
 
     // A tainted run: the copy runs with no network on both sides and taints the coordinator's workspace.
     expect((await call('bash', { command: 'echo MAIL > mail.txt' })).exitCode).toBe(0)
