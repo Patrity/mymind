@@ -1,7 +1,7 @@
 ---
 title: "@mymind/core (shared server package)"
 status: shipped
-cycle: 80 (bus, env mapper, worker: cycle 81)
+cycle: 80 (bus, env mapper, worker: cycle 81; sandbox: cycle 82)
 updated: 2026-10-11
 mymind_id: 4c23fd31-c5f1-4648-868a-b584ffa5f308
 mymind_hash: 53b7ea0f157bcf6e1f72c6d7acfa0ce08ed5cfd67b12113f4ab0f334df77e3ce
@@ -17,7 +17,8 @@ lives in `packages/core/src` as a **source-only pnpm workspace package**: `expor
 ## What's in it
 
 `db/` (schema, `useDb()` pool, types), `lib/` (agent, ai, auth, channels, chunking, documents, exec,
-google, imagegen, images, memory, observability, projects, review, search, tasks, triage, voice — the
+google, imagegen, images, memory, observability, projects, review, sandbox (cycle 82 — the per-workspace
+Docker sandbox, see [workspace.md](workspace.md)), search, tasks, triage, voice — the
 parts the worker reaches), `services/` (the 21 services those import), `utils/` (live-bus, net,
 storage), `shared/` (types/utils used by core; app-only `shared/` files stay at the root).
 What's in core is the import closure of `lib/{agent,google,channels,ai,auth}` + `db`, computed by
@@ -41,6 +42,7 @@ import { initCore, coreConfig } from '@mymind/core/config'
 | `triageThresholds`, `triageAppendSimilarityFloor` | `services/triage` |
 | `busNs` (env-backed, cycle 81) | `lib/bus/ns.ts` — the bus namespace (`MYMIND_BUS_NS`, default `default`) |
 | `dev` (host fact, cycle 81) | dev-only stubs (`lib/observability/email.ts`) |
+| `sandboxRequireFirewall`, `sandboxRequireLimits` (env-backed, cycle 82) | `lib/sandbox/manager.ts` — fail-closed firewall/limits preflight gates (`SANDBOX_REQUIRE_FIREWALL`/`SANDBOX_REQUIRE_LIMITS`; unset ⇒ true on Linux, false elsewhere) |
 
 **One env mapper (cycle 81): `packages/core/src/config-env.ts`.** The web and the worker build
 `CoreConfig` through the same module, so they cannot drift.
@@ -51,7 +53,8 @@ import { initCore, coreConfig } from '@mymind/core/config'
   `applyRuntimeEnv`, a faithful copy of Nitro's `applyEnv` that `test/core-config.test.ts` runs
   against Nitro's own implementation. So `NUXT_DATABASE_URL` wins in both processes, and a plain
   `DATABASE_URL` does not override in either.
-- **Env-backed** fields (`ENV_BACKED_FIELDS = ['busNs']`, read from the variable `MYMIND_BUS_NS`)
+- **Env-backed** fields (`ENV_BACKED_FIELDS = ['busNs', 'sandboxRequireFirewall', 'sandboxRequireLimits']`,
+  read from `MYMIND_BUS_NS`/`SANDBOX_REQUIRE_FIREWALL`/`SANDBOX_REQUIRE_LIMITS`)
   are read from the *runtime* env by both processes and are never baked at build time. A value in
   `.env.native` therefore reaches the web too. The web and the worker **must agree** on it.
 
@@ -84,7 +87,7 @@ tables in `db/schema/bus.ts`, migrations 0068–0071. The behaviour is described
 | `listen.ts` | The process's ONE dedicated `LISTEN` client (never on the pool). It is lazy and multiplexed, drops other namespaces, and self-heals: on error or end, or on a health ping that fails or hangs, it reconnects with backoff, re-LISTENs, and fires the `onListenReady` resync hooks. |
 | `events.ts` | `run_events`, the run-event log. `createRunEventWriter` coalesces deltas (≈50 ms), writes one transaction per batch plus a NOTIFY pointer, and retries in order. `createRunEventReader` uses a lookback window and (run, seq) dedupe, so a row that commits late is never skipped. Also `openApprovalFrames` and `pruneRunEvents` (7 days; workstreams kept). |
 | `relay.ts` | The web side: fans `run_events` out to the voice sockets per conversation, and replays running runs from seq 1 on a late join. |
-| `commands.ts` | `worker_commands`: `sendCommand` (optionally awaiting a result with a 10 s timeout; an unclaimed row is closed when the sender gives up), `handleCommands` (atomic claim on NOTIFY and on a poll), `beatWorker` / heartbeat reads, `pruneHandledCommands`. |
+| `commands.ts` | `worker_commands`: `sendCommand` (optionally awaiting a result with a 10 s timeout; an unclaimed row is closed when the sender gives up), `handleCommands` (atomic claim on NOTIFY and on a poll), `beatWorker` / heartbeat reads, `pruneHandledCommands`. Cycle 82 adds `workspace-reenable-network`, `workspace-read-text`, `workspace-view` (tree/file/chunk/shell-tail) and `workspace-kill-shell`; `WorkerBeatStatus.sandbox` (`SandboxHealth`) rides the heartbeat — see [workspace.md](workspace.md). |
 | `live.ts` | Cross-process `publishChange` / `publishActivity`, with an origin id dropping echoes. |
 | `invalidate.ts` | Settings caches: the web's PUT routes send `invalidate` with a known cache name. |
 

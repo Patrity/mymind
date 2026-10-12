@@ -420,6 +420,14 @@ Carried out of the 11 cycle handovers, de-duplicated, current items only:
 - Redis pub/sub for clipboard SSE *if* ever running >1 instance (today: single in-process EventEmitter).
 - Rate-limit `/api/auth`, `/api/upload`, `/api/hooks` at the proxy.
 
+**Cycle 82 — sandboxed workspace** (built, unmerged, `feat/sandbox`; see [`wiki/workspace.md`](wiki/workspace.md) + the [cycle-82 handover](handovers/2026-10-11-sandboxed-workspace.md))
+- Shell/watch output pruning — `workspace_shells`/`workspace_watches` rows (and their `.mymind/shells/<id>/` files, which count toward quota) are never pruned after they end.
+- Document-level taint — a tainted run's `create_document`, later `import_document`ed by an untainted workstream, doesn't propagate taint into the workspace it lands in.
+- Image prune policy follow-ups — `docker builder prune --filter until=24h` clears all BuildKit cache, not scoped to the sandbox image; the content-hash tag changes (a new tag, same image id) whenever `install-network.sh`/`build-image.sh` themselves change, not only the Dockerfile.
+- Prod acceptance not yet run on LXC 114 — the resource-limits preflight (cgroup delegation), the firewall reachability check, reboot persistence and the taint/re-enable flow have only been proven on Docker Desktop (dev) and docker-in-docker (the firewall test suite). See the handover's prod acceptance checklist.
+- I2 operational note: a running background shell no longer keeps its container alive past 15 idle minutes by itself (only an armed `watch` does) — "start a job and walk away" now needs either a `watch` on it or a periodic `bash_output` read.
+- Thread summarization can paraphrase tainted workspace content into an untainted summary (pre-existing — the same is already true of Gmail content).
+
 **Minor tech-debt**
 - `::callout` resolves to MDC's built-in; custom type-colored one is `::mc-callout` (rename or override the prose map to unify).
 - `messages.session_id` FK + `ON DELETE CASCADE` (no FK today).

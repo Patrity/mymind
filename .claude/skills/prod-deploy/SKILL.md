@@ -130,6 +130,48 @@ lxc 'systemctl restart mymind-worker && sleep 3 && systemctl is-active mymind-wo
 lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select count(*) from documents;"'
 ```
 
+### Sandbox ops (cycle 82 — the `mymind-sandbox` workspace)
+
+Reference: `docs/wiki/workspace.md`. Everything below is read-only (no `.env`/secret values are
+printed). If the app shows "Sandbox unavailable: `<reason>`", or a deploy's Annotations carry a
+`Sandbox` warning, start here.
+
+```bash
+# The image: exists? which tag is :current? how big?
+lxc 'docker image ls mymind-sandbox'
+lxc 'docker image inspect mymind-sandbox:current --format "{{.Id}} {{.Size}}"'
+
+# The network + firewall: does it exist with the right bridge/options, and are our rules live?
+lxc 'docker network inspect mymind-sandbox --format "{{json .Options}}"'
+lxc 'iptables -S DOCKER-USER'                        # expect a jump to MYMIND-SANDBOX-FWD, FIRST rule
+lxc 'iptables -S MYMIND-SANDBOX-FWD'                  # the REJECT/RETURN rule set (network.ts)
+lxc 'iptables -S INPUT | head -5'                     # expect a jump to MYMIND-SANDBOX-IN near the top
+lxc 'iptables -S MYMIND-SANDBOX-IN'
+lxc 'docker info --format "{{.FirewallBackend}}"'     # nft vs legacy — must match what the rules above assume
+lxc 'systemctl is-enabled mymind-sandbox-net; systemctl is-active mymind-sandbox-net'
+lxc 'journalctl -u mymind-sandbox-net -n 30 --no-pager'
+
+# Resource limits actually enforced (not just accepted) — run INSIDE a live sandbox container:
+lxc 'cid=$(docker ps -q --filter "label=mymind.workspace" | head -1); [ -n "$cid" ] && docker exec "$cid" sh -c "cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max" || echo "no running sandbox to probe"'
+
+# Running sandboxes (one container per workspace; name mymind-ws-<id>)
+lxc 'docker ps --filter "label=mymind.workspace" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"'
+lxc 'docker stats --no-stream $(docker ps -q --filter "label=mymind.workspace")'   # CPU/mem per sandbox, if any running
+
+# Disk (the watchdog stops everything below 4 GB / ~200k free inodes)
+lxc 'df -h /opt/mymind/.workspaces; df -i /opt/mymind/.workspaces'
+lxc 'du -sh /opt/mymind/.workspaces/*/ 2>/dev/null | sort -rh | head -10'   # the biggest workspaces
+
+# The worker's own preflight result (rides the heartbeat — what the app's banner reads)
+lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select boot_id, beat_at, status->'"'"'sandbox'"'"' as sandbox from worker_heartbeat order by beat_at desc limit 1;"'
+```
+
+Fixes (both idempotent; see §22 of `docs/DEPLOYMENT.md`):
+```bash
+lxc 'cd /opt/mymind && bash deploy/sandbox/install-network.sh install'   # rebuild the network + rules + oneshot
+lxc 'cd /opt/mymind && bash deploy/sandbox/build-image.sh'               # rebuild the image (needs >= 6 GB free)
+```
+
 ### "There are errors in prod" — AI/provider errors are in `activity_log`, NOT the journal
 
 The journal only carries request-level `[request error]` lines and job progress. Every AI

@@ -2,7 +2,7 @@
 title: "Sandboxed workspace — per-workspace Docker sandbox, file/shell/watch tools, taint-aware network (cycle 82, harness step 3)"
 cycle: 82
 date: 2026-10-11
-status: spec
+status: built  # see handover 2026-10-11-sandboxed-workspace.md
 supersedes: null
 builds_on: 2026-10-11-worker-and-workstreams-design.md
 ---

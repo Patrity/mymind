@@ -1,7 +1,7 @@
 ---
 title: Workstreams (long-running background agent work)
 status: built
-cycle: 81
+cycle: 81 (workspace integration: cycle 82)
 updated: 2026-10-11
 mymind_id: a5fa582b-9998-41b3-a9b3-53a41c8a0642
 mymind_hash: e79151b4f4b107beaa5ff40ce85ad85f516ad94367926d064254c937b6ffb751
@@ -15,7 +15,8 @@ It can pause to ask Tony a question or to get an approval, and it ends with a su
 chat it was started from.
 
 Spec: [`2026-10-11-worker-and-workstreams-design.md`](../superpowers/specs/2026-10-11-worker-and-workstreams-design.md) §5 ·
-Related: [agent-runtime.md](agent-runtime.md) (runs, the worker, the bus), [channels.md](channels.md) (iMessage).
+Related: [agent-runtime.md](agent-runtime.md) (runs, the worker, the bus), [channels.md](channels.md) (iMessage),
+[workspace.md](workspace.md) (cycle 82: the sandboxed workspace every workstream gets).
 
 The code is the source of truth:
 - `packages/core/src/lib/agent/workstreams/`: `loop.ts` is the state machine; `store.ts`,
@@ -100,6 +101,27 @@ At most **3 non-terminal workstreams** (`MAX_ACTIVE_WORKSTREAMS`). That means qu
 attention **and paused**. The check runs under an advisory lock on start, and on resuming a
 failed or cancelled one. Resuming a paused workstream is not re-checked, because it already counts.
 A start at the cap is refused with a readable error (HTTP 409 `cap`).
+
+## Sandboxed workspace (cycle 82)
+
+A workstream gets its own Docker sandbox at start (`ensureWorkstreamWorkspace`, created up front by
+`startWorkstream`); the `workspace` toolset — files, `bash` (foreground/background), `watch`,
+document import/export — is **pre-loaded** for every segment (`runner.ts`), unlike chat where it
+loads on demand. A chat turn typed into a **finished** workstream's thread falls back to the shared
+`home` workspace instead (`resolveWorkspace`'s terminal-state check). Full reference:
+[workspace.md](workspace.md).
+
+- **Watches park a workstream for free.** `watch` polls inside the sandbox; if a segment ends with a
+  watch still armed and no other work queued, the workstream parks as `paused {waitingForWatch}` —
+  using **no step budget** while it waits. The watch firing (or timing out) wakes it as a new
+  `segment:watch` segment. A workstream's watches are capped at 10 over its lifetime and 48 h of
+  cumulative armed wait; past either cap, `watch` refuses and pauses the workstream for Tony instead
+  of waiting indefinitely (counts toward the attention/pause bookkeeping above, not a new state).
+- **Terminal-state cleanup.** The instant a workstream reaches `done`/`failed`/`cancelled`, its
+  workspace's background shells are killed, its watches cancelled quietly (nobody to notify), and its
+  sandbox container stopped — immediately, not at the next tick. Only the **files** wait out
+  workspace.md's 30-day sweep. A resumed workstream (its state leaves terminal again) is exempt from
+  that sweep until it next finishes.
 
 ## Approvals
 

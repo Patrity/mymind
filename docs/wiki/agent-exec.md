@@ -1,17 +1,28 @@
 ---
 title: Agent Exec — Credentialed Native-Root Exec (Cycle B3.2; always-armed since cycle 42)
 status: shipped
-cycle: 42
-updated: 2026-07-01
+cycle: 42 (toolset: cycle 82)
+updated: 2026-10-11
 ---
 
 # Agent Exec — Credentialed Native-Root Exec
 
 Cycles B2 and B3.1 added the approval gate harness and moved the app to a native systemd process (root in LXC 114). B3.2 reworks the exec runner for that reality: exec runs **natively as root in the LXC** (no `setpriv`, no `agent` uid drop, no `/workspace` jail), always injects the user's service tokens, and applies an allowlist-first gate with a catastrophic hard-block. The LXC container is the security boundary.
 
+> **Cycle 82 update — `exec` moved to the on-demand `admin` toolset.** Everything below about
+> privilege, the gate and secrets is unchanged; what changed is *visibility*. `exec`'s `toolset` tag
+> is now `'admin'` (`packages/core/src/lib/agent/tools/exec.ts`) instead of core — it's still always
+> *available* (in `bridgetProfile.tools`, so every channel including MCP replay can still call it),
+> but it's no longer shown to the model on every step. The system prompt's SHELL block now steers
+> every ordinary command (code, scripts, `curl`/`wget`, git, package installs, data work) to the new
+> sandboxed `workspace` toolset's `bash` instead, and reserves host `exec` (`admin`) for operating the
+> MyMind server itself — its DB, services, logs — "nothing else." See [agent.md](agent.md#toolsets-cycle-78)
+> and [workspace.md](workspace.md). This is a visibility change only: everything in this page about
+> `exec`'s runtime, gate and secrets still applies whenever it IS called.
+
 ## What must be true for exec to run (always-armed since cycle 42)
 
-**The old dual-enable lever is GONE** (Tony's decision, 2026-07-01): there is no `powerful` profile toggle and no `agent-exec-enabled` cookie. `packages/core/src/lib/agent/profile.ts` defines ONE profile (`bridgetProfile` = `agentTools` + `execTool` + subagent tools) and the exec tool is exposed on every turn. Old `{type:'profile'}` / `{type:'execEnabled'}` WS frames are silently ignored.
+**The old dual-enable lever is GONE** (Tony's decision, 2026-07-01): there is no `powerful` profile toggle and no `agent-exec-enabled` cookie. `packages/core/src/lib/agent/profile.ts` defines ONE profile (`bridgetProfile` = `agentTools` + `execTool` + subagent tools) and the exec tool is always *available* to every channel — including MCP replay and a headless run. **Since cycle 82** it sits in the on-demand `admin` toolset rather than core, so it isn't *shown* to the model on every step (the toolset directory lists `admin` one line; calling `exec` or loading `admin` loads it — see [agent.md](agent.md#toolsets-cycle-78)); availability and the gate below are unaffected. Old `{type:'profile'}` / `{type:'execEnabled'}` WS frames are silently ignored.
 
 What still stands between the model and a running command:
 
@@ -197,6 +208,7 @@ Future options for a harder boundary: bwrap/nsjail syscall sandbox; a curl-flag 
 ## See also
 
 - [agent.md](agent.md) — agent surface, WS protocol, conversation store, Bridget personality
+- [workspace.md](workspace.md) — the sandboxed `workspace` toolset exec was partly superseded by (cycle 82): files, `bash`, background shells, `watch` — no approval gate, taint-aware network instead
 - [web-research.md](web-research.md) — `web_search` + `web_fetch` (read-only tools, no gate)
 - [ai-providers.md](ai-providers.md) — model registry
 - [activity-log.md](activity-log.md) — observability (`withSpan`, `recordEvent`, the activity log surface)

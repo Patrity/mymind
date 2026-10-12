@@ -730,3 +730,68 @@ code ignores the new tables and columns.
   Rolling forward again: a normal deploy of cycle ≥ 81. `provision-native.sh` re-enables the unit,
   and CD's activate and restart start it.
 
+## 22. Sandboxed workspace (`mymind-sandbox`, cycle 82)
+
+Since cycle 82 the worker runs each workstream's (and chat's shared `home`) files/shell/`watch` work
+inside an unprivileged Docker sandbox, one container per workspace. Full reference:
+[`docs/wiki/workspace.md`](wiki/workspace.md).
+
+**The image.** `deploy/sandbox/Dockerfile` (Debian + git/python3/node22+pnpm/ripgrep/build-essential,
+user `agent` uid 10001, ~671 MB). `deploy/sandbox/build-image.sh` tags it by a **sha256 content hash
+of `deploy/sandbox/`** (not the git sha — CD's tar excludes `.git`): `mymind-sandbox:<hash>` +
+`mymind-sandbox:current` (the worker's `SANDBOX_IMAGE`, default `:current`) + `mymind-sandbox:previous`
+(one level of rollback, kept automatically). After a successful build it prunes every other
+`mymind-sandbox:*` tag no container uses, plus BuildKit cache older than 24h. **Provisioning only
+builds the image when `/` has ≥ 6 GB free** — below that it skips the build, warns loudly (banner +
+GitHub `::warning::`), and the previous image (if any) keeps working.
+
+**The network + firewall.** `deploy/sandbox/install-network.sh install` (idempotent, run by
+provisioning):
+- creates the `mymind-sandbox` Docker network (bridge `br-mymind-sbx`, subnet `172.31.82.0/24`,
+  `icc=false`, IPv6 off);
+- installs two iptables chains — `MYMIND-SANDBOX-FWD` (jumped from `DOCKER-USER`: rejects every
+  RFC1918/link-local/CGNAT/loopback/multicast/reserved destination, `RETURN`s everything else to the
+  internet) and `MYMIND-SANDBOX-IN` (jumped from `INPUT`: rejects new connections to this host — the
+  docker gateway, the LXC's LAN IP, published Postgres/SearXNG ports) — applied in one atomic
+  `iptables-restore --noflush`, never flush-then-refill;
+- installs a systemd oneshot **`mymind-sandbox-net.service`** that re-applies the rules at every boot
+  and docker restart, from its own copy at **`/usr/local/lib/mymind/install-network.sh`** (never the
+  CD-managed `/opt/mymind` tree — a reboot mid-deploy must not leave the firewall unapplied);
+- creates **`/opt/mymind/.workspaces`** (mode 0711) — every workspace's files live under
+  `<id>/`, bind-mounted read-write at `/workspace` inside its own container and nowhere else.
+
+The worker **refuses to start a sandbox on Linux** unless the live rules match this plan exactly
+(`SANDBOX_REQUIRE_FIREWALL`, default on for Linux) — a missing/mismatched firewall never silently
+degrades to "no isolation", it degrades to "no sandbox at all". Same fail-closed shape for the
+memory/pids cgroup **limits** (`SANDBOX_REQUIRE_LIMITS`): an unprivileged LXC whose controllers
+aren't delegated to Docker lets `--memory`/`--pids-limit` succeed with a silent warning and no
+effect, so the worker probes a throwaway container's real cgroup files at boot and refuses the
+sandbox rather than trust the flag.
+
+**Disk.** The build needs ≥ 6 GB free; once running, a 5 s watchdog stops **every** sandbox container
+(and refuses all workspace commands) if `/opt/mymind` drops under **4 GB free or ~200k free
+inodes**, resuming only once both recover to **≥ 5 GB / ~250k inodes** (hysteresis). `df -h
+/opt/mymind/.workspaces` and `df -i` before a deploy that might grow the image.
+
+**CD.** `deploy.yml`'s tree-wipe allow-list and tar excludes preserve `.workspaces` across every
+deploy, exactly like `.worker`/`.worker-prev`. After the worker restarts, a `continue-on-error`
+**Sandbox health** step polls `worker_heartbeat.status->'sandbox'` for up to 2 minutes and turns a
+`false` into a GitHub **`::warning::`** naming the reason — a broken sandbox never fails the deploy
+(the web and chat/workstreams work fine without it; only `workspace`/`admin` tool calls are refused).
+
+**Post-deploy warning — what to do with it.** Open the deploy run's Annotations. If the `Sandbox
+health` step (or `provision-native.sh`'s own banner) warned:
+```bash
+# On the box (see the prod-deploy skill for the lxc SSH helper):
+docker image inspect mymind-sandbox:current            # does the image exist?
+iptables -S DOCKER-USER; iptables -S MYMIND-SANDBOX-FWD # are the rules there?
+docker info --format '{{.FirewallBackend}}'             # nft vs legacy mismatch?
+df -h /opt/mymind/.workspaces; df -i /opt/mymind/.workspaces
+# Re-run what failed:
+bash /opt/mymind/deploy/sandbox/install-network.sh install
+bash /opt/mymind/deploy/sandbox/build-image.sh
+```
+See `docs/wiki/workspace.md#diagnosing-sandbox-unavailable` for the full reason → cause → fix table,
+and the `prod-deploy` skill's **Sandbox ops** section for read-only commands to check all of this
+without printing secrets.
+
