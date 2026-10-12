@@ -11,6 +11,7 @@ vi.mock('../../observability/record', () => ({ recordEvent: m.recordEvent, withS
 import { createApprovalJudge, defaultApprovalJudgeDeps, type ApprovalJudgeDeps } from './approval'
 import { busApprovalChannel, decideBusApproval, pendingBusApprovals } from '../runtime/bus-approvals'
 import { getJudgeSettings } from '../agent-settings'
+import { decideReviewTool } from '../tools/reviews'
 import { errorVerdict } from './verdict'
 import type { HubFrame } from '../../bus/events'
 import type { AgentTool } from '../types'
@@ -325,6 +326,10 @@ describe('approval judge on the bus channel', () => {
       expect(s.verdictFrames().at(-1)!.judge.rule).toEqual({ floor: 'high', reasons: ['the draft changed after its recipients were checked'] })
       expect(s.waits).toEqual([true])
     })
+  })
+
+  it('decide_review ("Tony confirms every call") is humanOnly; no other dangerous tool needs to be', () => {
+    expect(decideReviewTool.humanOnly).toBe(true)
   })
 
   it('the default seams are the real ones (settings getter)', () => {

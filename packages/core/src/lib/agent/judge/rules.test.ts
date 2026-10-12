@@ -278,6 +278,8 @@ describe('gmailSentHistory (Gmail-backed lookup)', () => {
     expect(addressesIn(['ann@x.com <bob@evil.com>'])).toEqual(['bob@evil.com'])
     expect(addressesIn(['bob@evil.com (ann@x.com)'])).toEqual(['bob@evil.com'])
     expect(addressesIn(['Bob (aka (ann@x.com)) <bob@evil.com>'])).toEqual(['bob@evil.com'])
+    // No angle-addr at all: a quoted display name is still never an address.
+    expect(addressesIn(['"ann@x.com" bob@evil.com'])).toEqual(['bob@evil.com'])
     expect(addressesIn(['"Doe, Ann" <ann@x.com>, "x\\"y@z.com" <c@d.com>; e@f.com'])).toEqual(['ann@x.com', 'c@d.com', 'e@f.com'])
   })
 
