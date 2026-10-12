@@ -88,7 +88,7 @@ async function callTool(ctx: RunAgentCtx, name: string, args: Record<string, unk
   return (await t.handler(args, { signal: ctx.signal, runId: ctx.runId, requestApproval: ctx.requestApproval })).result as Record<string, any>
 }
 
-interface Seen { conv: string; runId?: string; tools: string[]; last: string; subagent?: RunAgentCtx['subagent']; role?: string; modelDefId?: string | null }
+interface Seen { conv: string; runId?: string; tools: string[]; last: string; subagent?: RunAgentCtx['subagent']; role?: string; modelDefId?: string | null; initial?: string[] }
 function harness(scripts: (conv: string) => Script) {
   const seen: Seen[] = []
   const segOf = new Map<string, number>()
@@ -96,7 +96,7 @@ function harness(scripts: (conv: string) => Script) {
     runAgent: ((messages: AgentMessage[], ctx: RunAgentCtx) => {
       const n = segOf.get(r.conversationId) ?? 0
       segOf.set(r.conversationId, n + 1)
-      seen.push({ conv: r.conversationId, runId: ctx.runId, tools: (ctx.profile?.tools ?? []).map(t => t.name), last: String(messages[messages.length - 1]?.content ?? ''), subagent: ctx.subagent, role: ctx.workstream?.role?.kind, modelDefId: ctx.modelDefId })
+      seen.push({ conv: r.conversationId, runId: ctx.runId, tools: (ctx.profile?.tools ?? []).map(t => t.name), last: String(messages[messages.length - 1]?.content ?? ''), subagent: ctx.subagent, role: ctx.workstream?.role?.kind, modelDefId: ctx.modelDefId, initial: ctx.toolsets?.initial })
       return scripts(r.conversationId)(ctx, messages, n)
     }) as never,
     assemble: noAssemble as never, unavailableToolsets: async () => []
@@ -773,6 +773,31 @@ describe('coordinator: taint, approvals, workspaces, cascade', () => {
     expect((await getWorkstream(child.id))!.state).toBe('done')
     expect((await getWorkstream(ws.id))!.state).toBe('running')          // woken by its child
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('I4: a child has no workspace pre-loaded unless its spawn spec lists it; the coordinator keeps its own', async () => {
+    let coordConv = ''
+    const { seen, drive } = harness(conv => async function* (ctx, _m, seg) {
+      step(ctx)
+      if (conv === coordConv) {
+        if (seg === 0) {
+          const r = await callTool(ctx, 'spawn_workstreams', { children: [{ goal: 'T83 reader' }, { goal: 'T83 builder', toolsets: ['workspace'] }] })
+          await callTool(ctx, 'wait_for_workstreams', { ids: r.children.map((c: { id: string }) => c.id) })
+        } else await callTool(ctx, 'finish_workstream', { summary: 'ok' })
+      } else await callTool(ctx, 'finish_workstream', { summary: 'done' })
+      yield { type: 'done' }
+    })
+    const { ws } = await newCoordinator('noworkspace')
+    coordConv = ws.conversationId
+    await drive(coordConv)
+    expect((await getWorkstream(ws.id))!.state).toBe('done')
+    const kids = await useDb().select().from(workstreams).where(eq(workstreams.parentId, ws.id))
+    const reader = kids.find(k => k.goal === 'T83 reader')!
+    const builder = kids.find(k => k.goal === 'T83 builder')!
+    expect(reader.toolsets).toEqual([])
+    expect(seen.find(s => s.conv === reader.conversationId)!.initial).not.toContain('workspace')
+    expect(seen.find(s => s.conv === builder.conversationId)!.initial).toContain('workspace')
+    expect(seen.find(s => s.conv === coordConv)!.initial).toContain('workspace')
   })
 
   it('a `shared` child works in its coordinator\'s workspace; an `own` child in its own', async () => {

@@ -44,7 +44,7 @@ const budgetSchema = z.object({
 })
 const CHILD_TOOLSETS = ON_DEMAND_TOOLSETS.filter(id => id !== 'coordinator')
 
-const SPAWN_BASE = `Spawn CHILD workstreams that work in parallel on parts of your goal (≤ ${MAX_SPAWN_PER_CALL} per call). Each child runs in its own thread with its own workspace (or yours, with workspace: "shared"), cannot see your thread, and reports back with its finish_workstream summary. Give every child a SELF-CONTAINED goal: the task, constraints, and exactly what to report. Each child's budget (default ${DEFAULT_CHILD_BUDGET.maxSteps} steps / ${DEFAULT_CHILD_BUDGET.maxWallMs / 60_000} min of active time) bounds it; its STEPS are reserved out of your tree budget (the steps all your children may use together — ${DEFAULT_TREE_BUDGET.maxSteps} unless you were started with more; your own budget is separate), and the steps a child did not use return when it ends. Its result says how many are left (treeLeft). Returns the children's ids. Then call wait_for_workstreams.`
+const SPAWN_BASE = `Spawn CHILD workstreams that work in parallel on parts of your goal (≤ ${MAX_SPAWN_PER_CALL} per call). Each child runs in its own thread (with a workspace only if its toolsets list "workspace": its own, or yours with workspace: "shared"), cannot see your thread, and reports back with its finish_workstream summary. Give every child a SELF-CONTAINED goal: the task, constraints, and exactly what to report. Each child's budget (default ${DEFAULT_CHILD_BUDGET.maxSteps} steps / ${DEFAULT_CHILD_BUDGET.maxWallMs / 60_000} min of active time) bounds it; its STEPS are reserved out of your tree budget (the steps all your children may use together — ${DEFAULT_TREE_BUDGET.maxSteps} unless you were started with more; your own budget is separate), and the steps a child did not use return when it ends. Its result says how many are left (treeLeft). Returns the children's ids. Then call wait_for_workstreams.`
 
 /** The models line of the spawn description (labels + descriptions, in order; the first is the default). */
 export function modelsText(models: SubagentModelInfo[]): string {
@@ -65,7 +65,7 @@ export const spawnWorkstreamsTool: AgentTool = {
   schema: {
     children: z.array(z.object({
       goal: z.string().min(3).max(4000).describe('Self-contained: the task, constraints, and what to report back'),
-      toolsets: z.array(z.enum(CHILD_TOOLSETS as [ToolsetId, ...ToolsetId[]])).optional().describe('On-demand toolsets to pre-load (the workspace is always loaded)'),
+      toolsets: z.array(z.enum(CHILD_TOOLSETS as [ToolsetId, ...ToolsetId[]])).optional().describe('On-demand toolsets to pre-load. A child has NO workspace unless "workspace" is listed here — list it only for a child that must run code or work with files'),
       budget: budgetSchema.optional().describe(`Default ${DEFAULT_CHILD_BUDGET.maxSteps} steps / ${DEFAULT_CHILD_BUDGET.maxWallMs / 60_000} min; reserved out of your tree budget`),
       model: z.string().max(200).optional().describe('A subagents model label (see the list above); omit for the default'),
       workspace: z.enum(['own', 'shared']).optional().describe('"own" (default): its own sandbox; "shared": works in YOUR workspace')
