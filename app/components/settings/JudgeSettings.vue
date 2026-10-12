@@ -107,6 +107,8 @@ function reset() {
       :actions="[{ label: 'Reset to defaults', color: 'error', variant: 'solid', loading: saving, onClick: reset }]"
       data-testid="judge-corrupt"
     />
+    <!-- A failed load shows no controls at all: greyed-out defaults would read as the real values. -->
+    <template v-if="load !== 'failed'">
     <USwitch
       v-model="form.enabled"
       label="Judge approval cards"
@@ -155,5 +157,6 @@ function reset() {
         @click="save()"
       />
     </div>
+    </template>
   </div>
 </template>
