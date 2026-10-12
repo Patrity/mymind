@@ -1,7 +1,7 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 73 (toolsets: cycle 78; workspace/admin toolsets: cycle 82; coordinator toolset: cycle 83)
+cycle: 73 (toolsets: cycle 78; workspace/admin toolsets: cycle 82; coordinator toolset: cycle 83; judge + taint sources: cycle 84)
 updated: 2026-10-12
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
 mymind_hash: 36640a49b370f00e956d28a7c48c838437439970c2244d64e2afbdaa04b987e7
@@ -34,7 +34,7 @@ The callerless SSE `POST /api/agent/chat` was **deleted in cycle 81** (it ran `r
 ## Entry point (`runAgent`)
 
 `runAgent(messages, ctx, deps)` where `ctx = { signal, speak?, profile?, context?, maxSteps?, modelDefId?, toolsets? }`:
-- `profile` (`packages/core/src/lib/agent/profile.ts`) — `AgentProfile = { id, tools, personaKey }`. **ONE profile since cycle 42**: `bridgetProfile` = the full `agentTools` registry **+ `execTool` + the subagent tools** (`research_web`, `search_brain`) **+ `decide_review` + `load_toolsets`** (cycle 78) **+ `startWorkstreamTool`/`answerWorkstreamTool`** (cycle 81) **+ `workspaceTools`** (cycle 82 — profile-only like `exec`, so MCP never sees them). Every tool is always *available*; since cycle 78 only core + loaded toolsets are *visible* to the model per step — see [Toolsets](#toolsets-cycle-78). **Since cycle 82, `exec`'s toolset tag is `admin`** (on demand, no longer core) — availability is unchanged, only default visibility; the sandboxed `workspace` toolset (pre-loaded for workstreams) is the default place to run ordinary commands — see [workspace.md](workspace.md). The old `powerful` profile and the `agent-exec-enabled` cookie/switch are gone — safety is the approval gate (dangerous tools pause for allowlist-or-approval; channels without an approval UI auto-deny). Since cycle 79's fix wave the gate also covers **egress after a Google read**: `AgentTool.taints` / `egress` flags + a per-run flag in `buildAiTools` — see [google-connections.md](google-connections.md#tools-on-demand-toolsets).
+- `profile` (`packages/core/src/lib/agent/profile.ts`) — `AgentProfile = { id, tools, personaKey }`. **ONE profile since cycle 42**: `bridgetProfile` = the full `agentTools` registry **+ `execTool` + the subagent tools** (`research_web`, `search_brain`) **+ `decide_review` + `load_toolsets`** (cycle 78) **+ `startWorkstreamTool`/`answerWorkstreamTool`** (cycle 81) **+ `workspaceTools`** (cycle 82 — profile-only like `exec`, so MCP never sees them). Every tool is always *available*; since cycle 78 only core + loaded toolsets are *visible* to the model per step — see [Toolsets](#toolsets-cycle-78). **Since cycle 82, `exec`'s toolset tag is `admin`** (on demand, no longer core) — availability is unchanged, only default visibility; the sandboxed `workspace` toolset (pre-loaded for workstreams) is the default place to run ordinary commands — see [workspace.md](workspace.md). The old `powerful` profile and the `agent-exec-enabled` cookie/switch are gone — safety is the approval gate (dangerous tools pause for allowlist-or-approval; channels without an approval UI auto-deny). Since cycle 79's fix wave the gate also covers **egress after a Google read**: `AgentTool.taints` / `egress` flags + a per-run flag in `buildAiTools` — see [google-connections.md](google-connections.md#tools-on-demand-toolsets). **Since cycle 84, that per-run flag is a set of named sources** (`mail` / `flagged` / `workspace` — a Google read, an output-guard injection flag, or a tainted sandbox workspace), not a bare boolean, and for a workstream it is seeded from a **sticky**, persisted column (`workstreams.taint_sources`) rather than only from the in-window history — see [judge.md § Sticky workstream taint](judge.md#sticky-workstream-taint).
 - `speak` — replaces the old `voice` boolean; drives TTS + prompt mode.
 - `context` — the per-turn context block: live state (projects + open tasks, rebuilt EVERY turn since cycle 42) **plus proactive memory injection** — `buildMemoryContext(userText)` (`packages/core/src/lib/agent/context.ts`) retrieves the top-5 relevant memories for the user's message (relevance floor 0.2, 1.5s timeout, never throws) and injects them as a labeled background block. Wired at the WS boundary (`ws.ts` passes it into `handleTurn`); tests omit it.
 - `maxSteps` — optional per-run override of the step cap (subagents pass their own budget).
@@ -448,6 +448,30 @@ The detached `agent/ApprovalPrompt.vue` banner is **deleted**. An approval is no
 - **Server.** `ApprovalRequest` gains `callId` (from `opts.toolCallId` in `ai-tools.ts`); `VoiceEvent` gains `{type:'approval-request', approvalId, callId, name}`; `ws.ts` keeps a connection-scoped `ConnState.activeTurn` so `requestApproval` — which fires from inside `exec`, deep under the turn — can emit into *that* turn's stream. Turns are serialized by `s.lock`, so the turn calling `requestApproval` is always the active one. `createUIChunkEncoder` maps it to the SDK's `tool-approval-request` chunk, first emitting `tool-input-available` if that call was never opened. Allow-listed calls emit nothing (unchanged).
 - **Client.** The part's state becomes `approval-requested`, and `app/components/agent/ToolPart.vue` renders `AgentApprovalConfirmation` (Elements `Confirmation`) as a sibling of `ToolHeader` **inside** the `Tool` card, visible whether or not the card is expanded: "Run this?" with the command, a **remember** checkbox and an **editable** always-allow pattern seeded from `proposedPattern`, then Deny / Approve → `voice.sendApproval(requestId, approved, {remember, pattern})` (unchanged API). Details come from `voice.pendingApprovals` — one entry **per request**, keyed by requestId (`app/lib/agent/approvals.ts`, cycle 79 fix wave: a single slot let concurrent dangerous calls in one step overwrite each other's card) — looked up by `part.approval.id`. If that frame is missing, an `exec` card degrades to "Approve `exec`?" with the input JSON and still works (exec's args are the command); any other tool's card shows "Details unavailable — deny" with **no Approve button**. The command `<pre>` is never truncated; it scrolls (`max-h-96`).
 - **Stop.** `finalizeMessage` (`app/lib/agent/turn-stream.ts`) treats a dangling `approval-requested` part as `output-error` with `errorText: 'Stopped'` — so the badge reads **Error** and the body reads **Stopped**. The server side of Stop is in [WS protocol](#websocket-protocol-serverapivoicewsts) above.
+
+### The judge: verdicts and Smart Approvals (cycle 84)
+
+Every dangerous or tainted-outbound approval card now carries a second opinion. `buildAiTools`
+creates an `ApprovalJudge` next to the card (`judge/approval.ts`) and hands it to the approval
+channel as an in-process-only second argument — it never travels inside the persisted
+`ApprovalRequest`. The channel publishes the card **first**, then starts the judge behind it: a
+pure, instant **rule tier** (`judge/rules.ts`) gives a floor (`low`/`review`/`high`/`critical`/
+`deny`) per tool — host `exec` always floors `high`, never lower — and an **LLM verdict**
+(`judge/verdict.ts`, one bounded call on the `judge` usage, empty → `reasoning`) judges the specific
+call against the run's goal and recent messages, with the run's own taint and earlier tool calls
+fenced in as context.
+
+**Smart Approvals** (Settings → Bridget → Judge, both switches default **off**) lets a call run
+without a card when the verdict is `approve` at `low`/`medium` risk and high enough confidence, the
+rule floor is `low`/`review`, the surface's switch is on, and — this is the one invariant worth
+repeating — the **run is not tainted** (a mail/calendar read, a guard-flagged result, or a tainted
+workspace all count, and once any of them is true, nothing in that run auto-approves, not just
+outbound calls). The card's `⚖` verdict line, the risk badge, and the "⚖ auto-approved (0.95):
+reason" thread note all come from the same `ApprovalVerdictDTO`. A separate **output guard** scans
+untrusted web/mail/workspace/child results for prompt injection and taints the run (and, on a real
+verdict, the sandbox workspace) when it flags one. Full reference, including the rule table, the
+exact auto-approve predicate, the guard's heuristic router, and sticky workstream taint:
+[judge.md](judge.md).
 
 ### Context meter (cycle 65)
 

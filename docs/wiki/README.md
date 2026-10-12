@@ -32,6 +32,7 @@ The **living** reference for how each shipped system works **today** — one pag
 | Agent runtime (server-owned turns, run queue, main thread, steering, `wake()`, headless gate; the agent worker + Postgres bus) | [agent-runtime.md](agent-runtime.md) | shipped (cycle 73); cycle-74/75 changes built; worker + bus built (cycle 81) |
 | Workstreams (long-running budgeted background work: segments, ask_tony, paused, approvals, cap 3) | [workstreams.md](workstreams.md) | shipped (cycle 81) |
 | Sandboxed workspace (per-workspace Docker sandbox, `workspace` toolset, taint-aware network, secrets opt-in, Files/Shells UI) | [workspace.md](workspace.md) | shipped (cycle 82) |
+| Judge (approval rule tier + LLM verdicts, Smart Approvals, output guard with injection taint, sticky workstream taint) | [judge.md](judge.md) | shipped (cycle 84) |
 | `@mymind/core` (shared server package; env mapper; bus modules) | [core-package.md](core-package.md) | shipped (cycle 80); bus + env mapper (cycle 81) |
 | Agent jobs (markdown-configured cron/every/at/event schedules, heartbeat, reminders, `/jobs`) | [agent-jobs.md](agent-jobs.md) | built (cycle 74; `deliver` targets cycle 75) |
 | Agent skills (markdown how-tos in `agent_skills`, tier-1 index, `/skills`, revisions) | [agent-skills.md](agent-skills.md) | built (cycle 74; shipped cycle 49) |

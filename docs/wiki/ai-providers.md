@@ -1,7 +1,7 @@
 ---
 title: AI Model Providers
 status: shipped
-cycle: 72 (`subagents` model class + per-model pools: cycle 83)
+cycle: 72 (`subagents` model class + per-model pools: cycle 83; `judge` usage: cycle 84)
 updated: 2026-10-12
 mymind_id: fcdcdbb4-a794-4642-9cc7-379e57e93f58
 mymind_hash: 79a0fd4dd41d0b457684ce62e3c18353f9094495de9e0a72ed4cd4549a2e1a20
@@ -24,7 +24,7 @@ interface AiConfigDoc {
 }
 ```
 
-- **`USAGES`** = `reasoning` · `bulk` · `embeddings` · `vision` · `stt` · `tts` · `rerank` · `jev` *(cycle 72)* · `subagents` *(cycle 83 — see below)*.
+- **`USAGES`** = `reasoning` · `bulk` · `embeddings` · `vision` · `stt` · `tts` · `rerank` · `jev` *(cycle 72)* · `subagents` *(cycle 83 — see below)* · `judge` *(cycle 84 — see below)*.
   - **`jev`** is TypeSafe System One — a decision model, not a chat completion, so it does NOT go through `withFailover` (no fallback chain; unconfigured or unreachable simply means memories go unscored). It is in `USAGES` anyway because everything it needs — baseURL, apiKey, a model id — is what a ProviderDef + ModelDef already carry, and the whole registry (zod schema, PUT validation, the assignments UI) is generated from this array. Keeping its key in an env file instead would have made it the one model secret not editable from Settings. See [memory.md](memory.md#jev-scoring-a-second-opinion-cycle-72).
   - Assign it the model id **`jev-latest`**: the API echoes back which version actually answered, and `memories.jev_model` stores that, so upgrades arrive automatically without losing per-row provenance.
 - **`ProviderDef.kind`** is always **`openai-compatible`** (baseURL required). There is **one transport** — non-OpenAI vendors (e.g. Anthropic/Claude) are fronted by an **OpenAI-compatible gateway (LiteLLM)** and configured as a normal `openai-compatible` provider whose baseURL points at the gateway. (Native `anthropic` support and the `@ai-sdk/anthropic` dependency were removed in cycle 21 — see the handover — because the two transports diverged: Anthropic worked on the agent's `languageModel()` path but silently broke on the `chat()` path.) `apiKeyEnc` is AES-GCM ciphertext, **server-only — never serialized to the client.**
@@ -142,6 +142,28 @@ The shipped default of **6**, not 8, deliberately sits *below* that knee (ruling
 model's pool full (6 running segments), there are still ~2 sequences of headroom on the same model
 for unpooled chat turns. Tony can set a lower per-model `maxInFlight` (e.g. 3) to free more
 headroom, or raise it per model once a second GPU/model exists.
+
+## `judge` usage (cycle 84)
+
+`judge` is an ordinary chat-completion usage with an ordinary failover chain — empty assignment →
+falls back to the `reasoning` chain (self-consistency, no separate model required). Two consumers
+share it, both through `resolveJudgeChain()`/`withFailoverOver('judge', ...)`:
+
+- **The approval judge** (`judge/verdict.ts`) — one bounded, tool-free, schema-constrained call per
+  approval card: a risk/recommendation/confidence verdict on the specific action.
+- **The output guard** (`judge/guard.ts`) — one classification call on untrusted tool output (web,
+  mail, workspace, child) when the heuristic router says it's worth asking: `{ injection, confidence,
+  reasons }`.
+
+Both call `languageModel(m, { structuredOutputs: true })`, which sends `response_format:
+json_schema`; a provider that answers but rejects the schema is still read leniently from its text
+reply (never auto-approvable when recovered that way). The `AssignmentsTab` picker for `judge`
+(like `subagents`) excludes embedding models — a `dim !== null` model can't run a chat completion.
+
+**Not an AI-config field**: how many judge/guard calls may run at once in one worker process is
+`judge.maxInFlight` (default 4, range 1–16) — a **separate** setting, stored in the `agent_settings`
+doc (`judge/limiter.ts`'s FIFO semaphore), not in this registry's per-model pools. Full reference:
+[judge.md](judge.md).
 
 ## Endpoints (`server/api/settings/`)
 

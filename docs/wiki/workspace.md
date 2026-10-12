@@ -1,7 +1,7 @@
 ---
 title: Sandboxed workspace (per-workspace Docker sandbox)
 status: shipped
-cycle: 82
+cycle: 82 (output-guard workspace taint: cycle 84)
 updated: 2026-10-11
 mymind_id: 63317625-315e-4c8d-afab-8014d4dfeeda
 mymind_hash: a391a34511ead9a4deabc89f7f3c97fe19300e137c492a8cc0e84767d9164c40
@@ -284,6 +284,20 @@ container, and **only then** clears `tainted`/`tainted_at` — so nothing tainte
 flag flips. A dead worker gives **504** and the flag stays set; a failure to fully clean up leaves it
 set too (fail closed). The UI's modal warns that the workspace handled mail/calendar content and that
 re-enabling restores internet and opted-in secrets.
+
+**The output guard also taints a workspace (cycle 84) — but only on a real verdict.** When a
+`workspace`-sourced tool result (`read_file`/`grep`/`diff`/`bash`/`bash_output`) is flagged by the
+output guard's injection check, the manager taints the workspace the same way (`manager.markTainted`
+— the same `tainted`/`tainted_at` flip and network kill above, with no command of its own attached).
+**Rule change (final fix wave, I5):** this only happens for a flag the guard actually decided — a
+near-zero-false-positive heuristic signal (`by: 'heuristics'`) or a real LLM injection verdict
+(`by: 'llm'`). A **fail-closed** flag — the guard's LLM tier was needed but the judge was off,
+unreachable, timed out (15 s), or its call was waiting too long for a free slot in the
+`judge.maxInFlight` semaphore — still taints the **run** (outbound tools gate, the model is warned)
+but does **not** take the workspace itself offline. Before this cycle a fail-closed flag tainted the
+workspace too; the ruling traded that for not quietly taking workspaces offline on routine guard
+contention (six research children each guarding their own fetches) or a judge outage. See
+[judge.md § The output guard](judge.md#the-output-guard).
 
 **Limitations (stated, not fixed):**
 - **Masking is hygiene, not a boundary.** An untainted command holding a secret can still encode it

@@ -45,6 +45,7 @@ The code is the source of truth:
 |---|---|---|---|
 | `queued` | created; first segment not claimed yet | — | — |
 | `running` | a segment is executing, or the next one is queued | — | — |
+| `running` + `stateDetail: 'evaluating'` (cycle 84) | the judge is still deciding a Smart-Approvals-eligible call — no new state, just a detail on `running` | no | no |
 | `attention` + `{kind:'question'}` | `ask_tony` | **yes** (tagged `#k` when several are open — see [Coordinator](#coordinator-cycle-83)) | yes, ≤ 3 |
 | `attention` + `{kind:'approval'}` | a tool call waits on Tony's approval card | no | yes, ≤ 3 |
 | `paused` + `{kind:'paused', text}` | Tony pressed **Stop** in its thread, **two idle segments** in a row, or (cycle 83) a coordinator waiting on its children/a watch | **no** | **no** |
@@ -132,6 +133,19 @@ ruling). On restore, the next worker withdraws the old card (closed in every tab
 prompt expired) and resumes the segment with a note that the action did **not** run. The model
 re-issues the call, and Tony approves a **fresh** card rendered from live content. Cycle-79
 nonce and taint pins are unchanged.
+
+**The judge (cycle 84).** Every such card also gets a rule-tier floor + an LLM verdict
+(`⚖ <risk>/<recommendation> — <first reason>`, or `⚖ pending` while it is still being judged), shown
+on the card, in the attention banner, and (mirrored) in the away iMessage prompt. **While an eligible
+call is being judged**, the workstream shows `running` + `stateDetail: 'evaluating'` (above) instead
+of waiting in `attention` — attention is only set once a human is actually needed, and the time spent
+evaluating doesn't count against the segment's wall budget. With **Smart Approvals for workstreams**
+on (Settings → Bridget → Judge; **off by default**), a verdict of `approve` at high enough confidence
+can resolve the card on its own — `decided_by: 'judge'`, a "⚖ auto-approved (0.94): reason" thread
+note, **unless the workstream itself is tainted** (next section) or the rule floor is `high`/
+`critical`/`deny` (host `exec` always is). More than one card waiting at once keeps the newest as the
+primary attention and names every other one in `alsoParked`; a drain parks all of them the same way.
+Full reference: [judge.md](judge.md).
 
 ## Telling Tony
 
@@ -308,7 +322,8 @@ and Smart Approvals could auto-run its `gmail_send`. Now:
 - Work a tainted run starts inherits its taint at row creation: `start_workstream`'s workstream and
   every `spawn_workstreams` child (run taint ∪ the coordinator row's stored taint).
 - Chat conversations are unchanged (taint still decays with the history window; chat Smart Approvals
-  is off by default).
+  is off by default). Full reference, including the rule tier, verdicts and the output guard that
+  feeds `flagged`/`workspace` sources: [judge.md](judge.md).
 
 ### Workspace modes
 

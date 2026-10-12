@@ -2,7 +2,7 @@
 title: "Judge — approval verdicts with Smart Approvals, and an output guard that taints on injection (cycle 84, harness step 5)"
 cycle: 84
 date: 2026-10-12
-status: spec
+status: built  # see handover 2026-10-12-judge.md
 supersedes: null
 builds_on: 2026-10-12-coordinator-design.md
 ---
