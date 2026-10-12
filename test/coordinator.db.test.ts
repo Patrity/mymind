@@ -904,6 +904,7 @@ describe('fix round 1', () => {
     const { ws } = await idleCoordinator('i2-delete')
     const r = await spawnChildren(ws.id, [{ goal: 'T83 i2 child' }], { labels: [], kick: false })
     const kid = (await getWorkstream(r.children[0]!.id))!
+    convIds.push(kid.conversationId)   // orphaned below: afterAll can't reach it through its parent
     await deleteConversation(ws.conversationId)
     const after = (await getWorkstream(kid.id))!
     expect(after).toMatchObject({ state: 'cancelled', parentId: null, isChild: true })
@@ -915,6 +916,7 @@ describe('fix round 1', () => {
     const { ws } = await idleCoordinator('i2-sweep')
     const r = await spawnChildren(ws.id, [{ goal: 'T83 i2 orphan' }, { goal: 'T83 i2 orphan 2' }], { labels: [], kick: false })
     const [k1, k2] = await Promise.all(r.children.map(async c => (await getWorkstream(c.id))!))
+    convIds.push(k1!.conversationId, k2!.conversationId)   // orphaned below: afterAll can't reach them through their parent
     await useDb().delete(workstreams).where(eq(workstreams.id, ws.id))   // no hook ran
     const orphan = (await getWorkstream(k1!.id))!
     expect(orphan).toMatchObject({ parentId: null, isChild: true, state: 'queued' })
