@@ -201,7 +201,8 @@ describe('tree budget', () => {
     expect(reservationOf(dto({ state: 'done', used: { ...ZERO_USED, steps: 7, wallMs: 9000 } }))).toEqual({ steps: 7, wallMs: 9000 })
   })
   it('committed = the coordinator (always as live) + each child', () => {
-    const coord = dto({ state: 'paused', budget: { maxSteps: 400, maxWallMs: 7_200_000 } })
+    // An ENDED coordinator still counts its whole reservation (the core's committedOf), not its use.
+    const coord = dto({ state: 'done', budget: { maxSteps: 400, maxWallMs: 7_200_000 }, used: { ...ZERO_USED, steps: 9, wallMs: 5000 } })
     const kids = [dto({}), dto({ state: 'cancelled', used: { ...ZERO_USED, steps: 3, wallMs: 1000 } })]
     expect(treeCommitted(coord, kids)).toEqual({ steps: 400 + 200 + 3, wallMs: 7_200_000 + 3_600_000 + 1000 })
   })
