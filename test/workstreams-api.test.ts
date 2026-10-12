@@ -16,7 +16,8 @@ const startWorkstream = vi.fn()
 vi.mock('@mymind/core/lib/agent/workstreams/loop', async (orig) => ({ ...(await orig<typeof import('@mymind/core/lib/agent/workstreams/loop')>()), startWorkstream: (...a: unknown[]) => startWorkstream(...a) }))
 
 const listWorkstreams = vi.fn(async (_o: unknown) => [])
-vi.mock('@mymind/core/lib/agent/workstreams/store', async (orig) => ({ ...(await orig<typeof import('@mymind/core/lib/agent/workstreams/store')>()), listWorkstreams: (o: unknown) => listWorkstreams(o) }))
+const childrenOf = vi.fn(async (_id: string, _p?: unknown) => [])
+vi.mock('@mymind/core/lib/agent/workstreams/store', async (orig) => ({ ...(await orig<typeof import('@mymind/core/lib/agent/workstreams/store')>()), listWorkstreams: (o: unknown) => listWorkstreams(o), childrenOf: (id: string, p?: unknown) => childrenOf(id, p) }))
 
 const { CommandFailedError, CommandTimeoutError } = await import('@mymind/core/lib/bus/commands')
 const loopModule = await import('@mymind/core/lib/agent/workstreams/loop')
@@ -27,6 +28,7 @@ const resume = (await import('../server/api/workstreams/[id]/resume.post')).defa
 const steer = (await import('../server/api/workstreams/[id]/steer.post')).default as H
 const start = (await import('../server/api/workstreams/index.post')).default as H
 const list = (await import('../server/api/workstreams/index.get')).default as H
+const childrenRoute = (await import('../server/api/workstreams/[id]/children.get')).default as H
 
 const SESSION = { client: { type: 'session' } }
 const TOKEN = { client: { type: 'api-token', tokenId: 't1' } }
@@ -117,6 +119,20 @@ describe('GET /api/workstreams ?limit', () => {
       listWorkstreams.mockClear()
       await list({ query: q === undefined ? {} : { limit: q } })
       expect(listWorkstreams).toHaveBeenCalledWith({ states: undefined, limit: want, topLevel: true })
+    }
+  })
+})
+
+describe('GET /api/workstreams/:id/children paging (cycle 83 fix round 1)', () => {
+  it('limit is clamped to 1–200 (default 200); offset to ≥ 0 (default 0)', async () => {
+    const ID2 = '0b6f3c1e-5d2a-4f7b-9c8e-1a2b3c4d5e6f'
+    for (const [q, want] of [
+      [{}, { limit: 200, offset: 0 }], [{ limit: '100000' }, { limit: 200, offset: 0 }], [{ limit: '0' }, { limit: 1, offset: 0 }],
+      [{ limit: '25', offset: '50' }, { limit: 25, offset: 50 }], [{ limit: 'x', offset: '-4' }, { limit: 200, offset: 0 }]
+    ] as const) {
+      childrenOf.mockClear()
+      await childrenRoute({ params: { id: ID2 }, query: q })
+      expect(childrenOf).toHaveBeenCalledWith(ID2, want)
     }
   })
 })
