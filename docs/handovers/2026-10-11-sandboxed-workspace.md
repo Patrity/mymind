@@ -2,10 +2,10 @@
 title: Sandboxed workspace — per-workspace Docker sandbox, file/shell/watch tools, taint-aware network (cycle 82, harness step 3)
 cycle: 82
 date: 2026-10-11
-status: built  # awaiting deploy and prod acceptance
+status: deployed  # prod isolation probes passed 2026-10-12; Tony's UI acceptance pending
 branch: feat/sandbox (worktree .claude/worktrees/feat+sandbox, base 5c0d0c6)
-merged: false
-deployed: false
+merged: true  # ff to master 4b2837a
+deployed: true  # CD run 38190081145 (2026-10-12)
 specs:
   - ../superpowers/specs/2026-10-11-sandboxed-workspace-design.md
 plans:
@@ -178,6 +178,16 @@ differ:
     2 GB containers running and read raw file bytes.
 
 ## Prod acceptance checklist
+
+### Results (2026-10-12, CD run 38190081145 — test + deploy green, `Sandbox health` → `sandbox ok`)
+- Pre-deploy: 12 GB free, inodes 16% used, ext4, cgroup v2 (systemd), `iptables v1.8.11 (nf_tables)` matches dockerd; build cache was 0.
+- Provision: network `mymind-sandbox` created, `MYMIND-SANDBOX-FWD`/`-IN` applied, `mymind-sandbox-net` oneshot enabled, script copied to `/usr/local/lib/mymind/`. `-A FORWARD -j DOCKER-USER` is FORWARD's first rule.
+- Worker boot: `reconciled: 0 orphan(s)`, `preflight ok` — **the limits probe passed on the unprivileged LXC** (memory.max 2147483648, pids.max 512 read inside a sandbox).
+- From a sandbox (`--network mymind-sandbox`, real flags): **blocked** 127.0.0.1:5432, gateway 172.31.82.1:5432 and :8088 (SearXNG), LXC IP 192.168.2.89:5432 and :3000, router 192.168.2.1:80, Proxmox 192.168.2.50:22, LiteLLM 192.168.2.85:4000, metadata 169.254.169.254:80. Positive control 1.1.1.1:443 **open**; `https://example.com` 200; DNS resolves. uid 10001; env = HOSTNAME PWD HOME LANG SHLVL PATH only.
+- `--network none`: internet blocked.
+- Image on prod (amd64) is **959 MB** (not 671 MB as measured on the arm64 dev Mac). Post-deploy free disk 9.5 GB; build cache 1.2 GB.
+- **Not yet run:** reboot / `systemctl restart docker` persistence (would bounce Postgres — do in a maintenance window); a real workstream + tainted chat run end-to-end in the prod UI (Tony).
+
 
 Nothing here has been run against the real LXC 114 yet — only Docker Desktop (dev Mac) and
 docker-in-docker (the `sandbox-firewall.db.test.ts` suite, standing in for real netfilter). Run in

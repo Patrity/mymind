@@ -1,6 +1,6 @@
 ---
 title: Workstreams (long-running background agent work)
-status: built
+status: shipped
 cycle: 81 (workspace integration: cycle 82)
 updated: 2026-10-11
 mymind_id: a5fa582b-9998-41b3-a9b3-53a41c8a0642

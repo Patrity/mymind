@@ -1,6 +1,6 @@
 ---
 title: Sandboxed workspace (per-workspace Docker sandbox)
-status: built
+status: shipped
 cycle: 82
 updated: 2026-10-11
 ---
@@ -97,7 +97,7 @@ from their official images (never used as the base — an image's own `ENV` such
 would otherwise leak into every sandbox process's `/proc/1/environ`). User `agent` is uid/gid
 **10001**, workdir `/workspace`, `CMD ["sleep", "infinity"]`. Base images are pinned by multi-arch
 index **digest** (not a tag); `build-image.sh` always `docker build --pull`s so a changed pin is
-never hidden by cache. Size ≈ 671 MB.
+never hidden by cache. Size ≈ 959 MB on prod (amd64), ≈ 671 MB on the arm64 dev Mac.
 
 `deploy/sandbox/build-image.sh` tags by a **sha256 content hash of `deploy/sandbox/`** (12 hex chars)
 — not the git sha, because CD's tar excludes `.git` and the box's checkout isn't the deployed commit

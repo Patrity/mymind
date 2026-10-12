@@ -737,7 +737,7 @@ inside an unprivileged Docker sandbox, one container per workspace. Full referen
 [`docs/wiki/workspace.md`](wiki/workspace.md).
 
 **The image.** `deploy/sandbox/Dockerfile` (Debian + git/python3/node22+pnpm/ripgrep/build-essential,
-user `agent` uid 10001, ~671 MB). `deploy/sandbox/build-image.sh` tags it by a **sha256 content hash
+user `agent` uid 10001, ~959 MB on amd64). `deploy/sandbox/build-image.sh` tags it by a **sha256 content hash
 of `deploy/sandbox/`** (not the git sha — CD's tar excludes `.git`): `mymind-sandbox:<hash>` +
 `mymind-sandbox:current` (the worker's `SANDBOX_IMAGE`, default `:current`) + `mymind-sandbox:previous`
 (one level of rollback, kept automatically). After a successful build it prunes every other
