@@ -282,3 +282,12 @@ notes for the controller.
   spawn-heavy firewall re-apply test) needed explicit longer timeouts after going red at a measured
   load average of 55–80 on the build machine; on a quiet machine they pass in 2–3 s. Not sandbox
   code, just noted so a future red isn't mistaken for a regression.
+
+### Cycle 82 residual minors (final re-review 2, parked)
+- B1: two concurrent requests for one stopped workspace each reserve a capacity slot → spurious eviction (one reservation per workspace id).
+- B2: an evicted watch whose poll can't get a slot counts "capacity busy" toward its 5 poll errors → false `failed` wake (don't count it).
+- B3: a shell started between eviction's live-shell check and the stop runs untracked in the restarted container (re-check row after exec).
+- B4: a hung `docker stop` can hold the global capacity lock ~45 s past a deadline (bounded).
+- B5: a probe container orphaned by a worker crash (`mymind.probe=1`) is never reaped and pins its image against prune.
+- B6: tainted one-offs in the home workspace aren't counted (worst case > 3×2 GB).
+- `checkQuota` starts a container without marking a command in flight (eviction → write refused as over quota); `stopIf` stops while a late command of an ended workstream runs.
