@@ -101,6 +101,14 @@ describe('verdictLine + the prompt', () => {
     expect(verdictLine(verdict({ reasons: ['x'.repeat(400)] }))!.length).toBeLessThan(230)
   })
 
+  it('parked Task 4 item: a tainted run\'s prompt says so above the ⚖ line, sources in the card\'s order', () => {
+    expect(verdictLine({ ...verdict(), taint: ['mail', 'flagged'] })).toBe('⚠ run tainted: flagged content, mail read\n⚖ low/approve — routine restart of a service')
+    expect(verdictLine({ rule: null, verdict: null, pending: true, autoPossible: false, taint: ['workspace'] })).toBe('⚠ run tainted: tainted workspace\n⚖ pending')
+    expect(verdictLine({ ...verdict(), taint: [] })).toBe('⚖ low/approve — routine restart of a service')
+    expect(approvalPromptText({ tool: 'calendar_rsvp', title: 'Send RSVP?', command: 'RSVP accepted', proposedPattern: '' }, verdictLine({ ...verdict(), taint: ['mail'] })))
+      .toMatch(/\n⚠ run tainted: mail read\n⚖ low\/approve — routine restart of a service\n👍 to approve · 👎 to deny$/)
+  })
+
   it('a judge error says there is no verdict', () => {
     expect(verdictLine(verdict({ risk: null, recommendation: 'review', confidence: 0, reasons: [], error: 'judge timed out' }))).toBe('⚖ no verdict (judge timed out) — review it yourself')
   })

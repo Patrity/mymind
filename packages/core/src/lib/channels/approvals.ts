@@ -15,7 +15,7 @@ import { and, eq, gt, inArray, lte, type SQL } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { agentRuns, channelApprovals } from '../../db/schema'
 import type { ApprovalOptions, ApprovalRequest } from '../agent/types'
-import type { ApprovalVerdictDTO } from '../agent/judge/types'
+import { TAINT_SOURCES, type ApprovalVerdictDTO, type TaintSource } from '../agent/judge/types'
 import { recordEvent } from '../observability/record'
 import { loadChannelsConfig } from './config'
 import { isAllowed, isSendersDirectChat } from './handles'
@@ -99,13 +99,19 @@ function oneLine(s: string, max = 200): string {
  * `⚖ <risk>/<recommendation> — <first reason>`, or `⚖ pending` while the judge is still evaluating.
  * Null when there is no judge (it is off, or the call has none). Plain text: the reason is model output.
  */
+/** Parked Task 4 item: how the texted prompt names why the run is tainted (same words as the card chip). */
+const TAINT_TEXT: Record<TaintSource, string> = { flagged: 'flagged content', mail: 'mail read', workspace: 'tainted workspace' }
+
 export function verdictLine(v: ApprovalVerdictDTO | null | undefined): string | null {
   if (!v) return null
-  if (!v.verdict) return '⚖ pending'
+  // Parked Task 4 item: the card's "run tainted" chip, in the text too (it never auto-approves).
+  const sources = TAINT_SOURCES.filter(x => v.taint?.includes(x))
+  const taint = sources.length ? `⚠ run tainted: ${sources.map(x => TAINT_TEXT[x]).join(', ')}\n` : ''
+  if (!v.verdict) return `${taint}⚖ pending`
   const d = v.verdict
-  if (d.error !== undefined) return `⚖ no verdict (${oneLine(d.error, 80)}) — review it yourself`
+  if (d.error !== undefined) return `${taint}⚖ no verdict (${oneLine(d.error, 80)}) — review it yourself`
   const reason = d.reasons[0] ? ` — ${oneLine(d.reasons[0])}` : ''
-  return `⚖ ${d.risk ?? 'unknown'}/${d.recommendation}${reason}`
+  return `${taint}⚖ ${d.risk ?? 'unknown'}/${d.recommendation}${reason}`
 }
 
 /**
