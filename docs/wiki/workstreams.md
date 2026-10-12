@@ -140,12 +140,14 @@ nonce and taint pins are unchanged.
   (`NUDGE_EVERY_MS`) and at most **3 times per attention episode** (`MAX_NUDGES`; a new question or
   card starts a new episode). It is never re-announced while `paused`.
 - **iMessage answers** (`routeInboundAnswer`; cycle 83 final fix wave I2). Every question text carries a
-  `#k` tag, unique among the open questions (`attention.tag`, `tagQuestion`). An inbound iMessage while
+  `#k` tag (`attention.tag`, `tagQuestion`), issued monotonically and **never reused within 7 days** (table `workstream_question_tags`, migration 0080). An inbound iMessage while
   a workstream waits on a **question** becomes an answer: `#k …` answers the question tagged k (the tag
   is stripped); an untagged text answers the **most recently notified** question. Its next segment's
   prompt keeps origin `imessage:<chat>`; main gets a short "answered ⚙ …" note, and when several were
-  waiting Tony is texted which one got it and the others' tags. A `#k` no open question holds (with
-  several waiting), or no question at all, lands in main as an ordinary turn; Bridget can pass it on
+  waiting Tony is texted which one got it and the others' tags. A `#k` naming a recently issued question
+  that has **closed** gets "↪ #k (<goal>) is already closed — your reply was not passed on to any
+  workstream." and is never rerouted (even with one question open). Any other unknown `#k`, or no
+  question at all, lands in main as an ordinary turn; Bridget can pass it on
   with `answer_workstream`. Paused and approval-waiting workstreams never capture a text. A child's
   question is routable only once escalated to Tony.
 - **Coordinator trees (cycle 83 final fix wave M4).** Away texts about a coordinator's children

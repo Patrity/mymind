@@ -19,6 +19,7 @@ migrations:
   - 0077 workstreams.parent_id, model_label, workspace_mode, tree_budget, tree_used, tainted
   - 0078 workstreams.is_child, lifecycle_noted
   - 0079 workstreams.tree_away_at
+  - 0080 workstream_question_tags
 next: harness step 5 — judge (spec §9: out of scope here, along with depth > 1, eval/optimizer, Mac mini host move, cross-host workers, dollar budgets)
 ---
 
@@ -132,6 +133,9 @@ commit and restored before the next. Full per-mutation tables are in the task re
 - **0078** (`daily_callisto`) — `is_child` (boolean, default `false`, backfilled `true` where
   `parent_id IS NOT NULL`), `lifecycle_noted` (text). Additive.
 - **0079** (`tree_away_at`) — `workstreams.tree_away_at` (timestamptz, nullable). Additive.
+- **0080** (`workstream_question_tags`) — issued `#k` tags, never reused within 7 days (final re-review N2). Additive.
+
+**Final follow-up (re-review N1–N4, 4e0cbe5, b79ac0e):** watch-park never hides unread child reports (N1); interrupted / card-parked segments un-show leftover questions (N3); monotonic tags, a closed tag gets an "already closed" text and is never rerouted (N2 — the reply still lands in main, so Bridget may also answer it); `claimTreeAway` guarded (N4). Counts 4042/1 unit, 1120 db.
 
 All three are additive and safe on prod-shaped data per the final review: existing cycle 81/82
 workstreams get `is_child=false`, `tree_budget=null`, so no coordinator path ever touches them; a
