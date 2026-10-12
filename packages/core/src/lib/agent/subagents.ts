@@ -68,7 +68,9 @@ export function makeSubagentTool(spec: SubagentSpec, deps: SubagentDeps = {}): A
       let toolCalls = 0
       for await (const ev of run(
         [{ role: 'user', content }],
-        { signal: ctx.signal, speak: false, maxSteps: spec.maxSteps },
+        // M5: the nested fetches/searches are checked by heuristics only; this tool's report gets the
+        // one LLM classification (guard 'web', always — judge/guard.ts GUARD_ALWAYS_LLM_TOOLS).
+        { signal: ctx.signal, speak: false, maxSteps: spec.maxSteps, nestedGuard: true },
         { tools, buildSystemPrompt: async () => system }
       )) {
         if (ev.type === 'text-delta') report += ev.text

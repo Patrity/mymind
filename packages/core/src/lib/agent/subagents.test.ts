@@ -47,6 +47,8 @@ describe('makeSubagentTool', () => {
     expect(capture.messages![0]!.content).toContain('find X')
     expect(capture.messages![0]!.content).toContain('Tony has 12 sticks')
     expect(capture.ctx!.maxSteps).toBe(4)
+    // Final fix wave (M5): the nested run's guarded results are heuristics-only.
+    expect((capture.ctx as { nestedGuard?: boolean }).nestedGuard).toBe(true)
   })
 
   it('derives the prompt budget line from spec.maxSteps so prompt and cap cannot diverge', async () => {

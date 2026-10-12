@@ -66,7 +66,7 @@ export interface GuardVerdict {
   /** Present when the LLM tier was asked (answered or not). */
   llm?: GuardLlmVerdict
   /** Why the LLM tier was not asked. */
-  llmSkipped?: 'disabled' | 'not-needed' | 'heuristic-flag' | 'empty'
+  llmSkipped?: 'disabled' | 'not-needed' | 'heuristic-flag' | 'empty' | 'nested'
   textChars: number
   latencyMs: number
 }
@@ -76,6 +76,10 @@ export interface GuardInput {
   source: GuardSource
   result: unknown
   signal?: AbortSignal
+  /** Final fix wave (M5): a call inside a subagent's own run (research_web's fetches and searches) —
+   *  heuristics only: a flag-alone signal still flags (and marks the subagent's report), nothing else
+   *  does, and no LLM is asked. The subagent's aggregated report is guarded once, by the LLM, instead. */
+  nested?: boolean
 }
 
 export interface GuardPrompt { system: string; prompt: string }
@@ -126,10 +130,20 @@ export function normalizeGuardOutput(raw: unknown): Pick<GuardLlmVerdict, 'injec
   return { injection: inj === true || inj === 'true', confidence: c, reasons }
 }
 
+/** Final fix wave (M5): tools whose results get the LLM tier only when the heuristics are suspicious
+ *  (never by size) — search results are short snippets in a fixed shape. */
+export const GUARD_SIZE_EXEMPT_TOOLS: ReadonlySet<string> = new Set(['web_search'])
+/** Final fix wave (M5): tools whose (aggregated) output always gets ONE LLM classification — a
+ *  subagent report written from pages its nested calls only heuristically checked. */
+export const GUARD_ALWAYS_LLM_TOOLS: ReadonlySet<string> = new Set(['research_web'])
+
 /** Spec D9 (fix round 1): the LLM tier runs when the heuristics are suspicious, or web or mail text
- *  is over 2 KB. Workspace and child output go to it only when suspicious. */
-export function needsLlm(source: GuardSource, textChars: number, h: Pick<HeuristicResult, 'suspicious'>): boolean {
-  return h.suspicious || ((source === 'web' || source === 'mail') && textChars > GUARD_WEB_LLM_MIN_CHARS)
+ *  is over 2 KB. Workspace and child output go to it only when suspicious. Final fix wave (M5):
+ *  `web_search` only when suspicious; `research_web`'s report always (once). */
+export function needsLlm(source: GuardSource, textChars: number, h: Pick<HeuristicResult, 'suspicious'>, tool = ''): boolean {
+  if (h.suspicious || GUARD_ALWAYS_LLM_TOOLS.has(tool)) return true
+  if (GUARD_SIZE_EXEMPT_TOOLS.has(tool)) return false
+  return (source === 'web' || source === 'mail') && textChars > GUARD_WEB_LLM_MIN_CHARS
 }
 
 /** A slice boundary that never splits a surrogate pair. */
@@ -327,7 +341,9 @@ export async function guardOutput(input: GuardInput, deps: GuardDeps = {}): Prom
   if (!text.trim()) return done({ flagged: false, by: null, llmSkipped: 'empty' })
   // A flag-alone signal: asking the LLM could only add latency, never clear it.
   if (h.flagged) return done({ flagged: true, by: 'heuristics', llmSkipped: 'heuristic-flag' })
-  if (!needsLlm(input.source, text.length, h)) return done({ flagged: false, by: null, llmSkipped: 'not-needed' })
+  // M5: a subagent's nested call — heuristics only (its report is classified once by the parent).
+  if (input.nested) return done({ flagged: false, by: null, llmSkipped: 'nested' })
+  if (!needsLlm(input.source, text.length, h, input.tool)) return done({ flagged: false, by: null, llmSkipped: 'not-needed' })
   const timeout = AbortSignal.timeout(deps.timeoutMs ?? GUARD_LLM_TIMEOUT_MS)
   const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout
   const llm = await classify(input, text, h, deps, now, signal, timeout, started)

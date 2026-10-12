@@ -210,6 +210,8 @@ export interface RunAgentCtx {
    *  with the run's whole taint whenever it gains a source (and at the start when it begins tainted)
    *  — the runner persists it on the workstream at once. Must not throw. */
   taint?: { initial?: readonly import('./judge/types').TaintSource[]; onChange?: (t: import('./judge/types').RunTaint) => void }
+  /** Final fix wave (M5): a subagent's own run — its tool results get the guard's heuristics only. */
+  nestedGuard?: boolean
 }
 
 // Every tool in the profile is always AVAILABLE (the full ToolSet is built each run).
@@ -273,7 +275,7 @@ export async function* runAgent(
         recentMessages: judgeMessages(messages)
       }
     : undefined
-  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted, initialTaint, judge, onTaint: ctx.taint?.onChange })
+  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted, initialTaint, judge, onTaint: ctx.taint?.onChange, ...(ctx.nestedGuard ? { nestedGuard: true } : {}) })
 
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).

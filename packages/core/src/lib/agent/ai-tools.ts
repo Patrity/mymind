@@ -39,6 +39,9 @@ export interface RunHooks {
   /** Cycle 84 Task 3: taint the run's workspace after a flagged workspace result (tests inject one).
    *  Default: sandbox/runtime.ts taintRunWorkspace. */
   taintWorkspace?: (runId: string | undefined) => Promise<void>
+  /** Final fix wave (M5): this run is a subagent's own (research_web) — its guarded results are
+   *  checked by heuristics only; the parent classifies the subagent's report once. */
+  nestedGuard?: boolean
   /** Cycle 84 final fix wave (C1): the run gained a taint source (also fired once at the start when
    *  it begins tainted) — the runner persists it on the workstream at once. Errors are swallowed. */
   onTaint?: (t: RunTaint) => void
@@ -186,7 +189,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
     if (raw && typeof raw === 'object' && ((raw as Record<string, unknown>).denied === true || (raw as Record<string, unknown>).proposed === true)) return null
     let v: GuardVerdict
     try {
-      v = await guard({ tool: t.name, source: t.guard!, result: raw, signal: hooks.signal })
+      v = await guard({ tool: t.name, source: t.guard!, result: raw, signal: hooks.signal, ...(hooks.nestedGuard ? { nested: true } : {}) })
     } catch (err) {
       // guardOutput never throws; an injected guard might. The tool's own result still stands.
       console.warn(`[guard] scanning ${t.name} failed:`, (err as Error).message)

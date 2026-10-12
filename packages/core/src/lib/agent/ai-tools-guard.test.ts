@@ -167,6 +167,17 @@ describe('output guard on the result path', () => {
     expect(ask).toHaveBeenCalledTimes(1)
   })
 
+  it('M5: a subagent\'s own run (nestedGuard) asks the guard for heuristics only', async () => {
+    const seen: GuardInput[] = []
+    const { call } = setup({ nestedGuard: true, guard: async (i) => { seen.push(i); return heuristicGuard(i) } })
+    await call('web_fetch', { url: 'https://a.example' })
+    expect(seen[0]).toMatchObject({ tool: 'web_fetch', nested: true })
+    const top: GuardInput[] = []
+    const { call: call2 } = setup({ guard: async (i) => { top.push(i); return heuristicGuard(i) } })
+    await call2('web_fetch', { url: 'https://a.example' })
+    expect(top[0]!.nested).toBeUndefined()
+  })
+
   it('a flagged web result does not touch the workspace; an unflagged workspace result does not either', async () => {
     const { call, taintWorkspace } = setup()
     await call('read_file')
