@@ -62,7 +62,7 @@ export interface BusApprovalOptions {
   onWaiting?: (requestId: string, waiting: boolean, ctx: { req: ApprovalRequest; judge?: ApprovalJudge }) => void
   /** Cycle 84: fired when a Smart-Approvals-eligible request starts / stops being judged (the
    *  workstream's `evaluating` detail). `false` fires only after `true`. */
-  onEvaluating?: (requestId: string, evaluating: boolean) => void
+  onEvaluating?: (requestId: string, evaluating: boolean, ctx: { req: ApprovalRequest; judge?: ApprovalJudge }) => void
 }
 
 interface Pending {
@@ -82,7 +82,8 @@ export function busApprovalChannel(runId: string, o: BusApprovalOptions): Channe
     let waiting = false
     let evaluating = false
     let unsubscribe: (() => void) | null = null
-    const onAbort = () => finish(false, 'tony')
+    // C3: Stop, `/clear` and a drain are not Tony's "no" — recorded cancelled / system.
+    const onAbort = () => finish(false, 'system')
     function finish(approved: boolean, by: ApprovalDecider = 'tony') {
       if (done) return
       done = true
@@ -91,21 +92,21 @@ export function busApprovalChannel(runId: string, o: BusApprovalOptions): Channe
       o.signal?.removeEventListener('abort', onAbort)
       unsubscribe?.()
       // The audit first (first decision wins there too), then the card's outcome.
-      judge?.settle(by === 'judge' ? 'auto' : by === 'timeout' ? 'timeout' : approved ? 'approved' : 'denied', by)
+      judge?.settle(by === 'judge' ? 'auto' : by === 'timeout' ? 'timeout' : by === 'system' ? 'cancelled' : approved ? 'approved' : 'denied', by)
       const auto = by === 'judge' ? judge?.autoNote() : null
       o.publish({ type: 'approval-resolved', requestId, decidedBy: by, ...(auto ? { auto } : {}) })
-      if (evaluating) { evaluating = false; o.onEvaluating?.(requestId, false) }
+      if (evaluating) { evaluating = false; o.onEvaluating?.(requestId, false, { req, judge }) }
       if (waiting) { waiting = false; o.onWaiting?.(requestId, false, { req, judge }) }
       resolve({ approved })
     }
     const startWaiting = () => {
       if (done || waiting) return
-      if (evaluating) { evaluating = false; o.onEvaluating?.(requestId, false) }
+      if (evaluating) { evaluating = false; o.onEvaluating?.(requestId, false, { req, judge }) }
       waiting = true
       o.onWaiting?.(requestId, true, { req, judge })
     }
     // Stopped before it could even ask: nothing to show.
-    if (o.signal?.aborted) { done = true; judge?.settle('denied', 'tony'); resolve({ approved: false }); return }
+    if (o.signal?.aborted) { done = true; judge?.settle('cancelled', 'system'); resolve({ approved: false }); return }
     pending.set(requestId, { runId, req, finish })
     o.signal?.addEventListener('abort', onAbort, { once: true })
     const timeoutMs = o.timeoutMs === undefined ? chatApprovalTimeoutMs() : o.timeoutMs
@@ -126,7 +127,7 @@ export function busApprovalChannel(runId: string, o: BusApprovalOptions): Channe
     // The card is out — now the judge (rule tier + verdict) runs behind it.
     unsubscribe = judge.onUpdate((v) => { if (!done) o.publish({ type: 'approval-verdict', requestId, judge: v }) })
     void judge.eligible.then((e) => {
-      if (e && !done && !waiting) { evaluating = true; o.onEvaluating?.(requestId, true) }
+      if (e && !done && !waiting) { evaluating = true; o.onEvaluating?.(requestId, true, { req, judge }) }
     })
     void judge.humanNeeded.then(startWaiting)
     judge.start(() => finish(true, 'judge'))
@@ -154,6 +155,16 @@ export function decideBusApproval(d: CommandPayloads['approval-decision']): bool
   }
   recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'info', meta: { outcome: d.approved ? 'approve' : 'deny', command: p.req.logSummary ?? p.req.command, pattern: remember ? outcome.pattern : null, remembered: remember } })
   p.finish(outcome.approved)
+  return true
+}
+
+/** Fix round 1 (C3): withdraw a pending request without a decision from Tony — a workstream cancel.
+ *  Denied, recorded cancelled / system. False when there is none. */
+export function cancelBusApproval(requestId: string): boolean {
+  const p = pending.get(requestId)
+  if (!p) return false
+  recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'info', meta: { outcome: 'cancelled', command: p.req.logSummary ?? p.req.command } })
+  p.finish(false, 'system')
   return true
 }
 

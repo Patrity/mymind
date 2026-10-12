@@ -73,8 +73,10 @@ export const DEFAULT_JUDGE_SETTINGS: Readonly<JudgeSettings> = Object.freeze({
 export type ApprovalSurface = 'chat' | 'workstream' | 'headless'
 
 /** How an approval was finally resolved, and by whom (spec §2.5). */
-export type ApprovalDecision = 'approved' | 'denied' | 'auto' | 'timeout'
-export type ApprovalDecider = 'tony' | 'judge' | 'timeout'
+/** Fix round 1 (C3): `cancelled`/`system` — Stop, `/clear`, a drain, a workstream cancel, or no way to
+ *  ask at all. Not Tony's denial: calibration data (step 6) must never count these as his "no". */
+export type ApprovalDecision = 'approved' | 'denied' | 'auto' | 'timeout' | 'cancelled'
+export type ApprovalDecider = 'tony' | 'judge' | 'timeout' | 'system'
 
 /**
  * Cycle 84 Task 2: what an approval card (web card, workstream attention, the `approval-verdict`

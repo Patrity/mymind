@@ -492,58 +492,86 @@ describe('replyToApprovalChannel (runner wiring)', () => {
   })
 })
 
-// Cycle 84 Task 2: a chat run that answers over iMessage — the prompt carries the judge's line
-// ("⚖ pending": the judge starts once the text is out), and Smart Approvals (when switched on for chat)
-// withdraws the prompt and approves the call; Tony's tapback, when first, still decides.
+// Cycle 84 Task 2 (+ fix round 1 C3/C4/I1/M5): a chat run that answers over iMessage — the judge starts
+// first and the prompt waits ≤ VERDICT_WAIT_MS for its verdict ("⚖ pending" after that); Smart
+// Approvals (when on for chat) withdraws the prompt — but a 👍/👎 already committed in the DB wins.
 describe('iMessage approvals with a judge (cycle 84)', () => {
   const APPROVE: JudgeVerdict = { risk: 'low', recommendation: 'approve', confidence: 0.97, reasons: ['routine'], model: 'J', latencyMs: 1 }
   function judgeFor(chat: boolean) {
     const decisions: Array<[string, string]> = []
     let release!: (v: JudgeVerdict) => void
     const verdict = new Promise<JudgeVerdict>((r) => { release = r })
+    const settings = async () => ({ enabled: true, smartApprovals: { workstreams: true, chat }, confidence: 0.9 })
     const deps: ApprovalJudgeDeps = {
-      settings: async () => ({ enabled: true, smartApprovals: { workstreams: true, chat }, confidence: 0.9 }),
+      settings, freshSettings: settings,
       rule: async () => ({ floor: 'review', reasons: [] }),
       verdict: async () => verdict,
       recordVerdict: async () => {},
       recordDecision: async (_n, d, b) => { decisions.push([d, b]); return true },
       pinnedSendMessageId: () => undefined,
-      ruleContextWaitMs: 5
+      ruleContextWaitMs: 5, ruleTimeoutMs: 5_000, verdictTimeoutMs: 5_000
     }
     const judge = createApprovalJudge({ tool: { name: 'calendar_rsvp', description: 'rsvp' }, input: {}, req: { command: 'RSVP' }, nonce: `${TAG}-n-${Math.random()}`, surface: 'chat', isTainted: () => false }, deps)
     return { judge, decisions, release }
   }
   const RSVP: ApprovalRequest = { tool: 'calendar_rsvp', title: 'Send RSVP?', command: 'RSVP accepted', proposedPattern: '' }
+  const SLOW = { client: undefined as unknown as BlueBubblesClient, pollMs: 50, timeoutMs: 5_000, verdictWaitMs: 40 }
 
-  it('the prompt carries "⚖ pending"; with chat Smart Approvals on, the judge withdraws it (expired) and approves', async () => {
-    const run = await newRun()
-    const { judge, decisions, release } = judgeFor(true)
-    const sentBefore = fake.sent.length
-    const p = imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 50, timeoutMs: 5_000 })(RSVP, { judge })
-    await promptFor(run)
-    expect(fake.sent.slice(sentBefore)[0]!.message).toBe('Send RSVP?\n\nRSVP accepted\n\n⚖ pending\n👍 to approve · 👎 to deny')
-    release(APPROVE)
-    expect(await p).toEqual({ approved: true })
-    expect(await statusOnce(run, 'expired')).toBe('expired')        // withdrawn: a later 👍 answers nothing
-    await judge.writes()
-    expect(decisions).toEqual([['auto', 'judge']])
-  })
-
-  it('chat Smart Approvals off (the default): the verdict changes nothing — Tony\'s 👍 decides', async () => {
+  it('C4: the prompt waits for the verdict and carries it; chat Smart Approvals off → Tony\'s 👍 decides', async () => {
     const run = await newRun()
     const { judge, decisions, release } = judgeFor(false)
+    release(APPROVE)
+    const sentBefore = fake.sent.length
     const p = imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 50, timeoutMs: 5_000 })(RSVP, { judge })
     const { promptGuid } = await promptFor(run)
-    release(APPROVE)
-    await new Promise(r => setTimeout(r, 30))
-    expect((await rowsFor(run))[0]!.status).toBe('pending')
+    expect(fake.sent.slice(sentBefore)[0]!.message).toBe('Send RSVP?\n\nRSVP accepted\n\n⚖ low/approve — routine\n👍 to approve · 👎 to deny')
     await resolveTapback(tapback(promptGuid))
     expect(await p).toEqual({ approved: true })
     await judge.writes()
     expect(decisions).toEqual([['approved', 'tony']])
   })
 
-  it('no tapback and a judge that never approves: the prompt times out as a timeout — never as an approval', async () => {
+  it('C4: the judge approves before anything is texted → nothing texted, row expired, auto/judge', async () => {
+    const run = await newRun()
+    const { judge, decisions, release } = judgeFor(true)
+    release(APPROVE)
+    const sentBefore = fake.sent.length
+    expect(await imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 50, timeoutMs: 5_000 })(RSVP, { judge })).toEqual({ approved: true })
+    expect(fake.sent.length).toBe(sentBefore)
+    expect((await rowsFor(run))[0]!.status).toBe('expired')
+    await judge.writes()
+    expect(decisions).toEqual([['auto', 'judge']])
+  })
+
+  it('C4: no verdict within the wait → "⚖ pending"; a later approving verdict withdraws the prompt (expired) and approves', async () => {
+    const run = await newRun()
+    const { judge, decisions, release } = judgeFor(true)
+    const sentBefore = fake.sent.length
+    const p = imessageApprovalChannel(run, CHAT, { ...SLOW, client: bb })(RSVP, { judge })
+    await promptFor(run)
+    expect(fake.sent.slice(sentBefore)[0]!.message).toBe('Send RSVP?\n\nRSVP accepted\n\n⚖ pending\n👍 to approve · 👎 to deny')
+    release(APPROVE)
+    expect(await p).toEqual({ approved: true })
+    expect((await rowsFor(run))[0]!.status).toBe('expired')
+    await judge.writes()
+    expect(decisions).toEqual([['auto', 'judge']])
+  })
+
+  it('I1: a 👎 committed while the judge withdraws wins — the call is denied, never auto-approved', async () => {
+    const run = await newRun()
+    const { judge, decisions, release } = judgeFor(true)
+    const p = imessageApprovalChannel(run, CHAT, { ...SLOW, client: bb })(RSVP, { judge })
+    const { id } = await promptFor(run)
+    // resolveTapback's first half: the guarded write commits `denied` — the waiter is not woken yet.
+    await db().update(channelApprovals).set({ status: 'denied', resolvedAt: new Date() }).where(eq(channelApprovals.id, id))
+    release(APPROVE)                                            // the judge withdraws in that window
+    expect(await p).toEqual({ approved: false })
+    expect((await rowsFor(run))[0]!.status).toBe('denied')
+    await judge.writes()
+    expect(decisions).toEqual([['denied', 'tony']])
+  })
+
+  it('M5: no tapback and a judge that never approves → the prompt times out as a timeout, never as an approval', async () => {
     const run = await newRun()
     const { judge, decisions, release } = judgeFor(true)
     release({ ...APPROVE, recommendation: 'review' })
@@ -553,10 +581,23 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     expect(decisions).toEqual([['timeout', 'timeout']])
   })
 
+  it('C3: Stop while the prompt is out → denied, recorded cancelled / system (not Tony\'s no)', async () => {
+    const run = await newRun()
+    const { judge, decisions } = judgeFor(false)
+    const ac = new AbortController()
+    const p = imessageApprovalChannel(run, CHAT, { ...SLOW, client: bb, signal: ac.signal })(RSVP, { judge })
+    await promptFor(run)
+    ac.abort()
+    expect(await p).toEqual({ approved: false })
+    await judge.writes()
+    expect(decisions).toEqual([['cancelled', 'system']])
+  })
+
   it('a judge that is off adds no line', async () => {
     const run = await newRun()
+    const off = async () => ({ enabled: false, smartApprovals: { workstreams: true, chat: true }, confidence: 0.9 })
     const judge = createApprovalJudge({ tool: { name: 'exec', description: 'x' }, input: {}, req: { command: 'ls' }, nonce: `${TAG}-off`, surface: 'chat', isTainted: () => false },
-      { settings: async () => ({ enabled: false, smartApprovals: { workstreams: true, chat: true }, confidence: 0.9 }), rule: async () => ({ floor: 'high', reasons: [] }), verdict: async () => APPROVE, recordVerdict: async () => {}, recordDecision: async () => true, pinnedSendMessageId: () => undefined, ruleContextWaitMs: 5 })
+      { settings: off, freshSettings: off, rule: async () => ({ floor: 'high', reasons: [] }), verdict: async () => APPROVE, recordVerdict: async () => {}, recordDecision: async () => true, pinnedSendMessageId: () => undefined, ruleContextWaitMs: 5, ruleTimeoutMs: 5_000, verdictTimeoutMs: 5_000 })
     const sentBefore = fake.sent.length
     const p = imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(REQ, { judge })
     const { promptGuid } = await promptFor(run)
@@ -576,5 +617,16 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     expect(fake.sent.slice(sentBefore)[0]!.message).toBe('Run `ls -la /tmp`?\n⚖ medium/review — new recipient\n👍 to approve · 👎 to deny')
     await resolveTapback(tapback(promptGuid, { tapback: 'dislike' }))
     await p
+  })
+
+  it('a withdrawn mirror prompt (the card decided first) whose row a 👍 already committed reports the 👍', async () => {
+    const run = await newRun()
+    const ac = new AbortController()
+    const p = imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 5_000, timeoutMs: 5_000, signal: ac.signal })(REQ)
+    const { id } = await promptFor(run)
+    await db().update(channelApprovals).set({ status: 'approved', resolvedAt: new Date() }).where(eq(channelApprovals.id, id))
+    ac.abort(APPROVAL_WITHDRAWN)
+    expect(await p).toEqual({ approved: true })
+    expect((await rowsFor(run))[0]!.status).toBe('approved')
   })
 })

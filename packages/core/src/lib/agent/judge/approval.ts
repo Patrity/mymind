@@ -21,13 +21,13 @@
 // run, a rule floor of high/critical/deny, a gmail_send whose pinned draft is not the revision the
 // rule checked (nonce binding), an error/lenient/low-confidence verdict (the predicate's own list).
 import type { AgentTool, ApprovalRequest } from '../types'
-import { getJudgeSettings } from '../agent-settings'
+import { getJudgeSettings, readJudgeSettingsFresh } from '../agent-settings'
 import { pinnedSendMessageId } from '../tools/gmail'
 import { recordEvent } from '../../observability/record'
 import { autoApproveBlocker, type AutoApproveBlocker } from './auto-approve'
 import { bindGmailRuleToPin, ruleVerdict } from './rules'
 import { recordDecision, recordVerdict } from './store'
-import { judgeVerdict, type JudgeInput, type JudgeMessage } from './verdict'
+import { errorVerdict, judgeVerdict, JUDGE_TIMEOUT_MS, type JudgeInput, type JudgeMessage } from './verdict'
 import type {
   ApprovalDecider, ApprovalDecision, ApprovalSurface, ApprovalVerdictDTO, JudgeSettings, JudgeVerdict, RuleVerdict, ToolApprovalNote
 } from './types'
@@ -35,6 +35,21 @@ import type {
 /** How long the judge waits for the rule tier before it starts without it (gmail_send's sent-history
  *  lookup can take seconds; every other rule is instant and always makes it into the prompt). */
 export const RULE_CONTEXT_WAIT_MS = 2_000
+/** Fix round 1 (I2): the rule tier gives up after this long — the floor is then `high` (a hung Gmail
+ *  lookup must never leave a workstream `evaluating` forever). */
+export const RULE_TIMEOUT_MS = 10_000
+/** Fix round 1 (M4): the judge's own bound on a verdict, independent of the verdict seam's timeout. */
+export const VERDICT_TIMEOUT_MS = JUDGE_TIMEOUT_MS + 5_000
+
+/** `p`, or `fallback()` once `ms` have passed (the timer never keeps the process alive). */
+function withDeadline<T>(p: Promise<T>, ms: number, fallback: () => T, onExpire?: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<T>((resolve) => {
+    timer = setTimeout(() => { onExpire?.(); resolve(fallback()) }, ms)
+    timer.unref?.()
+  })
+  return Promise.race([p, expired]).finally(() => clearTimeout(timer))
+}
 
 export interface ApprovalJudgeInit {
   tool: Pick<AgentTool, 'name' | 'description' | 'outbound' | 'humanOnly'>
@@ -58,8 +73,13 @@ export interface ApprovalJudgeInit {
 /** Seams (tests swap them; test/setup/judge-off.ts turns the judge off for every other test). */
 export interface ApprovalJudgeDeps {
   settings: () => Promise<JudgeSettings>
-  rule: (tool: Pick<AgentTool, 'name' | 'outbound'>, input: Record<string, unknown>) => Promise<RuleVerdict>
+  /** M1: the settings as stored NOW (uncached) — read again when the decision is made. */
+  freshSettings: () => Promise<JudgeSettings>
+  /** `signal` aborts the tier's lookups when it is cut off (RULE_TIMEOUT_MS) or the run stops. */
+  rule: (tool: Pick<AgentTool, 'name' | 'outbound'>, input: Record<string, unknown>, signal: AbortSignal) => Promise<RuleVerdict>
   verdict: (input: JudgeInput) => Promise<JudgeVerdict>
+  ruleTimeoutMs: number
+  verdictTimeoutMs: number
   recordVerdict: typeof recordVerdict
   recordDecision: typeof recordDecision
   pinnedSendMessageId: (nonce: string) => string | undefined
@@ -67,8 +87,11 @@ export interface ApprovalJudgeDeps {
 }
 export const defaultApprovalJudgeDeps: Readonly<ApprovalJudgeDeps> = Object.freeze<ApprovalJudgeDeps>({
   settings: getJudgeSettings,
-  rule: (tool, input) => ruleVerdict(tool, input),
+  freshSettings: readJudgeSettingsFresh,
+  rule: (tool, input, signal) => ruleVerdict(tool, input, { signal }),
   verdict: input => judgeVerdict(input),
+  ruleTimeoutMs: RULE_TIMEOUT_MS,
+  verdictTimeoutMs: VERDICT_TIMEOUT_MS,
   recordVerdict,
   recordDecision,
   pinnedSendMessageId,
@@ -169,8 +192,16 @@ export function createApprovalJudge(init: ApprovalJudgeInit, deps: ApprovalJudge
     resolveEligible(could)
     if (!could) resolveHuman()
 
-    const ruleP: Promise<RuleVerdict> = deps.rule(tool, init.input)
+    // I2: bounded — a tier that does not answer in time floors `high` and its lookups are aborted.
+    const ruleAc = new AbortController()
+    const stopRule = () => ruleAc.abort()
+    init.signal?.addEventListener('abort', stopRule, { once: true })
+    const ruleP: Promise<RuleVerdict> = withDeadline(
+      Promise.resolve().then(() => deps.rule(tool, init.input, ruleAc.signal)),
+      deps.ruleTimeoutMs, (): RuleVerdict => ({ floor: 'high', reasons: ['rule check timed out'] }), stopRule
+    )
       .catch((): RuleVerdict => ({ floor: 'high', reasons: ['rule check failed'] }))
+      .finally(() => init.signal?.removeEventListener('abort', stopRule))
       // R3: the recipients checked must be the pinned draft revision's (same process as the pin).
       .then(r => (gmail ? bindGmailRuleToPin(r, deps.pinnedSendMessageId(nonce)) : r))
     void ruleP.then((rule) => {
@@ -186,24 +217,32 @@ export function createApprovalJudge(init: ApprovalJudgeInit, deps: ApprovalJudge
     let timer: ReturnType<typeof setTimeout> | undefined
     const ruleForPrompt = await Promise.race([ruleP, new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), deps.ruleContextWaitMs) })])
     clearTimeout(timer)
-    const verdict = await deps.verdict({
-      tool: tool.name, description: tool.description,
-      call: [init.req.title, init.req.command].filter(Boolean).join('\n'),
-      goal: init.goal ?? null, recentMessages: init.recentMessages, rule: ruleForPrompt, signal: init.signal
-    })
+    const verdictStarted = Date.now()
+    // M4: the judge's own deadline, whatever the verdict seam does with its timeout.
+    const verdict = await withDeadline(
+      deps.verdict({
+        tool: tool.name, description: tool.description,
+        call: [init.req.title, init.req.command].filter(Boolean).join('\n'),
+        goal: init.goal ?? null, recentMessages: init.recentMessages, rule: ruleForPrompt, signal: init.signal
+      }).catch((err: unknown) => errorVerdict(`judge failed: ${err instanceof Error ? err.message.slice(0, 200) : 'error'}`, Date.now() - verdictStarted)),
+      deps.verdictTimeoutMs, () => errorVerdict('judge timed out', Date.now() - verdictStarted)
+    )
     const rule = await ruleP
     write('verdict', async () => { await rowReady; await deps.recordVerdict({ ...audit, rule, verdict }) })
     if (view) { view.verdict = verdictView(verdict); view.pending = false }
 
     // The decision, read NOW: taint and the gmail pin may have moved while the judge thought.
     let blocker: AutoApproveBlocker | 'human-only' | 'decided' | null
+    // M1: the switches as stored now — turning Smart Approvals off mid-evaluation is honoured.
+    const sNow = tool.humanOnly === true || settled ? null : await deps.freshSettings().catch(() => null)
     if (settled) blocker = 'decided'
     else if (tool.humanOnly === true) blocker = 'human-only'
+    else if (!sNow) blocker = 'judge-disabled'
     else {
       // The nonce binding, re-read now: gmail_send's card pin must still be the revision checked.
       const pinned = gmail ? deps.pinnedSendMessageId(nonce) : undefined
       blocker = autoApproveBlocker({
-        settings: s, surface: init.surface, verdict, ruleFloor: rule.floor,
+        settings: sNow, surface: init.surface, verdict, ruleFloor: rule.floor,
         outbound: tool.outbound === true, runTainted: init.isTainted(),
         nonceUnchanged: !gmail || (!!pinned && pinned === rule.boundMessageId)
       })

@@ -36,6 +36,7 @@ beforeEach(() => {
   judged.length = 0
   Object.assign(approvalJudgeDeps, {
     settings: async () => ON,
+    freshSettings: async () => ON,
     rule: async () => ({ floor: 'review', reasons: [] }),
     verdict: async (i: JudgeInput) => { judged.push(i); return APPROVE },
     recordVerdict: async () => {},
@@ -91,8 +92,18 @@ describe('Smart Approvals through runAgent', () => {
     expect(toolResult(events)!.approval).toBeUndefined()
   })
 
+  it('M3: no surface given and no workstream → headless (fail closed), even with chat switched on', async () => {
+    Object.assign(approvalJudgeDeps, { settings: async () => ({ ...ON, smartApprovals: { workstreams: true, chat: true } }), freshSettings: async () => ({ ...ON, smartApprovals: { workstreams: true, chat: true } }) })
+    const p = run({ requestApproval: chan() })
+    await new Promise(r => setTimeout(r, 50))
+    expect(judged).toHaveLength(1)
+    expect(ran).toEqual([])
+    decideBusApproval({ requestId: pendingBusApprovals('run-f')[0]!, approved: false })
+    await p
+  })
+
   it('a wake (headless) never auto-runs, even with every switch on', async () => {
-    Object.assign(approvalJudgeDeps, { settings: async () => ({ ...ON, smartApprovals: { workstreams: true, chat: true } }) })
+    Object.assign(approvalJudgeDeps, { settings: async () => ({ ...ON, smartApprovals: { workstreams: true, chat: true } }), freshSettings: async () => ({ ...ON, smartApprovals: { workstreams: true, chat: true } }) })
     const ac = new AbortController()
     const p = run({ requestApproval: chan(ac.signal), wake: { reason: 'check' }, signal: ac.signal })
     await new Promise(r => setTimeout(r, 50))

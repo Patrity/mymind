@@ -1027,7 +1027,8 @@ describe('cycle 84: the judge and the gmail_send pin store share one process', (
     rows.length = 0
     Object.assign(approvalJudgeDeps, {
       settings: async () => ON,
-      rule: (t: { name: string }, i: Record<string, unknown>) => ruleVerdict(t, i, { gmail: lookup }),
+      freshSettings: async () => ON,
+      rule: (t: { name: string }, i: Record<string, unknown>, signal: AbortSignal) => ruleVerdict(t, i, { gmail: lookup, signal }),
       verdict: async () => APPROVE,
       recordVerdict: async (r: RecordVerdictInput) => { rows.push(r) },
       recordDecision: async () => true,

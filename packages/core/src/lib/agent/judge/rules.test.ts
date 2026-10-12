@@ -263,6 +263,23 @@ describe('gmailSentHistory (Gmail-backed lookup)', () => {
     expect(v.reasons).toEqual(['could not verify recipient history'])
   })
 
+  it('I2: a hung Gmail request is given up — by its own timeout, or at once when the caller aborts → high', async () => {
+    // Like fetch: never answers, rejects on abort (at once when the signal is already aborted).
+    const hang: typeof globalThis.fetch = (_input, init) => new Promise((_res, rej) => {
+      if (init?.signal?.aborted) return rej(init.signal.reason)
+      init?.signal?.addEventListener('abort', () => rej(init.signal!.reason), { once: true })
+    })
+    const base = deps({}).google
+    const t0 = Date.now()
+    expect(await ruleVerdict({ name: 'gmail_send' }, { account: 'work', draftId: 'd1' }, { gmail: gmailSentHistory({ ...base, fetch: hang }, undefined, 30) }))
+      .toEqual({ floor: 'high', reasons: ['could not verify recipient history'] })
+    expect(Date.now() - t0).toBeLessThan(2_000)
+    const ac = new AbortController()
+    const p = ruleVerdict({ name: 'gmail_send' }, { account: 'work', draftId: 'd1' }, { gmail: gmailSentHistory({ ...base, fetch: hang }, ac.signal, 60_000) })
+    ac.abort()
+    expect((await p).floor).toBe('high')
+  })
+
   it('an unknown account → high', async () => {
     vi.mocked(listConnections).mockResolvedValue([])
     const v = await ruleVerdict({ name: 'gmail_send' }, { account: 'nope', draftId: 'd1' }, { gmail: gmailSentHistory(deps({}).google) })

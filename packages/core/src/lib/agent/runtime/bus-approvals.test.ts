@@ -140,7 +140,7 @@ describe('busApprovalChannel', () => {
     const pb = b.ch({ tool: 'exec', command: 'ls', proposedPattern: 'ls *' }).then((v) => { bDone = true; return v })
     acA.abort()
     expect(await pa).toEqual({ approved: false })
-    expect(a.frames.at(-1)).toEqual({ type: 'approval-resolved', requestId: a.lastRequestId(), decidedBy: 'tony' })
+    expect(a.frames.at(-1)).toEqual({ type: 'approval-resolved', requestId: a.lastRequestId(), decidedBy: 'system' })
     await flush()
     expect(bDone).toBe(false)
     expect(pendingBusApprovals('run-B')).toEqual([b.lastRequestId()])

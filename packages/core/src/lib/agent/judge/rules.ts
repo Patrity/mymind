@@ -34,6 +34,8 @@ export interface GmailHistoryLookup {
 }
 
 export interface RuleContext {
+  /** Fix round 1 (I2): aborts the default Gmail lookups (the approval judge caps the tier). */
+  signal?: AbortSignal
   /** Defaults to the Gmail-backed lookup (sent-history.ts). */
   gmail?: GmailHistoryLookup
 }
@@ -323,7 +325,7 @@ export async function ruleVerdict(tool: RuleTool, input: Record<string, unknown>
       return execRule(typeof input.command === 'string' ? input.command : '', typeof input.cwd === 'string' ? input.cwd : undefined)
     }
     if (tool.name === 'gmail_send') {
-      const lookup = ctx.gmail ?? (await import('./sent-history')).gmailSentHistory()
+      const lookup = ctx.gmail ?? (await import('./sent-history')).gmailSentHistory({}, ctx.signal)
       return await gmailSendRule(input, lookup)
     }
     if (CALENDAR_TOOLS.has(tool.name)) return calendarRule(tool.name, input)

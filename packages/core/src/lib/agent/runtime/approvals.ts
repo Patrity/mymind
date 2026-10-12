@@ -41,7 +41,7 @@ export function approvalFor(runId: string): Channel {
     }
     const ch = channels.get(runId)
     // No channel: denied at once — the judge (if any) is told, so its audit never waits on it.
-    if (!ch) { opts?.judge?.settle('denied', 'tony'); return { approved: false } }
+    if (!ch) { opts?.judge?.settle('cancelled', 'system'); return { approved: false } }
     return ch(req, opts)
   }
 }

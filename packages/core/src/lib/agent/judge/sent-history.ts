@@ -72,7 +72,33 @@ export function addressesIn(values: Array<string | undefined>): string[] {
   return out
 }
 
-export function gmailSentHistory(deps: GoogleDeps = {}): GmailHistoryLookup {
+/** Fix round 1 (I2): each Gmail request of a lookup gives up after this long. */
+export const LOOKUP_REQUEST_TIMEOUT_MS = 5_000
+
+/** `signal` aborts every request still in flight (the approval judge's rule-tier cap / Stop); each
+ *  request also has its own LOOKUP_REQUEST_TIMEOUT_MS. An aborted or timed-out request throws —
+ *  gmailSendRule turns that into `high`. */
+export function gmailSentHistory(base: GoogleDeps = {}, signal?: AbortSignal, requestTimeoutMs = LOOKUP_REQUEST_TIMEOUT_MS): GmailHistoryLookup {
+  const doFetch = base.fetch ?? globalThis.fetch
+  const deps: GoogleDeps = {
+    ...base,
+    fetch: async (input, init) => {
+      // One controller per request, held for its lifetime (a composite AbortSignal.any of a timeout
+      // signal can be collected before it fires).
+      const ac = new AbortController()
+      const abort = (reason: unknown) => ac.abort(reason)
+      const timer = setTimeout(() => abort(new Error(`gmail lookup timed out after ${requestTimeoutMs} ms`)), requestTimeoutMs)
+      const outer = [init?.signal, signal].filter((x): x is AbortSignal => !!x)
+      const onOuter = function (this: AbortSignal) { abort(this.reason) }
+      for (const o of outer) { if (o.aborted) abort(o.reason); else o.addEventListener('abort', onOuter, { once: true }) }
+      try {
+        return await doFetch(input, { ...init, signal: ac.signal })
+      } finally {
+        clearTimeout(timer)
+        for (const o of outer) o.removeEventListener('abort', onOuter)
+      }
+    }
+  }
   async function conn(account: string) {
     const acc = await resolveOneAccount(account)
     if (!acc.ok) throw new Error(acc.error)

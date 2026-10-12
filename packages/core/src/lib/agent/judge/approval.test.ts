@@ -39,6 +39,10 @@ interface SetupOpts {
   timeoutMs?: number | null
   signal?: AbortSignal
   pinned?: () => string | undefined
+  isTainted?: () => boolean
+  fresh?: () => Promise<JudgeSettings>
+  ruleTimeoutMs?: number
+  verdictTimeoutMs?: number
 }
 
 function setup(o: SetupOpts = {}) {
@@ -46,6 +50,9 @@ function setup(o: SetupOpts = {}) {
   const verdict = deferred<JudgeVerdict>()
   const deps: ApprovalJudgeDeps = {
     settings: async () => o.settings ?? ON,
+    freshSettings: o.fresh ?? (async () => o.settings ?? ON),
+    ruleTimeoutMs: o.ruleTimeoutMs ?? 10_000,
+    verdictTimeoutMs: o.verdictTimeoutMs ?? 10_000,
     rule: vi.fn(o.rule ?? (async (): Promise<RuleVerdict> => ({ floor: 'review', reasons: [] }))),
     verdict: vi.fn(async () => verdict.promise),
     recordVerdict: async (i) => { store.order.push(i.verdict ? 'verdict' : 'rule'); store.verdicts.push(i) },
@@ -64,7 +71,7 @@ function setup(o: SetupOpts = {}) {
   const judge = createApprovalJudge({
     tool, input: { eventId: 'e1', response: 'accepted' }, req: { title: 'Send RSVP?', command: 'RSVP accepted to Standup' },
     nonce: 'nonce-1', surface: o.surface ?? 'workstream', runId: 'run-j', workstreamId: 'ws-1', goal: 'keep my calendar tidy',
-    isTainted: () => o.tainted === true, signal: o.signal
+    isTainted: o.isTainted ?? (() => o.tainted === true), signal: o.signal
   }, deps)
   let settledValue: { approved: boolean } | undefined
   const p = ch({ tool: tool.name, command: 'RSVP accepted to Standup', proposedPattern: '', title: 'Send RSVP?' }, { judge })
@@ -81,7 +88,7 @@ afterEach(() => {
 
 describe('approval judge on the bus channel', () => {
   it('the card goes out first; only then do the rule tier and the judge run (C3)', async () => {
-    const deps = { ...defaultApprovalJudgeDeps, settings: vi.fn(async () => ON), rule: vi.fn(async () => ({ floor: 'review' as const, reasons: [] })), verdict: vi.fn(async () => APPROVE) }
+    const deps = { ...defaultApprovalJudgeDeps, settings: vi.fn(async () => ON), freshSettings: vi.fn(async () => ON), rule: vi.fn(async () => ({ floor: 'review' as const, reasons: [] })), verdict: vi.fn(async () => APPROVE) }
     const judge = createApprovalJudge({ tool: EXEC_LIKE, input: {}, req: { command: 'x' }, nonce: 'n0', surface: 'workstream', isTainted: () => false }, deps)
     await flush()
     expect(deps.settings).not.toHaveBeenCalled()
@@ -262,7 +269,9 @@ describe('approval judge on the bus channel', () => {
     s.verdict.resolve(APPROVE)
     await flush()
     await s.judge.writes()
-    expect(s.store.decisions).toEqual([['nonce-1', 'denied', 'tony']])
+    // C3: Stop is not Tony's "no".
+    expect(s.store.decisions).toEqual([['nonce-1', 'cancelled', 'system']])
+    expect(s.frames.at(-1)).toEqual({ type: 'approval-resolved', requestId: s.requestId, decidedBy: 'system' })
   })
 
   it('a decision made before the rule tier lands waits for its row (recordVerdict before recordDecision)', async () => {
@@ -326,6 +335,69 @@ describe('approval judge on the bus channel', () => {
       expect(s.verdictFrames().at(-1)!.judge.rule).toEqual({ floor: 'high', reasons: ['the draft changed after its recipients were checked'] })
       expect(s.waits).toEqual([true])
     })
+  })
+
+  it('I3: the run becomes tainted WHILE an outbound call is judged → never auto (taint read at decision)', async () => {
+    let tainted = false
+    const s = setup({ tool: { name: 'web_fetch', description: 'fetch', outbound: true }, isTainted: () => tainted })
+    await flush()
+    expect(s.evals).toEqual([true])                             // eligible at the start (untainted)
+    tainted = true                                              // a parallel `taints` read completed
+    s.verdict.resolve({ ...APPROVE, confidence: 1 })
+    await flush()
+    expect(s.settled()).toBeUndefined()
+    expect(s.waits).toEqual([true])
+    expect(judgeEvents()).toMatchObject([{ name: 'judge:verdict', meta: { auto: false, blocker: 'tainted-outbound' } }])
+  })
+
+  it('M1: Smart Approvals switched off while the card was judged → no auto (settings re-read at decision)', async () => {
+    const s = setup({ fresh: async () => ({ ...ON, smartApprovals: { workstreams: false, chat: false } }) })
+    await flush()
+    expect(s.evals).toEqual([true])
+    s.verdict.resolve(APPROVE)
+    await flush()
+    expect(s.settled()).toBeUndefined()
+    expect(judgeEvents()).toMatchObject([{ meta: { blocker: 'surface-disabled' } }])
+  })
+
+  it('M1: settings unreadable at decision → no auto', async () => {
+    const s = setup({ fresh: async () => { throw new Error('db down') } })
+    await flush()
+    s.verdict.resolve(APPROVE)
+    await flush()
+    expect(s.settled()).toBeUndefined()
+    expect(judgeEvents()).toMatchObject([{ meta: { blocker: 'judge-disabled' } }])
+  })
+
+  it('I2: a rule tier that hangs is cut off — floor high, Tony asked, never stuck evaluating', async () => {
+    const t = setup({ ruleTimeoutMs: 30, rule: () => new Promise<RuleVerdict>(() => {}) })
+    await new Promise(r => setTimeout(r, 60))
+    expect(t.verdictFrames().at(-1)!.judge.rule).toEqual({ floor: 'high', reasons: ['rule check timed out'] })
+    expect(t.waits).toEqual([true])
+    expect(t.evals).toEqual([true, false])
+    t.verdict.resolve(APPROVE)
+    await flush()
+    expect(t.settled()).toBeUndefined()
+    await t.judge.writes()
+    expect(t.store.verdicts[0]!.rule).toEqual({ floor: 'high', reasons: ['rule check timed out'] })
+  })
+
+  it('I2: the rule tier signal aborts when it is cut off (its Gmail lookups stop)', async () => {
+    let ruleSignal: AbortSignal | undefined
+    const t = setup({ ruleTimeoutMs: 20, rule: undefined })
+    vi.mocked(t.deps.rule).mockClear()
+    const deps = { ...t.deps, ruleTimeoutMs: 20, rule: vi.fn(async (_t: unknown, _i: unknown, signal: AbortSignal) => { ruleSignal = signal; return new Promise<RuleVerdict>(() => {}) }) }
+    createApprovalJudge({ tool: EXEC_LIKE, input: {}, req: { command: 'x' }, nonce: 'n-sig', surface: 'workstream', isTainted: () => false }, deps).start(() => {})
+    await new Promise(r => setTimeout(r, 50))
+    expect(ruleSignal?.aborted).toBe(true)
+  })
+
+  it('M4: a verdict seam that never answers is cut off by the judge itself → an error verdict, Tony asked', async () => {
+    const s = setup({ verdictTimeoutMs: 30 })                   // s.verdict is never resolved
+    await new Promise(r => setTimeout(r, 70))
+    expect(s.verdictFrames().at(-1)!.judge.verdict).toMatchObject({ error: 'judge timed out', recommendation: 'review' })
+    expect(s.waits).toEqual([true])
+    expect(s.settled()).toBeUndefined()
   })
 
   it('decide_review ("Tony confirms every call") is humanOnly; no other dangerous tool needs to be', () => {

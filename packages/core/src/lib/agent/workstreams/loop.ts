@@ -33,7 +33,7 @@ import { publishChange } from '../../../utils/live-bus'
 import { createRun } from '../runtime/runs'
 import { abortRun } from '../runtime/aborts'
 import { drainCoordinatorFor, drainReportsFor, drainSteerFor, pushSteer } from '../runtime/inbox'
-import { busApprovalChannel, decideBusApproval, pendingBusApprovals } from '../runtime/bus-approvals'
+import { busApprovalChannel, cancelBusApproval, decideBusApproval, pendingBusApprovals } from '../runtime/bus-approvals'
 import { createRunEventWriter, type HubFrame, type RunEventWriter } from '../../bus/events'
 import { APPROVAL_WITHDRAWN } from '../../channels/approvals'
 import { parseToolsetIds } from '../toolsets'
@@ -236,6 +236,9 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
   let chain: Promise<void> = Promise.resolve()
   const costs: Array<Promise<void>> = []
   const waiting = new Map<string, AbortController>()   // approval requestId → its iMessage race
+  // Cycle 84 fix round 1 (C2, M2): requests the judge is still deciding (Smart-Approvals-eligible) —
+  // `evaluating` lasts while ANY is in flight, and a drain parks them like a card waiting on Tony.
+  const evaluating = new Map<string, ApprovalRequest>()
   let mirror: RunEventWriter | null = null
   let done = false
   let parking = false
@@ -328,8 +331,13 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
         },
         // Cycle 84: a Smart-Approvals-eligible call is `evaluating` (still running, no attention, no
         // texts) while the judge decides; onWaiting(true) follows only when a human is needed.
-        onEvaluating: (_requestId, isEvaluating) => {
-          void serial(() => patchWorkstream(ws.id, { stateDetail: isEvaluating ? 'evaluating' : null }, isEvaluating ? ['running'] : undefined))
+        onEvaluating: (requestId, isEvaluating, { req }) => {
+          const before = evaluating.size
+          if (isEvaluating) evaluating.set(requestId, req)
+          else evaluating.delete(requestId)
+          if (parking) return
+          if (before === 0 && evaluating.size === 1) void serial(() => patchWorkstream(ws.id, { stateDetail: 'evaluating' }, ['running']))
+          else if (before > 0 && evaluating.size === 0) void serial(() => patchWorkstream(ws.id, { stateDetail: null }))
         },
         onWaiting: (requestId, isWaiting, { req, judge }) => {
           if (isWaiting) {
@@ -371,7 +379,8 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
             // note (the action did not run; the model re-issues it and Tony approves a fresh card).
             if (!waiting.size && !parking) {
               resume()
-              void serial(() => patchWorkstream(ws.id, { state: 'running', attention: null }, ['attention']))
+              // M2: another request may still be under evaluation — keep its detail.
+              void serial(() => patchWorkstream(ws.id, { state: 'running', attention: null, stateDetail: evaluating.size ? 'evaluating' : null }, ['attention']))
             }
           }
         }
@@ -383,9 +392,17 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
       }
     },
     park() {
-      if (!waiting.size || done) return false
+      if ((!waiting.size && !evaluating.size) || done) return false
       parking = true
       seg.stop = 'park'
+      // C2: a drain while the judge is still deciding parks the request exactly like a card waiting on
+      // Tony — kept on the row (attention {approval}) so the next worker withdraws it and resumes with
+      // a `segment:approval-lost` note. No notification: nobody has been asked yet.
+      if (!waiting.size) {
+        const [requestId, req] = [...evaluating][0]!
+        const attention: ParkedAttention = { kind: 'approval', text: approvalText(req), requestId, runId: run.id, notifiedAt: Date.now(), request: storedRequest(req) }
+        void serial(() => patchWorkstream(ws.id, { state: 'attention', attention, stateDetail: null }, ['running', 'attention']))
+      }
       for (const r of waiting.values()) r.abort(APPROVAL_WITHDRAWN)
       abortRun(run.id)
       return true
@@ -1213,7 +1230,8 @@ export async function cancelWorkstream(ws: WorkstreamRow): Promise<void> {
   const seg = [...active.values()].find(s => s.workstreamId === ws.id)
   if (seg) {
     seg.stop ??= 'cancel'
-    for (const requestId of pendingBusApprovals(seg.runId)) decideBusApproval({ requestId, approved: false })
+    // C3: withdrawn by the cancel, not denied by Tony (recorded cancelled / system).
+    for (const requestId of pendingBusApprovals(seg.runId)) cancelBusApproval(requestId)
     return
   }
   await useDb().update(agentRuns).set({ status: 'aborted', finishedAt: sql`now()`, error: 'workstream cancelled' })

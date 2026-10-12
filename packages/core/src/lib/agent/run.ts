@@ -187,8 +187,9 @@ export interface RunAgentCtx {
   signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number
   requestApproval?: import('./types').RequestApproval
   /** Cycle 84 Task 2: where this run's approvals are raised (Smart Approvals applies per surface) and
-   *  the workstream they belong to (the verdict audit). Absent → derived: a workstream segment, a
-   *  wake (headless), an interactive run (chat), else headless. */
+   *  the workstream they belong to (the verdict audit). The runner always passes it (approvalSurface).
+   *  Absent → a workstream ctx is `workstream`; ANYTHING else is `headless` (fail closed: never
+   *  auto-approved). */
   approvals?: { surface?: import('./judge/types').ApprovalSurface; workstreamId?: string }
   attachmentImageIds?: string[]; modelDefId?: string | null; drainSteer?: () => Promise<string[]>
   wake?: { reason: string }; runId?: string
@@ -251,7 +252,9 @@ export async function* runAgent(
   // Approvals may apply; the goal and the conversation so far are its context (fenced by the judge).
   const judge = ctx.requestApproval
     ? {
-        surface: ctx.approvals?.surface ?? (ctx.workstream ? 'workstream' as const : ctx.wake ? 'headless' as const : 'chat' as const),
+        // M3: fail closed — with no surface given, only a workstream ctx is recognised; anything else
+        // is headless (never auto-approved). The runner always passes the surface.
+        surface: ctx.approvals?.surface ?? (ctx.workstream ? 'workstream' as const : 'headless' as const),
         workstreamId: ctx.approvals?.workstreamId,
         goal: ctx.workstream?.goal ?? null,
         recentMessages: judgeMessages(messages)

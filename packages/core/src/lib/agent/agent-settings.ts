@@ -103,6 +103,13 @@ export async function getJudgeSettings(): Promise<JudgeSettings> {
   return (await getAgentSettings()).judge
 }
 
+/** Fix round 1 (M1): the judge settings read from the DB now, bypassing the cache — the moment a
+ *  Smart Approvals decision is made, so a switch turned off while a card was judged is honoured. */
+export async function readJudgeSettingsFresh(): Promise<JudgeSettings> {
+  const [row] = await useDb().select().from(settings).where(eq(settings.key, AGENT_SETTINGS_KEY)).limit(1)
+  return readAgentSettings(row?.value).judge
+}
+
 /** Validate a patch (throws a ZodError on anything invalid), merge it onto the stored settings,
  *  save, and refresh this process's cache. Returns the saved settings. */
 export async function saveAgentSettings(patch: unknown): Promise<AgentSettings> {
