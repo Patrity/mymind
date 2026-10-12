@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET, RESUME_EXTENSION, ZERO_USED } from '@mymind/core/shared/types/workstreams'
 import {
-  BUDGET_NOTES, canCancel, canResume, childModelLabel, elapsedMs, eventDisplay, formatCost, formatDuration, nestWorkstreams,
-  reservationOf, resumeAdds, resumeLabel, startedWorkstream, treeCommitted
+  BUDGET_NOTES, canCancel, canResume, childModelLabel, elapsedMs, eventDisplay, formatCost, formatDuration, hiddenChildren,
+  nestWorkstreams, resumeAdds, resumeLabel, startedWorkstream
 } from './display'
 import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
 import type { WorkstreamRow } from '@mymind/core/db/schema'
@@ -176,12 +176,12 @@ const dto = (o: Partial<WorkstreamDTO>): WorkstreamDTO => ({
   id: ID, conversationId: ID, originConversationId: null, goal: 'g', state: 'running', toolsets: [],
   budget: { maxSteps: 200, maxWallMs: 3_600_000 }, used: { ...ZERO_USED }, attention: null, summary: null, failureReason: null,
   currentRunId: null, createdAt: '2026-10-12T00:00:00Z', updatedAt: '2026-10-12T00:00:00Z', finishedAt: null,
-  parentId: null, modelLabel: null, workspaceMode: 'own', treeBudget: null, treeUsed: null, childIds: [], isChild: false, tainted: false, ...o
+  parentId: null, modelLabel: null, workspaceMode: 'own', treeBudget: null, treeUsed: null, childIds: [], childCount: 0, isChild: false, tainted: false, ...o
 })
 
 describe('nestWorkstreams', () => {
-  it('nests children under their coordinator in childIds order; orphans and unlisted-parent children stay top-level', () => {
-    const c = dto({ id: 'c', childIds: ['k1', 'k2'] })
+  it('nests children under their coordinator in the order given; orphans and unlisted-parent children stay top-level', () => {
+    const c = dto({ id: 'c', childIds: ['k2', 'k1'], childCount: 2 })
     const k2 = dto({ id: 'k2', parentId: 'c', isChild: true })
     const k1 = dto({ id: 'k1', parentId: 'c', isChild: true })
     const plain = dto({ id: 'p' })
@@ -189,24 +189,23 @@ describe('nestWorkstreams', () => {
     const stray = dto({ id: 's', parentId: 'gone', isChild: true })
     const tree = nestWorkstreams([plain, c, k2, k1, orphan, stray])
     expect(tree.map(n => n.id)).toEqual(['p', 'c', 'o', 's'])
-    expect(tree[1]!.children!.map(n => n.id)).toEqual(['k1', 'k2'])
+    expect(tree[1]!.children!.map(n => n.id)).toEqual(['k2', 'k1'])
     expect(tree[0]!.children).toBeUndefined()
+  })
+  it('a fully loaded child list ("+N more") replaces the embedded ones, in its own order', () => {
+    const c = dto({ id: 'c', childIds: ['k3'], childCount: 3 })
+    const k3 = dto({ id: 'k3', parentId: 'c', isChild: true })
+    const all = ['k1', 'k2', 'k3'].map(id => dto({ id, parentId: 'c', isChild: true }))
+    expect(hiddenChildren(nestWorkstreams([c, k3])[0]!)).toBe(2)
+    const tree = nestWorkstreams([c, k3], { c: all })
+    expect(tree[0]!.children!.map(n => n.id)).toEqual(['k1', 'k2', 'k3'])
+    expect(hiddenChildren(tree[0]!)).toBe(0)
+    expect(hiddenChildren(dto({ childCount: 0 }))).toBe(0)
   })
 })
 
-describe('tree budget', () => {
-  it('a live member reserves its budget (or what it ran over); an ended one only what it used', () => {
-    expect(reservationOf(dto({ used: { ...ZERO_USED, steps: 5, wallMs: 10 } }))).toEqual({ steps: 200, wallMs: 3_600_000 })
-    expect(reservationOf(dto({ used: { ...ZERO_USED, steps: 250, wallMs: 10 } }))).toEqual({ steps: 250, wallMs: 3_600_000 })
-    expect(reservationOf(dto({ state: 'done', used: { ...ZERO_USED, steps: 7, wallMs: 9000 } }))).toEqual({ steps: 7, wallMs: 9000 })
-  })
-  it('committed = the coordinator (always as live) + each child', () => {
-    // An ENDED coordinator still counts its whole reservation (the core's committedOf), not its use.
-    const coord = dto({ state: 'done', budget: { maxSteps: 400, maxWallMs: 7_200_000 }, used: { ...ZERO_USED, steps: 9, wallMs: 5000 } })
-    const kids = [dto({}), dto({ state: 'cancelled', used: { ...ZERO_USED, steps: 3, wallMs: 1000 } })]
-    expect(treeCommitted(coord, kids)).toEqual({ steps: 400 + 200 + 3, wallMs: 7_200_000 + 3_600_000 + 1000 })
-  })
-  it('model label falls back to the default resolution', () => {
+describe('childModelLabel', () => {
+  it('falls back to the default resolution', () => {
     expect(childModelLabel({ modelLabel: 'fast' })).toBe('fast')
     expect(childModelLabel({ modelLabel: null })).toBe('default model')
   })

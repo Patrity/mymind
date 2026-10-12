@@ -5,17 +5,23 @@
  * one from here (the same start path as the tool).
  *
  * Cycle 83 (spec §6): a coordinator's children are nested under it (UTable sub-rows, collapsed by
- * default; the expand state is keyed by id so a live refetch never re-collapses or shifts it).
+ * default; the expand state is keyed by id so a live refetch never re-collapses or shifts it). The
+ * list embeds at most 20 children per coordinator; "+N more" loads all of them from its children route.
  */
 import type { TableColumn } from '@nuxt/ui'
 import { BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET } from '@mymind/core/shared/types/workstreams'
-import { BUDGET_NOTES, STATE_META, childModelLabel, elapsedMs, formatCost, formatDuration, nestWorkstreams, type WorkstreamNode } from '~/lib/workstreams/display'
+import { BUDGET_NOTES, STATE_META, childModelLabel, elapsedMs, formatCost, formatDuration, hiddenChildren, nestWorkstreams, type WorkstreamNode } from '~/lib/workstreams/display'
 
 definePageMeta({ title: 'Workstreams' })
 
 const toast = useToast()
 const { data, error, isPending } = useWorkstreamList()
-const rows = computed(() => nestWorkstreams(data.value ?? []))
+// Coordinators whose "+N more" was pressed: all their children, from the (live) children route.
+const showAll = ref<string[]>([])
+const allKids = useWorkstreamChildrenOf(showAll)
+const full = computed(() => Object.fromEntries(showAll.value.map((id, i) => [id, allKids.value[i]?.data])))
+const loadingAll = (id: string) => { const i = showAll.value.indexOf(id); return i >= 0 && !!allKids.value[i]?.isPending }
+const rows = computed(() => nestWorkstreams(data.value ?? [], full.value))
 const expanded = ref<Record<string, boolean>>({})
 watch(error, (err) => {
   if (err) toast.add({ color: 'error', title: 'Could not load workstreams', description: workstreamErrorOf(err).message })
@@ -148,11 +154,23 @@ async function create() {
               >
                 {{ row.original.goal }}
               </ULink>
-              <span
-                v-if="row.original.children?.length"
-                class="text-xs text-muted"
-                data-testid="ws-children-count"
-              >coordinator · {{ row.original.children.length }} {{ row.original.children.length === 1 ? 'child' : 'children' }}</span>
+              <div
+                v-if="row.original.childCount && !row.depth"
+                class="flex items-center gap-2 text-xs text-muted"
+              >
+                <span data-testid="ws-children-count">coordinator · {{ row.original.childCount }} {{ row.original.childCount === 1 ? 'child' : 'children' }}</span>
+                <UButton
+                  v-if="row.getIsExpanded() && hiddenChildren(row.original)"
+                  size="xs"
+                  variant="link"
+                  color="neutral"
+                  class="p-0"
+                  :label="`+${hiddenChildren(row.original)} more`"
+                  :loading="loadingAll(row.original.id)"
+                  data-testid="ws-more-children"
+                  @click="showAll = [...new Set([...showAll, row.original.id])]"
+                />
+              </div>
               <span
                 v-else-if="row.original.isChild"
                 class="text-xs text-muted"

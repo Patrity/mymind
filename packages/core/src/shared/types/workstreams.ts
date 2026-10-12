@@ -68,8 +68,11 @@ export interface WorkstreamDTO {
   /** A coordinator's tree budget and its rolled-up use (own + every child); null otherwise. */
   treeBudget: WorkstreamBudget | null
   treeUsed: WorkstreamUsed | null
-  /** A coordinator's children, oldest first. */
+  /** A coordinator's children, oldest first. In the `/api/workstreams` LIST only the children embedded
+   *  in that response (at most CHILDREN_IN_LIST, see `childCount`); everywhere else all of them. */
   childIds: string[]
+  /** Cycle 83 Task 3 fix round 1: how many children it has in all (0 for a plain workstream). */
+  childCount: number
   /** Cycle 83 fix round 1 (I2): a child — even after its coordinator is gone (`parentId` null). */
   isChild: boolean
   /** A run of it read mail/calendar/contacts content. */
@@ -102,4 +105,28 @@ export function resumeBudget(b: WorkstreamBudget, used: Pick<WorkstreamUsed, 'st
     maxSteps: Math.max(b.maxSteps, used.steps + RESUME_EXTENSION.steps),
     maxWallMs: Math.max(b.maxWallMs, used.wallMs + RESUME_EXTENSION.wallMs)
   }
+}
+
+/** Cycle 83 Task 3 fix round 1 (I1): children embedded per coordinator in the /api/workstreams list
+ *  (non-terminal first, newest first); the rest come from GET /api/workstreams/:id/children. */
+export const CHILDREN_IN_LIST = 20
+/** Page size cap of GET /api/workstreams/:id/children. */
+export const CHILDREN_PAGE_MAX = 200
+
+// ── Tree budget formula (spec D4) — the ONE copy: the core's spawn/resume checks and the UI's tree
+//    meter both use these, so the meter always shows what spawn sees. ───────────────────────────────
+
+export interface TreeMember { state: WorkstreamState; budget: WorkstreamBudget; used: Pick<WorkstreamUsed, 'steps' | 'wallMs'> }
+
+/** What a tree member holds of its coordinator's tree: a live one its budget (or more, if it ran past
+ *  it), an ended one only what it used (the rest went back to the tree). */
+export function reservationOf(w: TreeMember): WorkstreamBudget {
+  if (TERMINAL_WORKSTREAM_STATES.includes(w.state)) return { maxSteps: w.used.steps, maxWallMs: w.used.wallMs }
+  return { maxSteps: Math.max(w.budget.maxSteps, w.used.steps), maxWallMs: Math.max(w.budget.maxWallMs, w.used.wallMs) }
+}
+
+/** Committed = the coordinator's own reservation (always counted as live) + every child's. */
+export function committedOf(coord: TreeMember, kids: TreeMember[]): WorkstreamBudget {
+  const all = [{ ...coord, state: 'running' as const }, ...kids].map(reservationOf)
+  return { maxSteps: all.reduce((n, a) => n + a.maxSteps, 0), maxWallMs: all.reduce((n, a) => n + a.maxWallMs, 0) }
 }

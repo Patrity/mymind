@@ -4,10 +4,8 @@
 // `workstream` resource (useWorkstreamChildren is keyed under ['workstream', 'list']). Steer and
 // Cancel are the child's own control routes — the same ones its detail page uses (steer needs a
 // session). The goal is the coordinator's own text and renders as an escaped interpolation.
-import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
-import {
-  STATE_META, canCancel, childModelLabel, formatDuration, isTerminal, reservationOf, treeCommitted
-} from '~/lib/workstreams/display'
+import { committedOf, reservationOf, type WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
+import { STATE_META, canCancel, childModelLabel, formatDuration, isTerminal } from '~/lib/workstreams/display'
 
 const props = defineProps<{ coordinator: WorkstreamDTO }>()
 
@@ -21,7 +19,8 @@ watch(error, (err) => {
 // ── The tree budget ─────────────────────────────────────────────────────────────────────────────
 const tree = computed(() => props.coordinator.treeBudget)
 const treeUsed = computed(() => props.coordinator.treeUsed ?? props.coordinator.used)
-const committed = computed(() => treeCommitted(props.coordinator, kids.value))
+// The core's own formula (shared/types/workstreams.ts): what spawn would see as committed.
+const committed = computed(() => committedOf(props.coordinator, kids.value))
 const pct = (n: number, of: number) => Math.min(100, Math.round((n / Math.max(1, of)) * 100))
 const tone = (p: number) => (p >= 100 ? 'error' : p >= 80 ? 'warning' : 'primary')
 const live = computed(() => kids.value.filter(k => !isTerminal(k.state)).length)
@@ -83,11 +82,11 @@ async function sendSteer(k: WorkstreamDTO) {
               <span
                 class="tabular-nums"
                 data-testid="tree-steps"
-              >{{ treeUsed.steps }} used · {{ committed.steps }} reserved / {{ tree.maxSteps }}</span>
+              >{{ treeUsed.steps }} used · {{ committed.maxSteps }} reserved / {{ tree.maxSteps }}</span>
             </div>
             <UProgress
               :model-value="pct(treeUsed.steps, tree.maxSteps)"
-              :color="tone(pct(committed.steps, tree.maxSteps))"
+              :color="tone(pct(committed.maxSteps, tree.maxSteps))"
               size="sm"
             />
           </div>
@@ -99,11 +98,11 @@ async function sendSteer(k: WorkstreamDTO) {
               <span
                 class="tabular-nums"
                 data-testid="tree-wall"
-              >{{ formatDuration(treeUsed.wallMs) }} used · {{ formatDuration(committed.wallMs) }} reserved / {{ formatDuration(tree.maxWallMs) }}</span>
+              >{{ formatDuration(treeUsed.wallMs) }} used · {{ formatDuration(committed.maxWallMs) }} reserved / {{ formatDuration(tree.maxWallMs) }}</span>
             </div>
             <UProgress
               :model-value="pct(treeUsed.wallMs, tree.maxWallMs)"
-              :color="tone(pct(committed.wallMs, tree.maxWallMs))"
+              :color="tone(pct(committed.maxWallMs, tree.maxWallMs))"
               size="sm"
             />
           </div>
@@ -160,7 +159,7 @@ async function sendSteer(k: WorkstreamDTO) {
           <span
             class="text-xs tabular-nums text-muted"
             data-testid="child-usage"
-          >{{ k.used.steps }}/{{ reservationOf(k).steps }} steps · {{ formatDuration(k.used.wallMs) }}/{{ formatDuration(reservationOf(k).wallMs) }}</span>
+          >{{ k.used.steps }}/{{ reservationOf(k).maxSteps }} steps · {{ formatDuration(k.used.wallMs) }}/{{ formatDuration(reservationOf(k).maxWallMs) }}</span>
         </UTooltip>
         <div class="ms-auto flex shrink-0 items-center gap-1">
           <UPopover

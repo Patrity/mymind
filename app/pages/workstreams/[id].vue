@@ -35,7 +35,7 @@ watch(error, (err) => {
 const meta = computed(() => (ws.value ? STATE_META[ws.value.state] : null))
 
 // ── Coordinator / child (cycle 83) ───────────────────────────────────────
-const isCoordinator = computed(() => !!ws.value && (!!ws.value.treeBudget || ws.value.childIds.length > 0))
+const isCoordinator = computed(() => !!ws.value && (!!ws.value.treeBudget || ws.value.childCount > 0))
 const { data: parent } = useWorkstream(() => ws.value?.parentId ?? null)
 
 // ── The workspace (Files / Shells tabs) ──────────────────────────────────
@@ -59,7 +59,7 @@ watch([() => ws.value?.id, isCoordinator], ([wid, coord]) => {
   tab.value = coord ? 'children' : 'log'
 }, { immediate: true })
 const tabs = computed(() => [
-  ...(isCoordinator.value ? [{ label: `Children (${ws.value!.childIds.length})`, value: 'children', icon: 'i-lucide-git-fork' }] : []),
+  ...(isCoordinator.value ? [{ label: `Children (${ws.value!.childCount})`, value: 'children', icon: 'i-lucide-git-fork' }] : []),
   { label: 'Log', value: 'log', icon: 'i-lucide-scroll-text' },
   { label: 'Files', value: 'files', icon: 'i-lucide-folder', disabled: !workspaceId.value },
   { label: 'Shells', value: 'shells', icon: 'i-lucide-terminal', disabled: !workspaceId.value }

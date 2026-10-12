@@ -185,38 +185,29 @@ export function startedWorkstream(toolName: string, input: unknown, output: unkn
 export type WorkstreamNode = WorkstreamDTO & { children?: WorkstreamNode[] }
 
 /**
- * The /workstreams tree: children nested under their coordinator (oldest first, as `childIds`),
- * top-level rows in the order given. A child whose coordinator is not in the list (an orphan, or a
- * coordinator outside the page) stays a top-level row rather than disappearing.
+ * The /workstreams tree: children nested under their coordinator, in the order given (the list embeds
+ * still-going children first, then newest — at most CHILDREN_IN_LIST; `full[coordinatorId]`, once
+ * loaded through "+N more", replaces them with all of them, oldest first). Top-level rows keep their
+ * order. A child whose coordinator is not in the list (an orphan, or a coordinator outside the page)
+ * stays a top-level row rather than disappearing.
  */
-export function nestWorkstreams(rows: WorkstreamDTO[]): WorkstreamNode[] {
+export function nestWorkstreams(rows: WorkstreamDTO[], full: Record<string, WorkstreamDTO[] | undefined> = {}): WorkstreamNode[] {
   const byId = new Map(rows.map(r => [r.id, r]))
   const out: WorkstreamNode[] = []
   for (const r of rows) {
     if (r.parentId && byId.has(r.parentId)) continue
-    const kids = rows.filter(k => k.parentId === r.id)
-      .sort((a, b) => (r.childIds.indexOf(a.id) + 1 || Infinity) - (r.childIds.indexOf(b.id) + 1 || Infinity))
+    const kids = full[r.id] ?? rows.filter(k => k.parentId === r.id)
     out.push(kids.length ? { ...r, children: kids } : r)
   }
   return out
 }
 
+/** How many of a coordinator's children the list is NOT showing (its "+N more"). */
+export function hiddenChildren(node: Pick<WorkstreamNode, 'childCount' | 'children'>): number {
+  return Math.max(0, node.childCount - (node.children?.length ?? 0))
+}
+
 /** A child's model as the panel shows it: its `subagents` label, or the default resolution. */
 export function childModelLabel(ws: Pick<WorkstreamDTO, 'modelLabel'>): string {
   return ws.modelLabel ?? 'default model'
-}
-
-type Reservable = Pick<WorkstreamDTO, 'state' | 'budget' | 'used'>
-/** What a tree member holds of its coordinator's tree budget — the core's `reservationOf`
- *  (coordinator.ts): a live one its budget (or more, if it ran over); an ended one only what it used. */
-export function reservationOf(w: Reservable): { steps: number; wallMs: number } {
-  if (isTerminal(w.state)) return { steps: w.used.steps, wallMs: w.used.wallMs }
-  return { steps: Math.max(w.budget.maxSteps, w.used.steps), wallMs: Math.max(w.budget.maxWallMs, w.used.wallMs) }
-}
-
-/** Committed tree budget = the coordinator's own reservation (always as live) + every child's
- *  (the core's `committedOf`), so the meter shows what spawn would see. */
-export function treeCommitted(coord: Reservable, kids: Reservable[]): { steps: number; wallMs: number } {
-  const all = [reservationOf({ ...coord, state: 'running' }), ...kids.map(reservationOf)]
-  return { steps: all.reduce((n, a) => n + a.steps, 0), wallMs: all.reduce((n, a) => n + a.wallMs, 0) }
 }

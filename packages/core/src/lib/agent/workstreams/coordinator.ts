@@ -28,7 +28,7 @@ import { agentRuns, conversations, workspaces, workstreams } from '../../../db/s
 import { publishChange } from '../../../utils/live-bus'
 import {
   BUDGET_LIMITS, DEFAULT_CHILD_BUDGET, DEFAULT_TREE_BUDGET, MAX_SPAWN_PER_CALL, TERMINAL_WORKSTREAM_STATES, ZERO_USED,
-  type ChildWait, type WorkspaceMode, type WorkstreamAttention, type WorkstreamBudget
+  committedOf as committedOfMembers, type ChildWait, type TreeMember, type WorkspaceMode, type WorkstreamAttention, type WorkstreamBudget
 } from '../../../shared/types/workstreams'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import { budgetOf, childrenOf, getWorkstream, publishWorkstream, rollupTree, treeBudgetOf, usedOf, type WorkstreamRow } from './store'
@@ -58,18 +58,13 @@ async function lockTree(tx: Tx, coordinatorId: string): Promise<void> {
 
 interface Amount { maxSteps: number; maxWallMs: number }
 
-/** What a tree member holds: a live one its budget (or more, if it ran past it), an ended one what it used. */
-export function reservationOf(w: Pick<WorkstreamRow, 'state' | 'budget' | 'used'>): Amount {
-  const u = usedOf(w)
-  if (isTerminal(w.state)) return { maxSteps: u.steps, maxWallMs: u.wallMs }
-  const b = budgetOf(w)
-  return { maxSteps: Math.max(b.maxSteps, u.steps), maxWallMs: Math.max(b.maxWallMs, u.wallMs) }
-}
+type RowMember = Pick<WorkstreamRow, 'state' | 'budget' | 'used'>
+const member = (r: RowMember): TreeMember => ({ state: r.state, budget: budgetOf(r), used: usedOf(r) })
 
-/** Committed = the coordinator's own reservation + every child's. */
-export function committedOf(coord: Pick<WorkstreamRow, 'state' | 'budget' | 'used'>, kids: Array<Pick<WorkstreamRow, 'state' | 'budget' | 'used'>>): Amount {
-  const all = [{ ...coord, state: 'running' as const }, ...kids].map(reservationOf)
-  return { maxSteps: all.reduce((n, a) => n + a.maxSteps, 0), maxWallMs: all.reduce((n, a) => n + a.maxWallMs, 0) }
+/** Committed = the coordinator's own reservation + every child's — the shared formula
+ *  (shared/types/workstreams.ts, which the UI's tree meter uses too) over normalised rows. */
+function committedOf(coord: RowMember, kids: RowMember[]): Amount {
+  return committedOfMembers(member(coord), kids.map(member))
 }
 
 export function remainingOf(tree: WorkstreamBudget, committed: Amount): Amount {

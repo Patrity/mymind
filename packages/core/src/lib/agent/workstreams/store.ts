@@ -1,7 +1,7 @@
 // Cycle 81 (spec §5.1): the workstreams table — reads, the guarded state writes, and the live
 // `workstream` resource (published on every state/used change; the Task 6 UI subscribes).
 // Transitions are decided in loop.ts; this file only persists them.
-import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm'
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { workstreams, type WorkstreamRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
@@ -33,8 +33,9 @@ export function treeBudgetOf(row: Pick<WorkstreamRow, 'treeBudget'>): Workstream
   return row.treeBudget ? { ...DEFAULT_TREE_BUDGET, ...(row.treeBudget as Partial<WorkstreamBudget>) } : null
 }
 
-/** `childIds`: the coordinator's children (workstreamDTOs/workstreamDTO load them). */
-export function toWorkstreamDTO(r: WorkstreamRow, childIds: string[] = []): WorkstreamDTO {
+/** `childIds`: the coordinator's children (workstreamDTOs/workstreamDTO load them); `childCount` how
+ *  many it has in all (the list embeds only some — listChildrenEmbedded). */
+export function toWorkstreamDTO(r: WorkstreamRow, childIds: string[] = [], childCount = childIds.length): WorkstreamDTO {
   return {
     id: r.id, conversationId: r.conversationId, originConversationId: r.originConversationId,
     goal: r.goal, state: r.state, toolsets: r.toolsets, budget: budgetOf(r), used: usedOf(r),
@@ -43,7 +44,7 @@ export function toWorkstreamDTO(r: WorkstreamRow, childIds: string[] = []): Work
     createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(), finishedAt: r.finishedAt?.toISOString() ?? null,
     parentId: r.parentId, modelLabel: r.modelLabel, workspaceMode: r.workspaceMode,
     treeBudget: treeBudgetOf(r), treeUsed: r.treeUsed ? usedOf({ used: r.treeUsed }) : null,
-    childIds, tainted: r.tainted, isChild: r.isChild
+    childIds, childCount, tainted: r.tainted, isChild: r.isChild
   }
 }
 
@@ -66,15 +67,36 @@ export async function workstreamDTO(row: WorkstreamRow): Promise<WorkstreamDTO> 
   return (await workstreamDTOs([row]))[0]!
 }
 
-/** A coordinator's children (all states), oldest first. */
-export async function childrenOf(parentId: string): Promise<WorkstreamRow[]> {
-  return useDb().select().from(workstreams).where(eq(workstreams.parentId, parentId)).orderBy(asc(workstreams.createdAt), asc(workstreams.id))
+/** A coordinator's children (all states), oldest first; `page` pages them (the children route). */
+export async function childrenOf(parentId: string, page?: { limit: number; offset: number }): Promise<WorkstreamRow[]> {
+  const q = useDb().select().from(workstreams).where(eq(workstreams.parentId, parentId)).orderBy(asc(workstreams.createdAt), asc(workstreams.id))
+  return page ? q.limit(page.limit).offset(page.offset) : q
 }
 
-/** Cycle 83 Task 3: the children of several coordinators (all states), oldest first. */
-export async function childrenOfMany(parentIds: string[]): Promise<WorkstreamRow[]> {
-  if (!parentIds.length) return []
-  return useDb().select().from(workstreams).where(inArray(workstreams.parentId, parentIds)).orderBy(asc(workstreams.createdAt), asc(workstreams.id))
+/**
+ * Cycle 83 Task 3 fix round 1 (I1/M1): the children the /api/workstreams list embeds — at most
+ * `perParent` per coordinator, still-going ones first, then newest first — and each coordinator's
+ * total, in ONE query (window functions), so a coordinator with hundreds of children never makes the
+ * list unbounded. `byParent` keeps that order.
+ */
+export async function listChildrenEmbedded(parentIds: string[], perParent: number): Promise<{ byParent: Map<string, WorkstreamRow[]>; counts: Map<string, number> }> {
+  const byParent = new Map<string, WorkstreamRow[]>()
+  const counts = new Map<string, number>()
+  if (!parentIds.length) return { byParent, counts }
+  const db = useDb()
+  const ended = sql`${workstreams.state} in ('done', 'failed', 'cancelled')`
+  const k = db.select({
+    ...getTableColumns(workstreams),
+    total: sql<number>`count(*) over (partition by ${workstreams.parentId})`.mapWith(Number).as('total'),
+    rank: sql<number>`row_number() over (partition by ${workstreams.parentId} order by ${ended}, ${workstreams.createdAt} desc, ${workstreams.id} desc)`.mapWith(Number).as('rank')
+  }).from(workstreams).where(inArray(workstreams.parentId, parentIds)).as('k')
+  const rows = await db.select().from(k).where(lte(k.rank, perParent)).orderBy(k.parentId, k.rank)
+  for (const { total, rank: _rank, ...row } of rows) {
+    const pid = row.parentId!
+    counts.set(pid, total)
+    byParent.set(pid, [...(byParent.get(pid) ?? []), row as WorkstreamRow])
+  }
+  return { byParent, counts }
 }
 
 /**

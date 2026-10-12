@@ -2,8 +2,8 @@
 // (default dispatch invalidates ['workstream', id] + ['workstream', 'list']), the controls (each a
 // round trip to the agent worker), and the worker heartbeat the offline banner reads.
 import type { MaybeRefOrGetter } from 'vue'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
-import type { WorkstreamBudget, WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/vue-query'
+import { CHILDREN_PAGE_MAX, type WorkstreamBudget, type WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
 import type { SandboxHealth } from '@mymind/core/shared/types/workspaces'
 
 /** The readable text of a failed workstream request (the routes put it in `data.message`; h3
@@ -38,10 +38,29 @@ export function useWorkstream(id: MaybeRefOrGetter<string | null | undefined>) {
 export function useWorkstreamChildren(id: MaybeRefOrGetter<string | null | undefined>, enabled: MaybeRefOrGetter<boolean> = true) {
   const key = computed(() => toValue(id) ?? '')
   return useQuery({
-    queryKey: computed(() => ['workstream', 'list', 'children', key.value] as const),
-    queryFn: () => $fetch<WorkstreamDTO[]>(`/api/workstreams/${key.value}/children`),
+    queryKey: computed(() => childrenKey(key.value)),
+    queryFn: () => fetchAllChildren(key.value),
     enabled: computed(() => !!key.value && toValue(enabled))
   })
+}
+
+/** The same (shared-cache) query for several coordinators at once — the list's "+N more". */
+export function useWorkstreamChildrenOf(ids: MaybeRefOrGetter<string[]>) {
+  return useQueries({
+    queries: computed(() => toValue(ids).map(id => ({ queryKey: childrenKey(id), queryFn: () => fetchAllChildren(id) })))
+  })
+}
+
+const childrenKey = (id: string) => ['workstream', 'list', 'children', id] as const
+
+/** Every child of a coordinator, oldest first, a page (≤ CHILDREN_PAGE_MAX) per request. */
+async function fetchAllChildren(id: string): Promise<WorkstreamDTO[]> {
+  const out: WorkstreamDTO[] = []
+  for (;;) {
+    const page = await $fetch<WorkstreamDTO[]>(`/api/workstreams/${id}/children`, { query: { limit: CHILDREN_PAGE_MAX, offset: out.length } })
+    out.push(...page)
+    if (page.length < CHILDREN_PAGE_MAX) return out
+  }
 }
 
 export function useWorkstreamActions() {

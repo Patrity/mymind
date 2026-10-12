@@ -35,7 +35,7 @@ afterAll(async () => {
   setBusNs(null)
 })
 
-async function fixture(state: 'running' | 'done' = 'running', tree: { parentId?: string | null; isChild?: boolean; treeBudget?: { maxSteps: number; maxWallMs: number } } = {}) {
+async function fixture(state: 'running' | 'done' = 'running', tree: { parentId?: string | null; isChild?: boolean; treeBudget?: { maxSteps: number; maxWallMs: number }; createdAt?: Date } = {}) {
   const [c] = await db.insert(conversations).values({ title: `⚙ t6 ${randomUUID().slice(0, 6)}` }).returning({ id: conversations.id })
   created.conv.push(c!.id)
   const [w] = await db.insert(workstreams).values({
@@ -68,35 +68,68 @@ describe('GET /api/workstreams + /:id', () => {
 })
 
 describe('cycle 83: children in the list and the children route', () => {
-  type D = { id: string; parentId: string | null; isChild: boolean; childIds: string[] }
-  it('a listed coordinator brings all its children, which never count toward the limit', async () => {
-    const coord = await fixture('running', { treeBudget: { maxSteps: 2000, maxWallMs: 28_800_000 } })
+  type D = { id: string; parentId: string | null; isChild: boolean; childIds: string[]; childCount: number; state: string; createdAt: string }
+  const TREE = { maxSteps: 2000, maxWallMs: 28_800_000 }
+
+  it('`limit` counts top-level workstreams only; every embedded row is a child of a listed coordinator', async () => {
+    const coord = await fixture('running', { treeBudget: TREE })
     const k1 = await fixture('running', { parentId: coord.id, isChild: true })
     const k2 = await fixture('done', { parentId: coord.id, isChild: true })
-    // The children are the NEWEST rows; the limit counts top-level workstreams only.
-    const one = await list({ query: { limit: '1' } }) as D[]
-    expect(one.map(w => w.id)).toEqual([coord.id, k1.id, k2.id])
-    expect(one[0]).toMatchObject({ childIds: [k1.id, k2.id], isChild: false })
-    expect(one[1]).toMatchObject({ parentId: coord.id, isChild: true })
+    // Scoped to this file's rows: whatever else the shared DB holds, a page of 2 has exactly 2
+    // top-level rows (this file made ≥ 2), and nothing else but their children.
+    const two = await list({ query: { limit: '2' } }) as D[]
+    const top = two.filter(w => w.parentId === null)
+    expect(top).toHaveLength(2)
+    expect(two.filter(w => w.parentId !== null).every(w => top.some(t => t.id === w.parentId))).toBe(true)
+    // This coordinator, wherever it sits: its children come with it and it says how many it has.
+    const all = await list({ query: { limit: '100' } }) as D[]
+    expect(all.find(w => w.id === coord.id)).toMatchObject({ childCount: 2, childIds: expect.arrayContaining([k1.id, k2.id]), isChild: false })
+    expect(all.filter(w => w.parentId === coord.id).map(w => w.id).sort()).toEqual([k1.id, k2.id].sort())
     // A state filter applies to top-level rows; a listed coordinator still brings every child.
-    const running = await list({ query: { state: 'running', limit: '200' } }) as D[]
+    const running = await list({ query: { state: 'running', limit: '100' } }) as D[]
     expect(running.map(w => w.id)).toEqual(expect.arrayContaining([coord.id, k1.id, k2.id]))
-    expect(running.filter(w => w.parentId === null).map(w => w.id)).not.toContain(k2.id)
   })
+
+  it('a coordinator with 25 children embeds 20 (still-going first, then newest) and its count; the route pages all 25', async () => {
+    const coord = await fixture('running', { treeBudget: TREE })
+    const t0 = Date.now() - 3_600_000
+    const kids: Array<{ id: string; live: boolean }> = []
+    for (let i = 0; i < 25; i++) {
+      const live = i < 3   // the 3 OLDEST are still going
+      const k = await fixture(live ? 'running' : 'done', { parentId: coord.id, isChild: true, createdAt: new Date(t0 + i * 1000) })
+      kids.push({ id: k.id, live })
+    }
+    const all = await list({ query: { limit: '100' } }) as D[]
+    const c = all.find(w => w.id === coord.id)!
+    const embedded = all.filter(w => w.parentId === coord.id)
+    expect(c.childCount).toBe(25)
+    expect(embedded).toHaveLength(20)
+    expect(c.childIds).toEqual(embedded.map(w => w.id))
+    // Still-going first (newest of them first), then the newest ended ones.
+    const want = [...kids.filter(k => k.live).reverse(), ...kids.filter(k => !k.live).reverse()].slice(0, 20).map(k => k.id)
+    expect(embedded.map(w => w.id)).toEqual(want)
+    expect(all.length).toBeLessThanOrEqual(100 * 21)
+
+    const page = (q: Record<string, string>) => children({ params: { id: coord.id }, query: q }) as Promise<D[]>
+    const oldestFirst = kids.map(k => k.id)
+    expect((await page({ limit: '10' })).map(w => w.id)).toEqual(oldestFirst.slice(0, 10))
+    expect((await page({ limit: '10', offset: '20' })).map(w => w.id)).toEqual(oldestFirst.slice(20))
+    expect((await page({})).map(w => w.id)).toEqual(oldestFirst)                 // default page: up to 200
+    expect((await page({ limit: '100000' })).map(w => w.id)).toEqual(oldestFirst) // clamped to 200, still all 25
+    expect(await page({ limit: '0' })).toHaveLength(1)                            // at least 1
+    expect((await page({ limit: 'x', offset: '-5' })).map(w => w.id)).toEqual(oldestFirst)
+  })
+
   it('an orphaned child (its coordinator row gone) is listed on its own', async () => {
     const orphan = await fixture('running', { parentId: null, isChild: true })
-    const all = await list({ query: { limit: '200' } }) as D[]
+    const all = await list({ query: { limit: '100' } }) as D[]
     expect(all.filter(w => w.id === orphan.id)).toHaveLength(1)
   })
-  it('GET /:id/children returns the children oldest first; none for a plain workstream; 404 for a bad id', async () => {
-    const coord = await fixture('running', { treeBudget: { maxSteps: 2000, maxWallMs: 28_800_000 } })
-    const k1 = await fixture('running', { parentId: coord.id, isChild: true })
-    const k2 = await fixture('running', { parentId: coord.id, isChild: true })
-    const kids = await children({ params: { id: coord.id } }) as D[]
-    expect(kids.map(k => k.id)).toEqual([k1.id, k2.id])
-    expect(kids[0]).toMatchObject({ parentId: coord.id, isChild: true })
-    expect(await children({ params: { id: k1.id } })).toEqual([])
-    await expect(children({ params: { id: 'nope' } })).rejects.toMatchObject({ statusCode: 404 })
+
+  it('GET /:id/children: none for a plain workstream; 404 for a bad id', async () => {
+    const plain = await fixture('running')
+    expect(await children({ params: { id: plain.id }, query: {} })).toEqual([])
+    await expect(children({ params: { id: 'nope' }, query: {} })).rejects.toMatchObject({ statusCode: 404 })
   })
 })
 
