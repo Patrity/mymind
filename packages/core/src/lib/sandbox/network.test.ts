@@ -169,7 +169,8 @@ describe('install-network.sh ↔ network.ts (simulated filter table)', () => {
     const firstOk = s.findIndex(x => checkIsolation(x, goodNet).ok)
     expect(firstOk).toBeGreaterThanOrEqual(0)
     for (const snap of s.slice(firstOk)) expect(checkIsolation(snap, goodNet).ok).toBe(true)
-  })
+  // Two script runs (each spawns a shell): past vitest's 5 s default under a loaded machine (cycle 83).
+  }, 30_000)
 
   it('refuses (non-zero, nothing installed) when FORWARD does not reach DOCKER-USER', () => {
     dockerdState({ forwardJump: false })
