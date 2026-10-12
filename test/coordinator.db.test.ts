@@ -1108,7 +1108,7 @@ describe('fix round 1', () => {
     const { appendLeftoverReports } = await import('@mymind/core/lib/agent/workstreams/loop')
     await pushSteer(seg.runId, ws.conversationId, 'KEEP-ME', 'report')
     // A thread that does not exist: the append fails (FK) — the report must survive it.
-    expect(await appendLeftoverReports({ id: seg.runId }, { conversationId: '00000000-0000-4000-8000-00000000dead' })).toBe(0)
+    expect(await appendLeftoverReports({ id: seg.runId }, { conversationId: '00000000-0000-4000-8000-00000000dead' })).toEqual({ n: 0, childIds: [] })
     expect(await drainReportsFor(seg.runId)).toEqual(['KEEP-ME'])
     await seg.release()
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
@@ -1606,6 +1606,88 @@ describe('final fix wave', () => {
     expect((await thread(origin)).filter(m => m.content.startsWith('⚙ Still waiting on you')).length).toBe(notesBefore + 1)
     for (const k of [a!, b!, c!]) expect(att((await getWorkstream(k.id))!)).toMatchObject({ nudges: 1 })
     expect(await nudgeWaitingWorkstreams({ onlyConversations: scope, now: now + 3 * 3_600_000 + 1000 })).toBe(0)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  /** A child of a fresh coordinator asking a question its coordinator has been SHOWN (reported). */
+  async function shownQuestion(goal: string) {
+    const { ws, origin } = await idleCoordinator(goal)
+    const r = await spawnChildren(ws.id, [{ goal: `T83 ${goal} child` }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    await settleSegments(kid.conversationId)
+    await patchWorkstream(kid.id, { state: 'attention', attention: { kind: 'question', text: `${goal.toUpperCase()}-Q?`, notifiedAt: Date.now(), reported: true } })
+    const report = await childReport([(await getWorkstream(kid.id))!], 'Your child workstreams have news:')
+    return { ws, origin, kid, report }
+  }
+  const runRow = async (id: string) => (await useDb().select().from(agentRuns).where(eq(agentRuns.id, id)))[0]!
+
+  it('parked (b): a report steered in but unread when the coordinator ends its segment on ask_tony is a row, and its question is NOT left shown — it is escalated to Tony', async () => {
+    const { onSegmentFinished } = await import('@mymind/core/lib/agent/workstreams/loop')
+    const { ws, kid, report } = await shownQuestion('pb')
+    const seg = await segmentFor(ws.id)
+    const { pushSteer } = await import('@mymind/core/lib/agent/runtime/inbox')
+    expect(await pushSteer(seg.runId, ws.conversationId, report, 'report')).toBe(true)
+    // The segment asks Tony instead of reading it (the transition escalates nothing: the question counts as shown).
+    texts.length = 0
+    await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'question', text: 'coordinator asks' } })
+    expect(texts.filter(t => t.includes('PB-Q?'))).toEqual([])
+    await useDb().update(agentRuns).set({ status: 'done', finishedAt: sql`now()` }).where(eq(agentRuns.id, seg.runId))
+    expect(await onSegmentFinished(await runRow(seg.runId), { status: 'done' })).toBeNull()
+    expect((await thread(ws.conversationId)).filter(m => m.origin === 'segment:children').map(m => m.content)).toEqual([report])
+    const k = att((await getWorkstream(kid.id))!)!
+    expect(k.reported).toBeUndefined()
+    expect(k.escalated).toBe(true)
+    expect(texts.join('\n')).toContain('PB-Q?')
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M7: a question shown by an immediate wait result is un-shown when that segment FAILS (never durably seen) — the next wait reports it again', async () => {
+    const { onSegmentFinished } = await import('@mymind/core/lib/agent/workstreams/loop')
+    const { ws, kid } = await shownQuestion('m7')
+    await patchWorkstream(kid.id, { attention: { kind: 'question', text: 'M7-Q?', notifiedAt: Date.now() } })   // not shown yet
+    const seg = await segmentFor(ws.id)
+    const out = (await tool('wait_for_workstreams').handler({ ids: [kid.id] }, { signal: new AbortController().signal, runId: seg.runId })).result as Record<string, any>
+    expect(out.children[0].question).toBe('M7-Q?')
+    expect(att((await getWorkstream(kid.id))!)!.reported).toBe(true)
+    await useDb().update(agentRuns).set({ status: 'failed', finishedAt: sql`now()` }).where(eq(agentRuns.id, seg.runId))
+    await onSegmentFinished(await runRow(seg.runId), { status: 'failed', error: 'model fell over' })
+    expect(att((await getWorkstream(kid.id))!)!.reported).toBeUndefined()
+    expect((await getWorkstream(ws.id))!.state).toBe('running')   // retried — its next wait shows the question again
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M7: …but a segment that ends normally keeps it shown (its tool result is in the thread)', async () => {
+    const { onSegmentFinished } = await import('@mymind/core/lib/agent/workstreams/loop')
+    const { ws, kid } = await shownQuestion('m7ok')
+    await patchWorkstream(kid.id, { attention: { kind: 'question', text: 'M7OK-Q?', notifiedAt: Date.now() } })
+    const seg = await segmentFor(ws.id)
+    await tool('read_workstream').handler({ id: kid.id, tail: 0 }, { signal: new AbortController().signal, runId: seg.runId })
+    await useDb().update(agentRuns).set({ status: 'done', finishedAt: sql`now()` }).where(eq(agentRuns.id, seg.runId))
+    await onSegmentFinished(await runRow(seg.runId), { status: 'done' })
+    expect(att((await getWorkstream(kid.id))!)!.reported).toBe(true)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('parked (a): reports left unconsumed on an ENDED segment (a failed append) are written by the tick, and a parked coordinator is woken for their question', async () => {
+    const { ws, kid, report } = await shownQuestion('pa')
+    const other = await spawnChildren(ws.id, [{ goal: 'T83 pa other' }], { labels: [], kick: false })
+    await settleSegments((await getWorkstream(other.children[0]!.id))!.conversationId)
+    // An ended segment with the report still unconsumed (its append failed).
+    const [run] = await useDb().insert(agentRuns).values({ conversationId: ws.conversationId, sessionKey: `thread:${ws.conversationId}`, trigger: 'user', profile: 'interactive', kind: 'workstream', status: 'done', finishedAt: new Date(), input: { text: 'x', modality: 'text' } }).returning()
+    await useDb().insert(agentInbox).values({ runId: run!.id, conversationId: ws.conversationId, mode: 'steer', content: report, source: 'report', createdAt: new Date(Date.now() - 60_000) })
+    // The coordinator parked on the OTHER child: the shown question would never wake it.
+    expect(await parkForChildren((await getWorkstream(ws.id))!, wait([other.children[0]!.id]))).toBeNull()
+    expect((await getWorkstream(ws.id))!.state).toBe('paused')
+    expect(await sweepCoordinators({ onlyConversations: [ws.conversationId, kid.conversationId] })).toBeGreaterThan(0)
+    expect((await thread(ws.conversationId)).filter(m => m.origin === 'segment:children').map(m => m.content)).toEqual([report])
+    expect(await useDb().select().from(agentInbox).where(and(eq(agentInbox.runId, run!.id), sql`${agentInbox.consumedAt} is null`))).toEqual([])
+    // Un-shown, so the parked coordinator was woken with it.
+    expect((await getWorkstream(ws.id))!.state).toBe('running')
+    const [q] = await activeSegs(ws.conversationId)
+    expect(q!.input).toMatchObject({ eventOrigin: 'segment:children', text: expect.stringContaining('PA-Q?') })
+    // Idempotent: nothing left for the next tick.
+    const { sweepLeftoverReports } = await import('@mymind/core/lib/agent/workstreams/loop')
+    expect(await sweepLeftoverReports({ onlyConversations: [ws.conversationId] })).toBe(0)
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 })

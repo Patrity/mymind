@@ -504,6 +504,8 @@ export async function sweepCoordinators(o: { onlyConversations?: string[]; now?:
     const c = await getWorkstream(id)
     if (c && !isTerminal(c.state)) { await cancelWorkstream(c); n++ }
   }
+  // Final fix wave (a): reports a finished segment left unconsumed (a failed append) are written now.
+  n += await (await import('./loop')).sweepLeftoverReports({ onlyConversations: o.onlyConversations })
   // S1: notes a transition could not write (a coordinator segment was running then).
   const coords = await useDb().execute(sql`
     select w.id from workstreams w
@@ -535,6 +537,35 @@ export async function cancelChildrenOfThread(conversationId: string): Promise<nu
 }
 
 // ── Transitions (store.ts patchWorkstream calls this after every state change) ──────────────────
+
+/**
+ * Final fix wave — parked (b) / M7: these children's questions (pauses) count as NOT shown to the
+ * coordinator after all — the report that showed them was never durably read (a failed or aborted
+ * segment's tool result; a report left as a row while the coordinator waits on Tony). Clears
+ * `reported`, then brings them up again: escalated to Tony when the coordinator waits on him, or a
+ * wake when it is parked on its children. Returns how many were un-shown.
+ */
+export async function unshowReported(coordinatorId: string, childIds: string[]): Promise<number> {
+  let n = 0
+  for (const id of new Set(childIds)) {
+    const k = await getWorkstream(id)
+    const att = k ? attentionOf(k) : null
+    if (!k || k.parentId !== coordinatorId || !att?.reported) continue
+    const { reported: _shown, ...rest } = att
+    const [row] = await useDb().update(workstreams).set({ attention: rest })
+      .where(and(eq(workstreams.id, k.id), eq(workstreams.state, k.state), sql`${workstreams.attention}->>'text' = ${att.text}`, sql`${workstreams.attention}->>'reported' = 'true'`)).returning({ id: workstreams.id })
+    if (row) { n++; publishWorkstream(k.id) }
+  }
+  if (!n) return 0
+  const coord = await getWorkstream(coordinatorId)
+  if (!coord || isTerminal(coord.state)) return n
+  if (heldByTony(coord)) {
+    for (const k of await childrenOf(coordinatorId)) {
+      if (k.state === 'attention' && attentionOf(k)?.kind === 'question' && !attentionOf(k)?.reported) await escalate(k, coord)
+    }
+  } else if (await wakeCoordinatorIfReady(coordinatorId)) await kick()
+  return n
+}
 
 /** A coordinator is waiting on Tony (its question or card, or a pause that is not its own wait). */
 function heldByTony(c: WorkstreamRow): boolean {

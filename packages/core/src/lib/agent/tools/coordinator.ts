@@ -117,6 +117,8 @@ export const waitForWorkstreamsTool: AgentTool = {
         // The ones waited on, plus any other child with a question for it.
         const shown = [...kids, ...all.filter(k => !ids.includes(k.id) && c.needsCoordinator(k))]
         await c.markReported(shown)
+        // M7: un-shown again if this segment fails before its result is durably in the thread.
+        for (const k of shown) (await loop()).segmentForRun(ctx.runId)?.shown.add(k.id)
         return { result: await c.childrenResult(shown, { waited: false }), summary: `children ready (${shown.length})` }
       }
       const seg = (await loop()).segmentForRun(ctx.runId)!
@@ -162,6 +164,7 @@ export const readWorkstreamTool: AgentTool = {
         ? { summary: full.slice(offset, offset + c.READ_SUMMARY_PAGE), summaryPage: { offset, length: full.length, ...(offset + c.READ_SUMMARY_PAGE < full.length ? { nextOffset: offset + c.READ_SUMMARY_PAGE } : {}) } }
         : null
       await c.markReported([child])
+      ;(await loop()).segmentForRun(ctx.runId)?.shown.add(child.id)
       const r = await c.childrenResult([page ? { ...child, summary: page.summary || null } : child], { log }, { full: true })
       if (page) r.summaryPage = page.summaryPage
       return { result: r, summary: `read: ${clip(child.goal)}` }

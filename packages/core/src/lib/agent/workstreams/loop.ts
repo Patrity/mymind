@@ -131,6 +131,10 @@ export interface Segment {
   wait: ChildWait | null
   /** Cycle 83: this workstream is a CHILD — its model label (runner: the subagents chain). */
   child: { modelLabel: string | null; workspaceMode: 'own' | 'shared' } | null
+  /** Cycle 83 final fix wave (M7): children whose question / pause a TOOL RESULT of this segment
+   *  showed (and marked reported) — un-shown again if the segment fails or is aborted (its tool
+   *  results may never be persisted, so the model may never durably have seen them). */
+  shown: Set<string>
   /** Cycle 83: a run of this segment read mail/calendar/contacts content (persisted once). */
   markTainted(): void
   /** Fix round 1 (M7): resolves once the taint bit is on the row — finish_workstream / ask_tony
@@ -283,6 +287,7 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
     promptInfo: promptInfo(ws, o.final ? ws.failureReason : null, parent),
     stop: null,
     wait: null,
+    shown: new Set(),
     child: ws.isChild ? { modelLabel: ws.modelLabel, workspaceMode: ws.workspaceMode } : null,
     markTainted() {
       if (taintMarked) return
@@ -662,7 +667,7 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   const ws = await workstreamForConversation(run.conversationId)
   // S1: a coordinator's child lifecycle notes that waited for this segment to end land now — before
   // anything below queues the next segment.
-  const leftoverReports = ws ? await appendLeftoverReports(run, ws) : 0
+  const leftover = ws ? await appendLeftoverReports(run, ws) : { n: 0, childIds: [] }
   if (ws?.treeBudget) await (await coordinator()).flushChildNotes(ws.id).catch(err => console.error('[workstreams] child notes failed:', err))
   if (!ws || isTerminal(ws.state) || seg?.skip) {
     if (ws && seg?.skip && ws.cancelRequested) await cancelNow(ws)
@@ -670,6 +675,10 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   }
   const stop = seg?.stop ?? null
   if (ws.cancelRequested || stop === 'cancel') { await cancelNow(ws, outcome.status); return null }
+  // Final fix wave (M7): a failed or aborted segment may never have persisted the tool results that
+  // showed children's questions — they count as unseen again (a wait re-reports them; a pause that
+  // follows escalates them to Tony).
+  if (seg?.shown.size && outcome.status !== 'done') await (await coordinator()).unshowReported(ws.id, [...seg.shown])
 
   // Drained while parked on a card (review I1): the request stays on the row; the next worker
   // restores the card. Not a failure, not an interruption.
@@ -695,7 +704,9 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   if (current.state === 'attention') {
     const unread = await drainUnread(run.id)
     await patchWorkstream(ws.id, { lastOutcome: outcome.status, failures: 0 })
-    if (!unread.any) return null
+    // Parked (b): reports it never read are rows now, but it waits on Tony, not on them — their
+    // questions are not shown yet, so they go to Tony too (escalated).
+    if (!unread.any) { await unshowLeftover(ws, leftover.childIds); return null }
     const next = await enqueueUnread(current, unread)
     if (next) await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
     return next
@@ -706,7 +717,7 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   if (current.state === 'paused') {
     const unread = await drainUnread(run.id)
     await patchWorkstream(ws.id, { lastOutcome: outcome.status })
-    if (!unread.any) return null
+    if (!unread.any) { await unshowLeftover(ws, leftover.childIds); return null }
     const next = await enqueueUnread(current, unread)
     if (next) await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
     return next
@@ -720,7 +731,7 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
     if (unread.any) return enqueueUnread(current, unread)
     // Fix round 3: child reports were steered in but never read (the segment stopped on this very
     // wait) — they are in the thread now, and their questions count as shown: never park on them.
-    if (leftoverReports) return enqueueWhy(current, 'children', 'Child reports arrived after you called wait_for_workstreams — they are above.')
+    if (leftover.n) return enqueueWhy(current, 'children', 'Child reports arrived after you called wait_for_workstreams — they are above.')
     // M6: a watch that already fired is delivered first (the model can wait again after reading it).
     if (await workstreamHasWatchResults(ws.id)) {
       const next = await enqueueWatchResults(current)
@@ -739,6 +750,7 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
       return enqueueUnread(current, unread)
     }
     await pauseWorkstream(current, 'Stopped. Resume it, reply in this thread to continue, or cancel it.', 'aborted')
+    await unshowLeftover(ws, leftover.childIds)
     return null
   }
 
@@ -756,6 +768,7 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
     if (unread.any) return enqueueUnread(current, unread)
     const why = 'Paused: the last two segments made no progress (no tool calls, no finish). Resume it, reply in its thread with what to do next, or cancel it.'
     await pauseWorkstream(current, why, 'idle', `⚙ Workstream paused — ${current.goal}\n\n${why}`)
+    await unshowLeftover(ws, leftover.childIds)
     return null
   }
   await patchWorkstream(ws.id, { failures: 0, lastOutcome: idle ? 'idle' : 'done' })
@@ -764,21 +777,74 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
 
 /** Cycle 83 fix round 2: child reports steered into this segment that it ended before reading are
  *  written to the thread as their event rows (no segment runs now) — never dropped, never Tony's.
- *  Fix round 3: taken and written in ONE transaction — a failed append leaves them unconsumed (the
- *  next attempt, or recovery, writes them). Returns how many were written. */
-export async function appendLeftoverReports(run: Pick<AgentRun, 'id'>, ws: Pick<WorkstreamRow, 'conversationId'>): Promise<number> {
+ *  Fix round 3: taken and written in ONE transaction — a failed append leaves them unconsumed (final
+ *  fix wave (a): the tick's sweepLeftoverReports writes them). `o.tx`: inside the caller's transaction.
+ *  Returns how many were written and the children they report on. */
+export async function appendLeftoverReports(run: Pick<AgentRun, 'id'>, ws: Pick<WorkstreamRow, 'conversationId'>, o: { tx?: Tx } = {}): Promise<{ n: number; childIds: string[] }> {
   try {
-    const n = await useDb().transaction(async (tx) => {
+    const write = async (tx: Tx) => {
       const texts = await drainReportsFor(run.id, { tx })
       for (const text of texts) await appendEvent(ws.conversationId, text, 'segment:children', { tx })
-      return texts.length
-    })
-    if (n) publishChange({ resource: 'conversation', action: 'updated', id: ws.conversationId })
-    return n
+      return texts
+    }
+    const texts = o.tx ? await write(o.tx) : await useDb().transaction(write)
+    if (texts.length && !o.tx) publishChange({ resource: 'conversation', action: 'updated', id: ws.conversationId })
+    return { n: texts.length, childIds: [...new Set(texts.flatMap(reportedChildIds))] }
   } catch (err) {
+    if (o.tx) throw err
     console.error('[workstreams] leftover child reports failed:', err)
-    return 0
+    return { n: 0, childIds: [] }
   }
+}
+
+/** The children a report lists (coordinator.ts describe: `(id <uuid>`). */
+function reportedChildIds(text: string): string[] {
+  return [...text.matchAll(/\(id ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi)].map(m => m[1]!)
+}
+
+/** Parked (b): leftover reports written while the coordinator ended its segment waiting on Tony. */
+async function unshowLeftover(ws: WorkstreamRow, childIds: string[]): Promise<void> {
+  if (!childIds.length || !ws.treeBudget) return
+  await (await coordinator()).unshowReported(ws.id, childIds).catch(err => console.error('[workstreams] un-showing child reports failed:', err))
+}
+
+/**
+ * Final fix wave (a): child reports left unconsumed on a segment that has ENDED (a failed append in
+ * onSegmentFinished — recovery only revisits dead running runs) are written by the tick. Never while
+ * a run is running in that thread (a row appended mid-turn forks it); with a segment queued, inside
+ * the claim lock (before it is claimed). Their questions then count as unseen again (a wake or an
+ * escalation brings them up), unless a segment is about to read the rows. `graceMs` keeps clear of a
+ * segment whose own end is still being handled.
+ */
+export async function sweepLeftoverReports(o: { onlyConversations?: string[]; graceMs?: number } = {}): Promise<number> {
+  if (o.onlyConversations && !o.onlyConversations.length) return 0
+  const graceSec = Math.round((o.graceMs ?? 30_000) / 1000)
+  const scope = o.onlyConversations
+    ? sql`and i.conversation_id in (${sql.join(o.onlyConversations.map(id => sql`${id}::uuid`), sql`, `)})`
+    : sql``
+  const res = await useDb().execute(sql`
+    select distinct i.run_id, i.conversation_id from agent_inbox i join agent_runs r on r.id = i.run_id
+    where i.source = 'report' and i.consumed_at is null and r.status not in ('queued', 'running')
+      and i.created_at < now() - make_interval(secs => ${graceSec})
+      ${scope}`)
+  let n = 0
+  for (const { run_id: runId, conversation_id: conv } of res.rows as Array<{ run_id: string; conversation_id: string }>) {
+    if (active.has(runId) || ended.has(runId)) continue
+    const ws = await workstreamForConversation(conv)
+    if (!ws) continue
+    const [live] = await useDb().select({ status: agentRuns.status }).from(agentRuns)
+      .where(and(eq(agentRuns.conversationId, conv), inArray(agentRuns.status, ['queued', 'running']))).limit(1)
+    if (live?.status === 'running') continue // the next tick
+    let r: { n: number; childIds: string[] } = { n: 0, childIds: [] }
+    if (live) await withQueuedSegment(conv, async (_run, tx) => { r = await appendLeftoverReports({ id: runId }, ws, { tx }) })
+    else r = await appendLeftoverReports({ id: runId }, ws)
+    if (!r.n) continue
+    n++
+    if (live) continue // the queued segment reads them
+    publishChange({ resource: 'conversation', action: 'updated', id: conv })
+    await unshowLeftover(ws, r.childIds)
+  }
+  return n
 }
 
 /** What a segment waiting on a watch shows (its Resume continues now). */
