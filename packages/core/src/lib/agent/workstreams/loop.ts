@@ -682,7 +682,8 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
 
   // Drained while parked on a card (review I1): the request stays on the row; the next worker
   // restores the card. Not a failure, not an interruption.
-  if (stop === 'park') { await patchWorkstream(ws.id, { lastOutcome: 'parked' }); return null }
+  // Follow-up N3: it still waits on Tony (its card) — reports it never read go to him too.
+  if (stop === 'park') { await patchWorkstream(ws.id, { lastOutcome: 'parked' }); await unshowLeftover(ws, leftover.childIds); return null }
 
   // The final summary step ended (or the loop restarted into it): failed, with whatever it wrote.
   if (ws.failureReason) {
@@ -756,7 +757,7 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
 
   // Cycle 82 (watches): a fired watch's result is the next segment; a segment that ENDED ITSELF with
   // a watch still armed waits for it (paused, no budget used) instead of continuing.
-  const watchNext = await watchContinuation(current, run, seg, stop, outcome)
+  const watchNext = await watchContinuation(current, run, seg, stop, outcome, leftover.n)
   if (watchNext !== undefined) return watchNext
 
   // Idle segments (review M3): no tool call and no finish_workstream. The first gets a nudge prompt;
@@ -855,7 +856,7 @@ export const WAITING_FOR_WATCH = 'Waiting for a watch it set — the work resume
  * normally (not cancel / budget / drain / Stop — those paths keep their own rules, and a pending
  * result simply waits for the next boundary). Tony's unread words always go first.
  */
-async function watchContinuation(ws: WorkstreamRow, run: AgentRun, seg: Segment | undefined, stop: StopReason | null, outcome: RunOutcome): Promise<string | null | undefined> {
+async function watchContinuation(ws: WorkstreamRow, run: AgentRun, seg: Segment | undefined, stop: StopReason | null, outcome: RunOutcome, leftoverReports = 0): Promise<string | null | undefined> {
   if (stop !== null || outcome.status !== 'done') return undefined
   const fired = await workstreamHasWatchResults(ws.id)
   const ownEnd = !!seg && seg.stepsTaken() < seg.maxSteps
@@ -869,6 +870,9 @@ async function watchContinuation(ws: WorkstreamRow, run: AgentRun, seg: Segment 
     if (next !== undefined) return next
   }
   if (!await workstreamHasArmedWatch(ws.id)) return continueWith(ws, run, 'continue')
+  // Follow-up N1 (the wait path's fix-round-3 guard): child reports were steered in but never read —
+  // they are rows now and their questions count as shown, so never park on the watch over them.
+  if (leftoverReports) return enqueueWhy(ws, 'children', 'Child reports arrived after your last step — they are above.')
   await patchWorkstream(ws.id, { state: 'paused', attention: { kind: 'paused', text: WAITING_FOR_WATCH, waitingForWatch: true }, lastOutcome: 'watch' }, ['running'])
   // A watch that ended between the check above and the pause found the workstream 'running' and
   // left its result pending — take it now so it is never stranded behind the pause.
@@ -998,7 +1002,7 @@ export async function onSegmentInterrupted(run: AgentRun): Promise<string | null
   active.delete(run.id)
   ended.delete(run.id)
   const owner = await workstreamForConversation(run.conversationId)
-  if (owner) await appendLeftoverReports(run, owner)
+  const leftover = owner ? await appendLeftoverReports(run, owner) : { n: 0, childIds: [] }
   await expireOrphanPrompts(run.id).catch(err => console.error('[workstreams] expiring orphaned prompts failed:', err))
   const ws = await workstreamForConversation(run.conversationId)
   if (!ws || isTerminal(ws.state)) return null
@@ -1010,6 +1014,8 @@ export async function onSegmentInterrupted(run: AgentRun): Promise<string | null
     const unread = await drainUnread(run.id)
     if (!unread.any) {
       await patchWorkstream(ws.id, { lastOutcome: att?.kind === 'approval' ? 'parked' : 'interrupted' })
+      // Follow-up N3: reports the dead segment never read are rows now; it waits on Tony, so they go to him.
+      await unshowLeftover(ws, leftover.childIds)
       return null
     }
     await releaseParked(ws)

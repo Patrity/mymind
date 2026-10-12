@@ -608,17 +608,26 @@ export function waitsOnTony(k: Pick<WorkstreamRow, 'state' | 'attention'>): bool
 
 /** Under the tree lock: null when the tree was texted within TREE_AWAY_EVERY_MS (or nothing waits);
  *  else the tree is stamped and every child waiting on Tony is marked as announced — returned, oldest first. */
-async function claimTreeAway(coordinatorId: string, now: number): Promise<{ coord: WorkstreamRow; pending: WorkstreamRow[] } | null> {
+async function claimTreeAway(coordinatorId: string, now: number, o: { /** test seam: after the children are read */ _afterRead?: () => Promise<void> } = {}): Promise<{ coord: WorkstreamRow; pending: WorkstreamRow[] } | null> {
   const out = await useDb().transaction(async (tx) => {
     await lockTree(tx, coordinatorId)
     const [coord] = await tx.select().from(workstreams).where(eq(workstreams.id, coordinatorId)).for('update')
     if (!coord || isTerminal(coord.state)) return null
     if (coord.treeAwayAt && now - coord.treeAwayAt.getTime() < TREE_AWAY_EVERY_MS) return null
-    const pending = (await tx.select().from(workstreams).where(eq(workstreams.parentId, coordinatorId)))
+    const waiting = (await tx.select().from(workstreams).where(eq(workstreams.parentId, coordinatorId)))
       .filter(waitsOnTony).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    await o._afterRead?.()
+    // Follow-up N4: each child is marked only while its state and attention are exactly what was read —
+    // a child whose attention moved on meanwhile (answered, a new question, its tag) is never written
+    // back stale, and is not listed.
+    const pending: WorkstreamRow[] = []
+    for (const k of waiting) {
+      const [row] = await tx.update(workstreams).set({ attention: { ...attentionOf(k)!, awaySent: true } })
+        .where(and(eq(workstreams.id, k.id), eq(workstreams.state, k.state), sql`${workstreams.attention} = ${JSON.stringify(k.attention)}::jsonb`)).returning()
+      if (row) pending.push(row)
+    }
     if (!pending.length) return null
     await tx.update(workstreams).set({ treeAwayAt: new Date(now) }).where(eq(workstreams.id, coordinatorId))
-    for (const k of pending) await tx.update(workstreams).set({ attention: { ...attentionOf(k)!, awaySent: true } }).where(eq(workstreams.id, k.id))
     return { coord, pending }
   })
   for (const k of out?.pending ?? []) publishWorkstream(k.id)
@@ -649,10 +658,10 @@ export function treeAwayText(coord: Pick<WorkstreamRow, 'id' | 'goal'>, pending:
  * the only thing waiting, 'interactive' tells the caller to raise its own iMessage approval prompt
  * instead (that prompt is the tree's text). 'held': throttled, the tick sends it later.
  */
-export async function announceTreeAway(coordinatorId: string, o: { approvalOf?: string; now?: number } = {}): Promise<'interactive' | 'sent' | 'held' | 'none'> {
+export async function announceTreeAway(coordinatorId: string, o: { approvalOf?: string; now?: number; _afterRead?: () => Promise<void> } = {}): Promise<'interactive' | 'sent' | 'held' | 'none'> {
   try {
     if (!(await workstreamNotifyDeps.isAway())) return 'none'
-    const c = await claimTreeAway(coordinatorId, o.now ?? Date.now())
+    const c = await claimTreeAway(coordinatorId, o.now ?? Date.now(), { _afterRead: o._afterRead })
     if (!c) return 'held'
     if (o.approvalOf && c.pending.length === 1 && c.pending[0]!.id === o.approvalOf) return 'interactive'
     await workstreamNotifyDeps.text(treeAwayText(c.coord, c.pending), c.coord.originConversationId ?? c.coord.conversationId)

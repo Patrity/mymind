@@ -1703,4 +1703,89 @@ describe('final fix wave', () => {
     expect((await workstreamDTO((await getWorkstream(ws.id))!)).resolvedModel).toBeNull()
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
+
+  it('follow-up N1: a report steered in but unread when the segment ends itself with a watch armed does NOT park on the watch — it gets a segment', async () => {
+    let coordConv = ''
+    let kidId = ''
+    const { runFn } = harness((conv) => async function* (ctx) {
+      step(ctx)
+      if (conv === coordConv) {
+        const r = await callTool(ctx, 'spawn_workstreams', { children: [{ goal: 'T83 n1 child' }] })
+        kidId = r.children[0].id
+        const me = (await useDb().select().from(workstreams).where(eq(workstreams.conversationId, conv)))[0]!
+        const { ensureWorkstreamWorkspace } = await import('@mymind/core/lib/sandbox/store')
+        const wsRow = await ensureWorkstreamWorkspace(me.id)
+        await useDb().insert(workspaceWatches).values({ workspaceId: wsRow.id, workstreamId: me.id, conversationId: conv, command: 'true', until: { kind: 'exit0' }, intervalSec: 30, deadlineAt: new Date(Date.now() + 3_600_000), state: 'armed' })
+        // A child's question is steered in (and counts as shown) during the segment's last step.
+        await settleSegments((await getWorkstream(kidId))!.conversationId)
+        await patchWorkstream(kidId, { state: 'running' })
+        await useDb().update(workstreams).set({ state: 'attention', attention: { kind: 'question', text: 'N1-Q?', reported: true } }).where(eq(workstreams.id, kidId))
+        const { pushSteer } = await import('@mymind/core/lib/agent/runtime/inbox')
+        await pushSteer(ctx.runId!, conv, await childReport([(await getWorkstream(kidId))!], 'Your child workstreams have news:'), 'report')
+        yield { type: 'tool-result', name: 'bash', summary: 'started a watch' }
+      }
+      yield { type: 'done' }
+    })
+    const { ws } = await newCoordinator('n1')
+    coordConv = ws.conversationId
+    expect(await pumpOnce({ onlyConversations: [coordConv], rekick: false, run: runFn })).toBe(1)
+    expect(await waitForInFlight(20_000)).toBe(true)
+    expect((await getWorkstream(ws.id))!.state).toBe('running')     // not parked on the watch
+    expect((await activeSegs(coordConv))[0]!.input).toMatchObject({ eventOrigin: 'segment:children' })
+    expect((await thread(coordConv)).some(m => m.origin === 'segment:children' && m.content.includes('N1-Q?'))).toBe(true)
+    await useDb().delete(workspaceWatches).where(eq(workspaceWatches.conversationId, coordConv))
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('follow-up N3: a segment parked on its card (drain) and one interrupted while waiting on Tony un-show unread reports — the question is escalated', async () => {
+    const { onSegmentFinished, onSegmentInterrupted, segmentForRun } = await import('@mymind/core/lib/agent/workstreams/loop')
+    const { pushSteer } = await import('@mymind/core/lib/agent/runtime/inbox')
+    for (const how of ['park', 'interrupted'] as const) {
+      const { ws, kid, report } = await shownQuestion(`n3${how}`)
+      const seg = await segmentFor(ws.id)
+      expect(await pushSteer(seg.runId, ws.conversationId, report, 'report')).toBe(true)
+      texts.length = 0
+      if (how === 'park') {
+        await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'approval', text: 'Approve exec: x', requestId: 'r', runId: seg.runId, request: { tool: 'exec', command: 'x', proposedPattern: 'x' } } })
+        segmentForRun(seg.runId)!.stop = 'park'
+        await useDb().update(agentRuns).set({ status: 'aborted', finishedAt: sql`now()` }).where(eq(agentRuns.id, seg.runId))
+        await onSegmentFinished(await runRow(seg.runId), { status: 'aborted' })
+      } else {
+        await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'question', text: 'coordinator asks' } })
+        await useDb().update(agentRuns).set({ status: 'interrupted', finishedAt: sql`now()` }).where(eq(agentRuns.id, seg.runId))
+        await onSegmentInterrupted(await runRow(seg.runId))
+      }
+      expect((await thread(ws.conversationId)).filter(m => m.origin === 'segment:children').map(m => m.content)).toEqual([report])
+      const k = att((await getWorkstream(kid.id))!)!
+      expect(k.reported).toBeUndefined()
+      expect(k.escalated).toBe(true)
+      expect(texts.join('\n')).toContain(`N3${how.toUpperCase()}-Q?`)
+      await seg.release()
+      await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+    }
+  })
+
+  it('follow-up N4: claimTreeAway never writes a stale attention back — a child whose attention changed after the read keeps its new one and is not listed', async () => {
+    const { announceTreeAway } = await import('@mymind/core/lib/agent/workstreams/coordinator')
+    const { ws } = await idleCoordinator('n4')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 n4 a' }, { goal: 'T83 n4 b' }], { labels: [], kick: false })
+    const [a, b] = await Promise.all(r.children.map(async k => (await getWorkstream(k.id))!))
+    for (const k of [a!, b!]) await settleSegments(k.conversationId)
+    await patchWorkstream(a!.id, { state: 'attention', attention: { kind: 'approval', text: 'Approve exec: A', requestId: 'ra' } })
+    await patchWorkstream(b!.id, { state: 'attention', attention: { kind: 'approval', text: 'Approve exec: B', requestId: 'rb' } })
+    const fresh = { kind: 'question', text: 'N4-NEW?', escalated: true, tag: 7 }
+    texts.length = 0
+    const out = await announceTreeAway(ws.id, {
+      now: Date.now(),
+      // B's card is decided and it asks a new (escalated) question between the read and the write.
+      _afterRead: async () => { await useDb().update(workstreams).set({ attention: fresh }).where(eq(workstreams.id, b!.id)) }
+    })
+    expect(out).toBe('sent')
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toContain('Approve exec: A')
+    expect(texts[0]).not.toContain('Approve exec: B')                         // its read is stale — not listed
+    expect(att((await getWorkstream(b!.id))!)).toEqual(fresh)                 // never overwritten
+    expect(att((await getWorkstream(a!.id))!)).toMatchObject({ awaySent: true })
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
 })
