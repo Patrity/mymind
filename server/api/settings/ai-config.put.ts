@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { loadConfig, saveConfig, invalidate } from '@mymind/core/lib/ai/registry/store'
-import { maxInFlightSchema, modelDescriptionSchema, parseConfig, subagentsProblems } from '@mymind/core/lib/ai/registry/schema'
+import { judgeProblems, maxInFlightSchema, modelDescriptionSchema, parseConfig, subagentsProblems } from '@mymind/core/lib/ai/registry/schema'
 import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 import { resolveChainFrom } from '@mymind/core/lib/ai/registry/resolve'
 import { EMBEDDING_DIM, USAGES, type AiConfigDoc } from '@mymind/core/lib/ai/registry/types'
@@ -53,7 +53,8 @@ export default defineEventHandler(async (event) => {
   }
 
   // Cycle 83: subagents labels unique, no embedding models (PUT-only — see subagentsProblems).
-  const problems = subagentsProblems(doc)
+  // Cycle 84: no embedding models in judge either.
+  const problems = [...subagentsProblems(doc), ...judgeProblems(doc)]
   if (problems.length) {
     throw createError({ statusCode: 422, statusMessage: 'Invalid config', data: problems.join('; ') })
   }

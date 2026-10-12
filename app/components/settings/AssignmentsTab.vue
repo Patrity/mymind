@@ -8,14 +8,14 @@ onMounted(() => config.load())
 const modelLabel = (id: string) => config.draft.value.models.find(m => m.id === id)?.label ?? id
 const modelDim = (id: string) => config.draft.value.models.find(m => m.id === id)?.dim ?? null
 
-// Models selectable for a usage. Embeddings only accepts dim-2560 models; subagents only chat
-// models (an embedding model can't run a child workstream — the PUT rejects it too).
+// Models selectable for a usage. Embeddings only accepts dim-2560 models; subagents and judge only
+// chat models (an embedding model can't run a child workstream or answer the judge's prompt).
 function options(usage: string) {
   const assigned = new Set(config.draft.value.assignments[usage] ?? [])
   return config.draft.value.models
     .filter(m => !assigned.has(m.id)
       && (usage !== 'embeddings' || m.dim === EMBEDDING_DIM)
-      && (usage !== 'subagents' || m.dim === null))
+      && ((usage !== 'subagents' && usage !== 'judge') || m.dim === null))
     .map(m => ({ label: m.label, value: m.id }))
 }
 function add(usage: string, id: string) {
@@ -29,6 +29,7 @@ function remove(usage: string, id: string) {
 function helpFor(usage: string): string {
   if (usage === 'embeddings') return 'Only 2560-dim models. Order = failover priority.'
   if (usage === 'subagents') return 'Models a coordinator can give its child workstreams, picked by label using each model\'s description (Models page). First = default; children fall back down this list, then to reasoning. Empty = children use reasoning.'
+  if (usage === 'judge') return 'Reviews every approval request (risk, recommendation, confidence) and scans untrusted tool output for prompt injection. Drag to set failover priority. Empty = the reasoning models judge.'
   return 'Drag to set failover priority (first = primary).'
 }
 

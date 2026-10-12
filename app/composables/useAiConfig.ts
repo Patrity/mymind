@@ -20,7 +20,7 @@ export interface DraftDoc { version: 1; providers: DraftProvider[]; models: Draf
 // Must stay in step with USAGES in server/lib/ai/registry/types.ts — the server validates
 // the PUT against its own copy, so a usage missing here is simply invisible in Settings
 // while a usage missing THERE is a 422 on save.
-const USAGES = ['reasoning', 'bulk', 'embeddings', 'vision', 'stt', 'tts', 'rerank', 'jev', 'subagents'] as const
+const USAGES = ['reasoning', 'bulk', 'embeddings', 'vision', 'stt', 'tts', 'rerank', 'jev', 'subagents', 'judge'] as const
 
 function uid(): string { return (globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.round(Math.random() * 1e6)}`) }
 

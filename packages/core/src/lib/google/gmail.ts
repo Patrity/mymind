@@ -115,8 +115,18 @@ export async function deleteDraft(c: Connection, draftId: string, deps: GoogleDe
  *  exact RFC 2822 bytes (what an update's undo restores); `'minimal'` gives just the message id
  *  (and labels) — cheap enough to re-check, right before sending, that a draft's content still
  *  matches what was approved (gmail_send's TOCTOU guard, cycle 79 review I2/I5). */
-export async function getDraft(c: Connection, draftId: string, deps: GoogleDeps = {}, format: 'full' | 'raw' | 'minimal' = 'full'): Promise<GmailDraft> {
+export async function getDraft(c: Connection, draftId: string, deps: GoogleDeps = {}, format: 'full' | 'raw' | 'minimal' | 'metadata' = 'full'): Promise<GmailDraft> {
   return google(c, deps).get<GmailDraft>(`${BASE}/drafts/${encodeURIComponent(draftId)}`, { format })
+}
+
+/** Has this account ever SENT mail to `address` (To, Cc or Bcc)? One `messages.list` with
+ *  maxResults 1 — the judge's rule tier (cycle 84) flags a send to someone never mailed before.
+ *  `address` must already be a plain address (the caller validates it): it goes into a Gmail query. */
+export async function hasSentTo(c: Connection, address: string, deps: GoogleDeps = {}): Promise<boolean> {
+  const res = await google(c, deps).get<{ messages?: { id: string }[] }>(`${BASE}/messages`, {
+    q: `in:sent {to:${address} cc:${address} bcc:${address}}`, maxResults: 1
+  })
+  return (res.messages?.length ?? 0) > 0
 }
 
 export async function sendDraft(c: Connection, draftId: string, deps: GoogleDeps = {}): Promise<GmailMessage> {

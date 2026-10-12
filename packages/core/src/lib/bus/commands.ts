@@ -36,7 +36,7 @@ import type { SandboxHealth } from '../../shared/types/workspaces'
 import { busNotify, notifySql, onListenReady, onNotify } from './listen'
 import { busNs } from './ns'
 
-export type InvalidateCache = 'ai-registry' | 'channels' | 'observability' | 'persona' | 'skills' | 'search' | 'imagegen' | 'exec-secrets'
+export type InvalidateCache = 'ai-registry' | 'channels' | 'observability' | 'persona' | 'skills' | 'search' | 'imagegen' | 'exec-secrets' | 'agent-settings'
 
 export interface CommandPayloads {
   kick: { conversationId?: string }

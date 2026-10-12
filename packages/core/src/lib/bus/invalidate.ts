@@ -13,6 +13,7 @@ import { invalidateSkillsEnabled } from '../agent/skills-config'
 import { invalidateSearchConfig } from '../search/store'
 import { invalidateImageConfig } from '../imagegen/store'
 import { invalidateExecSecrets } from '../exec/secrets'
+import { invalidateAgentSettings } from '../agent/agent-settings'
 
 export const CACHE_INVALIDATORS: Readonly<Record<InvalidateCache, () => void>> = {
   'ai-registry': invalidateAiRegistry,
@@ -22,7 +23,8 @@ export const CACHE_INVALIDATORS: Readonly<Record<InvalidateCache, () => void>> =
   skills: invalidateSkillsEnabled,
   search: invalidateSearchConfig,
   imagegen: invalidateImageConfig,
-  'exec-secrets': invalidateExecSecrets
+  'exec-secrets': invalidateExecSecrets,
+  'agent-settings': invalidateAgentSettings
 }
 
 /** Worker: drop this process's copy of `cache` (the `invalidate` command). */

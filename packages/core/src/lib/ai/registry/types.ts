@@ -11,7 +11,10 @@
 //
 // `subagents` (cycle 83) is the ordered, capability-described list a coordinator picks child
 // workstream models from, by label (resolveSubagentModel). Empty → children run on `reasoning`.
-export const USAGES = ['reasoning', 'bulk', 'embeddings', 'vision', 'stt', 'tts', 'rerank', 'jev', 'subagents'] as const
+//
+// `judge` (cycle 84) is the approval judge + output guard model chain (resolveJudgeChain), with
+// ordinary failover. Empty → the `reasoning` chain judges (self-consistency).
+export const USAGES = ['reasoning', 'bulk', 'embeddings', 'vision', 'stt', 'tts', 'rerank', 'jev', 'subagents', 'judge'] as const
 export type Usage = (typeof USAGES)[number]
 
 export const EMBEDDING_DIM = 2560
@@ -75,7 +78,7 @@ export interface ResolvedModel {
 }
 
 export function emptyAssignments(): Assignments {
-  return { reasoning: [], bulk: [], embeddings: [], vision: [], stt: [], tts: [], rerank: [], jev: [], subagents: [] }
+  return { reasoning: [], bulk: [], embeddings: [], vision: [], stt: [], tts: [], rerank: [], jev: [], subagents: [], judge: [] }
 }
 
 export function emptyDoc(): AiConfigDoc {

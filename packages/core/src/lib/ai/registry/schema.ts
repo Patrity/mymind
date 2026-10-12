@@ -95,6 +95,15 @@ export function subagentsProblems(doc: AiConfigDoc): string[] {
   return problems
 }
 
+/** Cycle 84: `judge` may not list an embedding model (it cannot answer the judge's prompt). PUT-only,
+ *  like subagentsProblems — never in parseConfig. Empty = fine. */
+export function judgeProblems(doc: AiConfigDoc): string[] {
+  return (doc.assignments.judge ?? []).flatMap((id) => {
+    const m = doc.models.find(x => x.id === id)
+    return m && m.dim !== null ? [`"${m.label}" is an embedding model and cannot be a judge model`] : []
+  })
+}
+
 export function parseConfig(input: unknown): AiConfigDoc {
   return docSchema.parse(input) as AiConfigDoc
 }

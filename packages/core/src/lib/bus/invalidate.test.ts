@@ -13,6 +13,7 @@ import { invalidateSkillsEnabled } from '../agent/skills-config'
 import { invalidateSearchConfig } from '../search/store'
 import { invalidateImageConfig } from '../imagegen/store'
 import { invalidateExecSecrets } from '../exec/secrets'
+import { invalidateAgentSettings } from '../agent/agent-settings'
 
 beforeEach(() => { vi.clearAllMocks() })
 
@@ -21,7 +22,8 @@ describe('cache invalidation across processes', () => {
     expect(CACHE_INVALIDATORS).toEqual({
       'ai-registry': aiRegistry, channels: invalidateChannelsConfig, observability: invalidateObsConfig,
       persona: invalidatePersona, skills: invalidateSkillsEnabled, search: invalidateSearchConfig,
-      imagegen: invalidateImageConfig, 'exec-secrets': invalidateExecSecrets
+      imagegen: invalidateImageConfig, 'exec-secrets': invalidateExecSecrets,
+      'agent-settings': invalidateAgentSettings
     })
   })
 
