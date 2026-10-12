@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { dispatchLiveEvent, GRAPH_DEBOUNCE_MS, HOME_DEBOUNCE_MS, REVIEW_DEBOUNCE_MS } from '../app/utils/live-dispatch'
+import { dispatchLiveEvent, GRAPH_DEBOUNCE_MS, HOME_DEBOUNCE_MS, REVIEW_DEBOUNCE_MS, WORKSTREAM_LIST_DEBOUNCE_MS } from '../app/utils/live-dispatch'
 import type { LiveEvent } from '@mymind/core/shared/types/live'
 
 function fakeClient() {
@@ -279,5 +279,22 @@ describe('dispatchLiveEvent — resync (cycle 81)', () => {
     const c = fakeClient()
     dispatchLiveEvent(c as never, ev({ resource: 'resync', id: 'bus-reconnect' }))
     expect(c.calls).toEqual([[undefined]])
+  })
+})
+
+describe('dispatchLiveEvent — workstream list (debounced, cycle 83 final fix wave M1)', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('the detail key is immediate; a burst of tree steps collapses into ONE list refetch', () => {
+    const c = fakeClient()
+    for (let i = 0; i < 12; i++) dispatchLiveEvent(c as never, ev({ resource: 'workstream', id: `ws-${i % 3}` }))
+    expect(c.calls).toContainEqual([{ queryKey: ['workstream', 'ws-0'] }])
+    const lists = () => c.calls.filter(([a]) => JSON.stringify((a as { queryKey: unknown }).queryKey) === JSON.stringify(['workstream', 'list'])).length
+    expect(lists()).toBe(0)
+    vi.advanceTimersByTime(WORKSTREAM_LIST_DEBOUNCE_MS / 2)
+    expect(lists()).toBe(0)
+    vi.advanceTimersByTime(WORKSTREAM_LIST_DEBOUNCE_MS)
+    expect(lists()).toBe(1)
   })
 })

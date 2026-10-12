@@ -48,6 +48,22 @@ const debouncedInvalidateReview = useDebounceFn(
 )
 const invalidateReview = (c: Invalidator) => { void debouncedInvalidateReview(c) }
 
+// Cycle 83 final fix wave (M1): a coordinator tree publishes `workstream` on every step of every
+// member (the child's own row and the coordinator's rolled-up tree use), so a busy fan-out would refetch
+// the /workstreams list and every mounted Children panel (['workstream','list','children',id]) several
+// times a second. The LIST prefix is trailing-debounced like the views above; the detail key stays
+// immediate (the page you are looking at keeps up).
+export const WORKSTREAM_LIST_DEBOUNCE_MS = 700
+const debouncedInvalidateWorkstreamList = useDebounceFn(
+  (c: Invalidator) => c.invalidateQueries({ queryKey: ['workstream', 'list'] }),
+  WORKSTREAM_LIST_DEBOUNCE_MS
+)
+
+/** Resources whose default `[resource, 'list']` invalidation is replaced (debounced). */
+const LIST_OVERRIDES: Partial<Record<ResourceName, (c: Invalidator) => void>> = {
+  workstream: (c) => { void debouncedInvalidateWorkstreamList(c) }
+}
+
 // Per-resource override hook. Default behaviour (invalidate detail + list) covers
 // every resource today; add an entry here only when a resource needs extra keys.
 const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => void>> = {
@@ -104,6 +120,8 @@ export function dispatchLiveEvent(client: Invalidator, e: LiveEvent): void {
   // Cycle 81: the server's bus listener reconnected and may have missed changes — refetch all.
   if (e.resource === 'resync') { client.invalidateQueries(); return }
   client.invalidateQueries({ queryKey: [e.resource, e.id] })
-  client.invalidateQueries({ queryKey: [e.resource, 'list'] })
+  const list = LIST_OVERRIDES[e.resource]
+  if (list) list(client)
+  else client.invalidateQueries({ queryKey: [e.resource, 'list'] })
   OVERRIDES[e.resource]?.(client, e)
 }
