@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentUIPart, SubagentStep, ToolEnvelope } from '@mymind/core/shared/types/agent-ui'
-import { approvalFor, type PendingApprovals } from '~/lib/agent/approvals'
+import { approvalFor, headerState, type PendingApprovals } from '~/lib/agent/approvals'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/components/ai-elements/tool'
 import { toolTitle, isRunning } from '~/lib/agent/render'
 import { startedWorkstream } from '~/lib/workstreams/display'
@@ -39,7 +39,7 @@ const approvalDetails = computed(() => (
     <ToolHeader
       type="dynamic-tool"
       :tool-name="part.toolName"
-      :state="part.state"
+      :state="headerState(part.state, approvalDetails)"
       :title="envelope?.summary ?? toolTitle(part.toolName)"
     />
     <AgentApprovalConfirmation

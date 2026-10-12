@@ -94,6 +94,9 @@ export interface ApprovalVerdictDTO {
   /** Smart Approvals may still approve this call without Tony (the call is eligible and nothing has
    *  ruled it out yet). False once a human is needed. */
   autoPossible: boolean
+  /** Task 4 fix round 0 (C2): why the run is tainted when the call was judged — the card's "run
+   *  tainted" chip. Absent or empty: the run was clean. */
+  taint?: TaintSource[]
 }
 
 /** Cycle 84 Task 2: an auto-approved call's note — on its tool record (the thread's "⚖ auto-approved
@@ -122,3 +125,19 @@ export interface OutputWarningDTO {
   score: number
   llm?: { confidence: number }
 }
+
+/**
+ * Task 4 fix round 0 (C1/C2): why a run is tainted. `mail` — a Google mail / calendar / contacts read
+ * (79b); `flagged` — the output guard flagged a result as aimed at the agent (cycle 84 §3.3);
+ * `workspace` — a workspace that handled untrusted content (cycle 82).
+ */
+export type TaintSource = 'mail' | 'flagged' | 'workspace'
+/** Display / prompt order: the most specific reason first. */
+export const TAINT_SOURCES: readonly TaintSource[] = ['flagged', 'mail', 'workspace']
+
+/** One guard flag that tainted the run. `reasons` include classifier text — MODEL OUTPUT steered by
+ *  the flagged content: fenced as untrusted in the judge prompt, escaped text in the UI. */
+export interface TaintFlag { tool: string; source: GuardSource; reasons: string[] }
+
+/** The run's taint as the judge reads it. Empty `sources` = clean. */
+export interface RunTaint { sources: TaintSource[]; flags: TaintFlag[] }

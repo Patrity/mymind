@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ApprovalVerdictDTO } from '@mymind/core/lib/agent/judge/types'
 import {
-  autoApprovalNote, autoApprovedLabel, floorShown, formatConfidence, guardSourceLabel, judgeConfidenceError,
+  autoApprovalNote, autoApprovedLabel, taintLabel, floorShown, formatConfidence, guardSourceLabel, judgeConfidenceError,
   outputWarningFor, recommendationColor, riskColor, verdictView
 } from './judge-display'
 
@@ -44,7 +44,7 @@ describe('verdictView', () => {
     expect(verdictView(undefined)).toBeNull()
   })
   it('pending → spinner state, carrying whether Smart Approvals may still run it', () => {
-    expect(verdictView(dto())).toEqual({ kind: 'pending', autoPossible: true, rule: null })
+    expect(verdictView(dto())).toEqual({ kind: 'pending', autoPossible: true, rule: null, taint: null })
     expect(verdictView(dto({ autoPossible: false }))).toMatchObject({ kind: 'pending', autoPossible: false })
   })
   it('no verdict and not pending → nothing to show', () => {
@@ -53,7 +53,7 @@ describe('verdictView', () => {
   it('a landed verdict shows risk, recommendation, confidence and reasons', () => {
     expect(verdictView(dto({ pending: false, verdict: verdict() }))).toEqual({
       kind: 'verdict', risk: 'low', riskColor: 'success', recommendation: 'approve', recommendationColor: 'success',
-      confidence: '0.94', reasons: ['matches the goal'], rule: null
+      confidence: '0.94', reasons: ['matches the goal'], rule: null, taint: null
     })
   })
   it('a verdict wins over a stale pending flag', () => {
@@ -62,7 +62,7 @@ describe('verdictView', () => {
   })
   it('an error verdict is "no verdict", never an approval', () => {
     const v = verdictView(dto({ pending: false, verdict: verdict({ error: 'judge timed out', risk: null, recommendation: 'review', confidence: 0 }) }))
-    expect(v).toEqual({ kind: 'error', error: 'judge timed out', rule: null })
+    expect(v).toEqual({ kind: 'error', error: 'judge timed out', rule: null, taint: null })
   })
   it('shows the rule floor only when it puts the call on Tony', () => {
     expect(floorShown('low')).toBe(false)
@@ -72,7 +72,7 @@ describe('verdictView', () => {
     expect(floorShown('deny')).toBe(true)
     expect(floorShown(undefined)).toBe(false)
     const high = dto({ rule: { floor: 'high', reasons: ['host exec always needs Tony'] }, autoPossible: false })
-    expect(verdictView(high)).toEqual({ kind: 'pending', autoPossible: false, rule: { floor: 'high', reasons: ['host exec always needs Tony'] } })
+    expect(verdictView(high)).toEqual({ kind: 'pending', autoPossible: false, rule: { floor: 'high', reasons: ['host exec always needs Tony'] }, taint: null })
     expect(verdictView({ ...high, pending: false, verdict: verdict() })).toMatchObject({ kind: 'verdict', rule: { floor: 'high' } })
     expect(verdictView({ ...high, pending: false, verdict: verdict({ error: 'x' }) })).toMatchObject({ kind: 'error', rule: { floor: 'high' } })
   })
@@ -128,5 +128,20 @@ describe('judgeConfidenceError (0.5–0.99)', () => {
   })
   it('rejects non-numbers', () => {
     for (const v of ['', 'abc', null, undefined, Number.NaN, Number.POSITIVE_INFINITY]) expect(judgeConfidenceError(v)).toBe('Enter a number')
+  })
+})
+
+describe('run tainted chip (fix round 0, C2)', () => {
+  it('labels the sources, most specific first; a clean run has none', () => {
+    expect(taintLabel(['mail', 'flagged'])).toBe('run tainted · flagged content, mail read')
+    expect(taintLabel(['workspace'])).toBe('run tainted · tainted workspace')
+    expect(taintLabel([])).toBeNull()
+    expect(taintLabel(undefined)).toBeNull()
+    expect(taintLabel(['bogus' as never])).toBe('run tainted')
+  })
+  it('rides on every card state', () => {
+    expect(verdictView(dto({ taint: ['flagged'] }))).toMatchObject({ kind: 'pending', taint: 'run tainted · flagged content' })
+    expect(verdictView(dto({ pending: false, verdict: verdict(), taint: ['mail'] }))).toMatchObject({ kind: 'verdict', taint: 'run tainted · mail read' })
+    expect(verdictView(dto({ pending: false, verdict: verdict({ error: 'x' }), taint: ['workspace'] }))).toMatchObject({ kind: 'error', taint: 'run tainted · tainted workspace' })
   })
 })

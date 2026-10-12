@@ -16,6 +16,7 @@ import {
   type Recommendation,
   type Risk,
   type RuleFloor,
+  type TaintSource,
   type ToolApprovalNote
 } from '@mymind/core/lib/agent/judge/types'
 
@@ -49,8 +50,8 @@ export function floorShown(floor: RuleFloor | undefined): boolean {
 }
 
 export type VerdictView =
-  | { kind: 'pending'; autoPossible: boolean; rule: { floor: RuleFloor; reasons: string[] } | null }
-  | { kind: 'error'; error: string; rule: { floor: RuleFloor; reasons: string[] } | null }
+  | { kind: 'pending'; autoPossible: boolean; rule: { floor: RuleFloor; reasons: string[] } | null; taint: string | null }
+  | { kind: 'error'; error: string; rule: { floor: RuleFloor; reasons: string[] } | null; taint: string | null }
   | {
     kind: 'verdict'
     risk: Risk | null
@@ -60,15 +61,18 @@ export type VerdictView =
     confidence: string
     reasons: string[]
     rule: { floor: RuleFloor; reasons: string[] } | null
+    /** C2: "run tainted · flagged content" — the run had read untrusted content when judged. */
+    taint: string | null
   }
 
 /** The card's judge section, or null when there is nothing to show (no judge / judge off). */
 export function verdictView(judge: ApprovalVerdictDTO | null | undefined): VerdictView | null {
   if (!judge) return null
   const rule = judge.rule && floorShown(judge.rule.floor) ? { floor: judge.rule.floor, reasons: judge.rule.reasons } : null
+  const taint = taintLabel(judge.taint)
   const v = judge.verdict
-  if (!v) return judge.pending ? { kind: 'pending', autoPossible: judge.autoPossible, rule } : null
-  if (v.error) return { kind: 'error', error: v.error, rule }
+  if (!v) return judge.pending ? { kind: 'pending', autoPossible: judge.autoPossible, rule, taint } : null
+  if (v.error) return { kind: 'error', error: v.error, rule, taint }
   return {
     kind: 'verdict',
     risk: v.risk,
@@ -77,8 +81,23 @@ export function verdictView(judge: ApprovalVerdictDTO | null | undefined): Verdi
     recommendationColor: recommendationColor(v.recommendation),
     confidence: formatConfidence(v.confidence),
     reasons: v.reasons,
-    rule
+    rule,
+    taint
   }
+}
+
+const TAINT_LABELS: Record<TaintSource, string> = {
+  flagged: 'flagged content',
+  mail: 'mail read',
+  workspace: 'tainted workspace'
+}
+const TAINT_ORDER: TaintSource[] = ['flagged', 'mail', 'workspace']
+
+/** The card's "run tainted" chip text, or null for a clean run: "run tainted · flagged content, mail read". */
+export function taintLabel(sources: readonly TaintSource[] | null | undefined): string | null {
+  const known = TAINT_ORDER.filter(x => sources?.includes(x))
+  if (!sources?.length) return null
+  return known.length ? `run tainted · ${known.map(x => TAINT_LABELS[x]).join(', ')}` : 'run tainted'
 }
 
 /** What an auto-approved card flips to: "⚖ auto-approved (0.94)". */

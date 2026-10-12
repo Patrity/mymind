@@ -83,6 +83,20 @@ const view = computed(() => verdictView(props.judge))
       </ul>
     </template>
     <div
+      v-if="view.taint"
+      class="flex flex-wrap items-center gap-1.5 text-muted"
+      data-testid="judge-taint"
+    >
+      <UBadge
+        color="warning"
+        variant="soft"
+        size="sm"
+        icon="i-lucide-biohazard"
+        :label="view.taint"
+      />
+      <span>Bridget read untrusted content in this run; anything it sends out needs you.</span>
+    </div>
+    <div
       v-if="view.rule"
       class="flex flex-wrap items-center gap-1.5 text-muted"
       data-testid="judge-rule"

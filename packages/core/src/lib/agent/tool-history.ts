@@ -5,7 +5,7 @@
 // every rule below is unit-testable with plain objects.
 import type { ToolKind } from './types'
 import type { SubagentStep } from '../../shared/types/agent-ui'
-import type { OutputWarningDTO, ToolApprovalNote } from './judge/types'
+import { TAINT_SOURCES, type OutputWarningDTO, type RunTaint, type TaintFlag, type TaintSource, type ToolApprovalNote } from './judge/types'
 
 /** One tool invocation, normalized. Persisted additively onto conversation_messages.tool_calls. */
 export interface AgentToolRecord {
@@ -239,19 +239,39 @@ export function historyCarriesTaint(
   policed: { role: string; toolRecords?: AgentToolRecord[]; content?: unknown }[],
   tainting: ReadonlySet<string>
 ): boolean {
+  return historyTaint(policed, tainting).sources.length > 0
+}
+
+/**
+ * Task 4 fix round 0 (C1/C2): the same check as historyCarriesTaint, saying WHY — which taint sources
+ * the visible history carries, and the guard flags (with their reasons, from the tool record's
+ * `outputWarning`) behind a `flagged` source. Sources come back in TAINT_SOURCES order.
+ */
+export function historyTaint(
+  policed: { role: string; toolRecords?: AgentToolRecord[]; content?: unknown }[],
+  tainting: ReadonlySet<string>
+): RunTaint {
+  const sources = new Set<TaintSource>()
+  const flags: TaintFlag[] = []
   for (const m of policed) {
     // Fix round 1 (M4): guarded text delivered as an event (a watch's output) carries the warning in
     // the message itself — it taints like a flagged tool result.
-    if (m.role !== 'assistant') { if (textOf(m.content).includes(GUARD_WARNING_LEAD)) return true; continue }
+    if (m.role !== 'assistant') {
+      if (textOf(m.content).includes(GUARD_WARNING_LEAD)) sources.add('flagged')
+      continue
+    }
     for (const r of m.toolRecords ?? []) {
       if (!r || typeof r !== 'object' || !r.callId) continue
       if (isElided(r.result)) continue
-      if (carriesWorkspaceTaint(r.result) || carriesInjectionWarning(r.result)) return true
-      if (!tainting.has(r.name) || !producedContent(r.result)) continue
-      return true
+      if (carriesWorkspaceTaint(r.result)) sources.add('workspace')
+      if (carriesInjectionWarning(r.result)) {
+        sources.add('flagged')
+        if (r.outputWarning) flags.push({ tool: r.name, source: r.outputWarning.source, reasons: [...r.outputWarning.reasons] })
+      }
+      if (tainting.has(r.name) && producedContent(r.result)) sources.add('mail')
     }
   }
-  return false
+  return { sources: TAINT_SOURCES.filter(x => sources.has(x)), flags }
 }
 
 /** A message's text, whatever its shape (a string, or content parts). */

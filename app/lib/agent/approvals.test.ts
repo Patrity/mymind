@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addApproval, approvalFor, canApprove, orphanApprovals, removeApproval, resolveApproval, setApprovalVerdict, type PendingApprovals } from './approvals'
+import { addApproval, approvalFor, canApprove, headerState, orphanApprovals, removeApproval, resolveApproval, setApprovalVerdict, type PendingApprovals } from './approvals'
 import { mapServerMessage } from '../voice/messages'
 
 const frame = (requestId: string, command: string) =>
@@ -142,5 +142,17 @@ describe('judge verdicts and Smart Approvals on cards (cycle 84)', () => {
   it('an auto resolution for an unknown card is a no-op', () => {
     const s0 = apply({}, frame('r1', 'A'))
     expect(resolveApproval(s0, 'nope', note as never)).toBe(s0)
+  })
+})
+
+describe('headerState (fix round 0, C3: an auto-approved card is not "Awaiting Approval")', () => {
+  const d = { requestId: 'r1', tool: 'calendar_rsvp', command: 'x', proposedPattern: '' }
+  it('an auto-approved request still waiting for its result reads as running', () => {
+    expect(headerState('approval-requested', { ...d, auto: { decidedBy: 'judge', confidence: 0.95, reason: null } })).toBe('input-available')
+  })
+  it('anything else keeps its own state', () => {
+    expect(headerState('approval-requested', d)).toBe('approval-requested')
+    expect(headerState('approval-requested', null)).toBe('approval-requested')
+    expect(headerState('output-available', { ...d, auto: { decidedBy: 'judge', confidence: 0.95, reason: null } })).toBe('output-available')
   })
 })

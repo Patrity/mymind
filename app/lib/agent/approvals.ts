@@ -69,6 +69,16 @@ export function approvalFor(state: PendingApprovals | null | undefined, requestI
   return state[requestId] ?? null
 }
 
+/**
+ * Task 4 fix round 0 (C3): the state the tool part's HEADER shows. The part stays
+ * `approval-requested` until the call's result lands, so the vendored header would keep saying
+ * "Awaiting Approval" on a call the judge already approved — it shows "Running" instead (that is
+ * what is happening). The part itself, and the card under the header, are untouched.
+ */
+export function headerState<S extends string>(state: S, details: PendingApprovalDetails | null): S | 'input-available' {
+  return state === 'approval-requested' && details?.auto ? 'input-available' : state
+}
+
 /** Whether a card may offer Approve. exec's args ARE the command, so its input JSON is a faithful
  *  card even without details; every other dangerous tool's args (gmail_send's {account, draftId})
  *  say nothing about what will be sent, so without its details the only safe answer is Deny. */

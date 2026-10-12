@@ -9,7 +9,7 @@ import { VOICE_TUNING } from '../voice/tuning'
 import type { AgentTool, ToolStartEvent, ToolResultEvent, SubagentEvent } from './types'
 import { recordEvent } from '../observability/record'
 import { redactImageUrlsForModel } from './image-embed'
-import { applyHistoryPolicy, historyCarriesTaint, toolBlocksFor } from './tool-history'
+import { applyHistoryPolicy, historyTaint, toolBlocksFor } from './tool-history'
 import { spliceSteers, type SteerMark } from './runtime/steer'
 import { activeToolNames, directoryText, parseToolsetIds, type ToolsetId } from './toolsets'
 import { JUDGE_LIMITS } from './judge/verdict'
@@ -245,7 +245,9 @@ export async function* runAgent(
   const policed = policeHistory(messages)
   // The tainting set is the GLOBAL list (I1), plus any `taints` tool of a custom registry.
   const tainting = new Set([...TAINTING_TOOL_NAMES, ...registry.filter(t => t.taints).map(t => t.name)])
-  const initiallyTainted = historyCarriesTaint(policed, tainting)
+  // Task 4 fix round 0 (C1/C2): with its reasons — the card heading and the judge read them.
+  const initialTaint = historyTaint(policed, tainting)
+  const initiallyTainted = initialTaint.sources.length > 0
 
   let channel = createChannel()
   // Cycle 84 Task 2: every approval this run raises gets a judge — its surface decides whether Smart
@@ -260,7 +262,7 @@ export async function* runAgent(
         recentMessages: judgeMessages(messages)
       }
     : undefined
-  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted, judge })
+  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted, initialTaint, judge })
 
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).

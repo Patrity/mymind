@@ -29,7 +29,7 @@ import { bindGmailRuleToPin, ruleVerdict } from './rules'
 import { recordDecision, recordVerdict } from './store'
 import { errorVerdict, judgeVerdict, JUDGE_TIMEOUT_MS, type JudgeInput, type JudgeMessage } from './verdict'
 import type {
-  ApprovalDecider, ApprovalDecision, ApprovalSurface, ApprovalVerdictDTO, JudgeSettings, JudgeVerdict, RuleVerdict, ToolApprovalNote
+  ApprovalDecider, ApprovalDecision, ApprovalSurface, ApprovalVerdictDTO, JudgeSettings, JudgeVerdict, RunTaint, RuleVerdict, TaintSource, ToolApprovalNote
 } from './types'
 
 /** How long the judge waits for the rule tier before it starts without it (gmail_send's sent-history
@@ -66,6 +66,9 @@ export interface ApprovalJudgeInit {
   recentMessages?: JudgeMessage[]
   /** The run's taint, read when it matters (it only ever flips on). */
   isTainted: () => boolean
+  /** Task 4 fix round 0 (C2): why the run is tainted (sources + guard flags) — told to the judge and
+   *  shown on the card as "run tainted". Absent: derived from isTainted() with no reasons. */
+  taint?: () => RunTaint
   /** The run's abort signal: Stop cancels a judge still evaluating. */
   signal?: AbortSignal
 }
@@ -138,6 +141,17 @@ function verdictView(v: JudgeVerdict): NonNullable<ApprovalVerdictDTO['verdict']
 
 export function createApprovalJudge(init: ApprovalJudgeInit, deps: ApprovalJudgeDeps = approvalJudgeDeps): ApprovalJudge {
   const { tool, nonce } = init
+  // C2: the run's taint as of now (it only grows). A caller with no reasons still reports the fact.
+  const currentTaint = (): RunTaint => {
+    const t = init.taint?.() ?? { sources: [], flags: [] }
+    if (t.sources.length) return t
+    // Tainted with no reasons given (a caller without `taint`): the 79b meaning, a mail read.
+    return init.isTainted() ? { sources: ['mail'], flags: t.flags } : { sources: [], flags: [] }
+  }
+  const taintView = (): { taint?: TaintSource[] } => {
+    const t = currentTaint()
+    return t.sources.length ? { taint: [...t.sources] } : {}
+  }
   const gmail = tool.name === 'gmail_send'
   let started = false
   let settled: { decision: ApprovalDecision; by: ApprovalDecider } | null = null
@@ -187,7 +201,7 @@ export function createApprovalJudge(init: ApprovalJudgeInit, deps: ApprovalJudge
       settings: s, surface: init.surface, verdict: IDEAL, ruleFloor: 'low',
       outbound: tool.outbound === true, runTainted: init.isTainted(), nonceUnchanged: true
     }) === null
-    view = { rule: null, verdict: null, pending: true, autoPossible: could }
+    view = { rule: null, verdict: null, pending: true, autoPossible: could, ...taintView() }
     emit()
     resolveEligible(could)
     if (!could) resolveHuman()
@@ -223,13 +237,14 @@ export function createApprovalJudge(init: ApprovalJudgeInit, deps: ApprovalJudge
       deps.verdict({
         tool: tool.name, description: tool.description,
         call: [init.req.title, init.req.command].filter(Boolean).join('\n'),
-        goal: init.goal ?? null, recentMessages: init.recentMessages, rule: ruleForPrompt, signal: init.signal
+        goal: init.goal ?? null, recentMessages: init.recentMessages, rule: ruleForPrompt, signal: init.signal,
+        outbound: tool.outbound === true, taint: currentTaint()
       }).catch((err: unknown) => errorVerdict(`judge failed: ${err instanceof Error ? err.message.slice(0, 200) : 'error'}`, Date.now() - verdictStarted)),
       deps.verdictTimeoutMs, () => errorVerdict('judge timed out', Date.now() - verdictStarted)
     )
     const rule = await ruleP
     write('verdict', async () => { await rowReady; await deps.recordVerdict({ ...audit, rule, verdict }) })
-    if (view) { view.verdict = verdictView(verdict); view.pending = false }
+    if (view) { view.verdict = verdictView(verdict); view.pending = false; Object.assign(view, taintView()) }
 
     // The decision, read NOW: taint and the gmail pin may have moved while the judge thought.
     let blocker: AutoApproveBlocker | 'human-only' | 'decided' | null
