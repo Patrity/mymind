@@ -289,6 +289,16 @@ describe('C1: a workstream stays tainted for its whole life', () => {
     expect(ran).toEqual([])
   }, 60_000)
 
+  it('a source the run starts with but the row lacks (a tainted workspace) is persisted by the run itself — no tool, no finish', async () => {
+    const ws = await newWorkstream('workspace only')
+    await until(async () => (await useDb().select().from(workspaces).where(eq(workspaces.workstreamId, ws.id)))[0])
+    await useDb().update(workspaces).set({ tainted: true }).where(eq(workspaces.workstreamId, ws.id))
+    const { seen, runFn } = harness(() => [[...text('thinking it over'), finish('stop')]])
+    await driveSegment(ws.conversationId, runFn, ws.id)
+    expect(seen[0]!.initial).toEqual(['workspace'])
+    expect(await getWorkstream(ws.id)).toMatchObject({ tainted: true, taintSources: ['workspace'] })
+  }, 30_000)
+
   it('a row tainted before the sources were stored (tainted, no sources) seeds as a mail read', async () => {
     const ws = await newWorkstream('legacy row')
     await patchWorkstream(ws.id, { tainted: true })
