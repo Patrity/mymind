@@ -484,7 +484,6 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
         let done = false
         return () => { if (!done) { done = true; reserved-- } }
       }
-      if (o.signal?.aborted) throw new SlotWaitAborted()
       if (Date.now() >= o.deadline) throw new SandboxUnavailableError(`sandbox capacity busy — ${got} workspaces active (at most ${s.maxRunning} sandboxes run at once). Try again in a few minutes.`)
       await abortableSleep(Math.min(1000, Math.max(10, s.slotWaitMs / 20)), o.signal)
     }

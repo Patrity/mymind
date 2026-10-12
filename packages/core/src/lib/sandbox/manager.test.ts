@@ -893,6 +893,21 @@ describe('follow-up (re-review N1–N3)', () => {
     expect(Date.now() - t0).toBeLessThan(1500) // not 3 × 400ms + passes
   })
 
+  it('N1c: time spent before the slot wait (e.g. queued on the workspace lock) counts against the same 60s-from-entry deadline', async () => {
+    const d = fakeDocker()
+    let slow = true
+    const run: DockerRunner = async (args, o) => {
+      if (slow && args[0] === 'container' && args[1] === 'inspect' && args[2] === `mymind-ws-${W3}`) { slow = false; await new Promise(r => setTimeout(r, 1500)) }
+      return d.run(args, o)
+    }
+    const m = mgr({ ...d, run }, rows(), { settings: cfg({ slotWaitMs: 1000 }), hasLiveShell: id => id === WS || id === W2 })
+    await m.exec(WS, 'true')
+    await m.exec(W2, 'true')
+    const t0 = Date.now()
+    await expect(m.exec(W3, 'true')).rejects.toThrow(/capacity busy/)
+    expect(Date.now() - t0).toBeLessThan(2200) // ~1.5s already spent → no fresh 1s wait on top
+  })
+
   it('N2: a shell started after the victim was picked keeps it (re-checked under its lock)', async () => {
     const d = fakeDocker()
     const store = rows()
