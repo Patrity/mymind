@@ -146,9 +146,9 @@ const IMPERATIVE_NEAR = /\b(?:decode|follow|execute|run|eval|instructions?|obey)
 /** Unicode tag characters (U+E0000–U+E007F): invisible, and map 1:1 onto ASCII ("ASCII smuggling"). */
 const TAGS = /[\u{E0000}-\u{E007F}]/gu
 /** Zero-width characters — ZWJ (U+200D) excluded: every multi-person emoji is built with it. */
-const ZERO_WIDTH = /[​‌⁠-⁤﻿᠎]/g
+const ZERO_WIDTH = /[\u200B\u200C\u2060-\u2064\uFEFF\u180E]/g
 /** Embedding/override/isolate controls — LRM/RLM (U+200E/F) excluded: normal in RTL text. */
-const BIDI = /[‪-‮⁦-⁩]/g
+const BIDI = /[\u202A-\u202E\u2066-\u2069]/g
 
 // ---- scanning ------------------------------------------------------------------------------
 

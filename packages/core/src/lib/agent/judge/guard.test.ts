@@ -140,6 +140,15 @@ describe('guardOutput — the flag', () => {
     expect(v).toMatchObject({ flagged: true, llm: { model: 'J2' } })
   })
 
+  it('the classifier never reads our own untrusted note or an earlier warning', async () => {
+    const call = says(false, 0.9)
+    await guardOutput({ tool: 't', source: 'mail', result: { body: SUSPICIOUS, note: UNTRUSTED_NOTE, [INJECTION_WARNING_KEY]: guardWarning(['earlier']) } }, deps(call))
+    const p = (call.mock.calls[0]![1] as GuardPrompt).prompt
+    expect(p).toContain(SUSPICIOUS)
+    expect(p).not.toContain(UNTRUSTED_NOTE)
+    expect(p).not.toContain('earlier')
+  })
+
   it('our own untrusted note and an earlier warning are never scanned', async () => {
     const call = says(true, 1)
     const v = await guardOutput({ tool: 't', source: 'mail', result: { body: QUIET, note: UNTRUSTED_NOTE, [INJECTION_WARNING_KEY]: guardWarning(['x']) } }, deps(call))
@@ -153,6 +162,7 @@ describe('normalizeGuardOutput', () => {
     expect(normalizeGuardOutput({ injection: 'TRUE', confidence: '0.8', reasons: ['x'.repeat(300), 'b', 'c', 'd', 5] }))
       .toEqual({ injection: true, confidence: 0.8, reasons: ['x'.repeat(199) + '…', 'b', 'c'] })
     expect(normalizeGuardOutput({ injection: false, confidence: 0 })).toEqual({ injection: false, confidence: 0, reasons: [] })
+    expect(normalizeGuardOutput({ injection: ' false ', confidence: 0.9 })).toEqual({ injection: false, confidence: 0.9, reasons: [] })
   })
 
   it.each([
@@ -236,6 +246,8 @@ describe('the warning and the wrapped result (spec §3.3)', () => {
       toolCallId: 'call-1', source: 'web', score: 4, llm: { confidence: 0.91 },
       reasons: ['addresses an AI reading it', 'an injection classifier flagged it (confidence 0.91)', 'tells the agent to email data']
     })
+    const errored: GuardVerdict = { flagged: true, by: 'heuristics', score: 12, labels: ['exfil-image'], suspicious: true, textChars: 10, latencyMs: 1, llm: { injection: false, confidence: 0, reasons: [], model: null, latencyMs: 15000, error: 'guard timed out' } }
+    expect(outputWarningDTO('c', 'web', errored)).not.toHaveProperty('llm')
     const h: GuardVerdict = { flagged: true, by: 'heuristics', score: 12, labels: ['exfil-image'], suspicious: true, textChars: 10, latencyMs: 1 }
     expect(outputWarningDTO('c', 'mail', h)).toEqual({ toolCallId: 'c', source: 'mail', score: 12, reasons: ['an image whose URL would carry data off'] })
   })
