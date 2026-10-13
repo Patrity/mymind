@@ -9,7 +9,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 
 const { eq, sql } = await import('drizzle-orm')
 const { useDb } = await import('@mymind/core/db')
-const { evalSuites, evalRuns, images } = await import('@mymind/core/db/schema')
+const { evalSuites, evalRuns, images, voicePresets } = await import('@mymind/core/db/schema')
 const { installEvalWorld, cleanupEvalRun } = await import('@mymind/core/lib/eval/world')
 const { createEvalTenant, listEvalTenants, dropEvalSchema } = await import('@mymind/core/lib/eval/tenant')
 const { evalCleanupDeps, sweepEvalLeftovers } = await import('@mymind/core/lib/eval/cleanup')
@@ -72,18 +72,39 @@ describe('cleanupEvalRun outside the schema (C1, Concern 5)', () => {
     const [shared] = await db().select({ k: images.storageKey }).from(images).limit(1)
     expect(shared).toBeDefined() // the dedup case below must really run
     const own = `evaltest-${randomUUID()}`
+    const ownVoice = `evaltest-voice-${randomUUID()}`
     await w.run(async () => {
       await db().insert(images).values({ storageKey: own, mime: 'image/png', ext: 'png', size: 1 })
       await db().insert(images).values({ storageKey: shared!.k, mime: 'image/png', ext: 'png', size: 1 })
+      await db().insert(voicePresets).values({ name: 'eval voice', instruction: 'calm', calibratedRefKey: ownVoice })
     })
     deletedUploads.length = 0
     removedDirs.length = 0
     await cleanupEvalRun(run)
     expect([...containers.keys()].sort()).toEqual(['c-other', 'c-tony'])
     expect(removedDirs).toContain(`${BASE}/.eval/${w.schema}`)
-    expect(deletedUploads).toEqual([own]) // the shared key (dedup hit on Tony's file) is kept
+    expect(deletedUploads.sort()).toEqual([own, ownVoice].sort()) // the shared key (dedup hit on Tony's file) is kept
     expect(await listEvalTenants()).not.toContain(w.schema)
     containers.clear()
+  })
+})
+
+describe('cleanupEvalRun vs a world of the same run held elsewhere (N3)', () => {
+  it('leaves that world\'s schema and containers alone; removes only containers whose world is gone', async () => {
+    const run = randomUUID()
+    const elsewhere = await createEvalTenant(run) // held (locked) — as by another process
+    mySchemas.push(elsewhere.schema)
+    try {
+      containers.set('c-elsewhere', { [LABEL_EVAL_RUN]: run, [LABEL_EVAL_WORLD]: elsewhere.schema })
+      containers.set('c-ghost', { [LABEL_EVAL_RUN]: run, [LABEL_EVAL_WORLD]: 'eval_00000000000000000000000000000000_0000beef' })
+      await cleanupEvalRun(run)
+      expect(await listEvalTenants()).toContain(elsewhere.schema)
+      expect([...containers.keys()]).toEqual(['c-elsewhere'])
+    } finally {
+      containers.clear()
+      await elsewhere.pool.end()
+      await elsewhere.lock.release()
+    }
   })
 })
 

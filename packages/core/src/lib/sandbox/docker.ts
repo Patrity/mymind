@@ -331,7 +331,7 @@ function idsOf(scope: object): Set<string> {
 }
 
 /** Subcommands that address an existing container (their positional args are container refs). */
-const TARGETING = new Set(['exec', 'start', 'stop', 'rm', 'kill', 'restart', 'inspect', 'logs', 'cp', 'attach', 'wait', 'pause', 'unpause', 'update', 'rename', 'commit', 'export', 'top', 'port', 'diff', 'stats'])
+const TARGETING = new Set(['exec', 'start', 'stop', 'rm', 'kill', 'restart', 'inspect', 'logs', 'attach', 'wait', 'pause', 'unpause', 'update', 'rename', 'commit', 'export', 'top', 'port', 'diff', 'stats'])
 /** Flags of those subcommands that take a value (the value is not a target). */
 const VALUE_FLAGS = new Set(['--user', '-u', '--workdir', '-w', '--env', '-e', '--env-file', '--detach-keys', '--time', '-t', '--signal', '-s', '--format', '--since', '--until', '--tail', '-n'])
 /** exec: boolean flags (anything else before the container is refused). */
@@ -343,11 +343,11 @@ const EXEC_BOOL = new Set(['-i', '--interactive', '-d', '--detach'])
  * networked container (or Tony's) from a world:
  *   - `create` / `run` must say `--network none`, carry the world's eval labels and (when named)
  *     a world-prefixed name; nothing with `--privileged`;
- *   - a container-targeting subcommand (exec, start, stop, rm, kill, inspect, cp, logs, …) must name
+ *   - a container-targeting subcommand (exec, start, stop, rm, kill, inspect, logs, …) must name
  *     ONLY world-prefixed containers or ids the world itself created / listed under its label
  *     (fix round 2, N1);
- *   - `ps` / `version` / `info` / `image inspect` are read-only; every other subcommand (network,
- *     volume, system, build, pull, login, …) is refused;
+ *   - `ps` / `version` / `info` / `image inspect` are read-only; every other subcommand (cp — host
+ *     files in or out —, network, volume, system, build, pull, login, …) is refused;
  *   - no secret passthrough (`--env NAME` without a value, or a CLI env).
  */
 export function assertEvalDockerArgs(args: string[], scope: Pick<EvalScope, 'runId' | 'worldId'>, env?: Record<string, string>): void {
@@ -389,7 +389,7 @@ export function assertEvalDockerArgs(args: string[], scope: Pick<EvalScope, 'run
       const x = rest[i]!
       if (VALUE_FLAGS.has(x)) { i++; continue }
       if (x.startsWith('-')) continue
-      targets.push(sub === 'cp' ? x.split(':')[0]! : x)
+      targets.push(x)
     }
   }
   if (!targets.length) refuse('no container named')

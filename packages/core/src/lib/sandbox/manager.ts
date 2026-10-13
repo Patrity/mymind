@@ -1207,6 +1207,8 @@ const evalManagers = new WeakMap<EvalScope, SandboxManager>()
  *  never Tony's global ones. runtime.ts registers them per scope. */
 const evalHooks = new WeakMap<object, SandboxRuntimeHooks>()
 export function setEvalSandboxHooks(scope: object, hooks: SandboxRuntimeHooks): void { evalHooks.set(scope, hooks) }
+/** Tests: the hooks registered for a world. */
+export function _evalSandboxHooksFor(scope: object): SandboxRuntimeHooks | undefined { return evalHooks.get(scope) }
 
 /** The worker's manager (lazily created from its env) — or, inside an eval world, that world's own
  *  offline, eval-labelled manager (cycle 85): Tony's manager is never reachable from a world. */

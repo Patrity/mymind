@@ -58,11 +58,11 @@ set(dns.promises.Resolver.prototype, 'resolve4', vi.fn(async (h: string) => { re
 
 const { buildEvalWorld, installNetworkGuard } = await import('./world')
 const { parseEvalSetup } = await import('./setup')
-const { EvalNetworkBlockedError, processCache, runInEvalScope } = await import('./context')
+const { EvalNetworkBlockedError, processCache, runInEvalScope, currentEvalScope } = await import('./context')
 const { execTool } = await import('../agent/tools/exec')
 const { runConstrained, ExecDisabledError } = await import('../exec/run')
 const { createDockerCli, createArgs, evalContainerPrefix, LABEL_EVAL_RUN, LABEL_EVAL_WORLD } = await import('../sandbox/docker')
-const { sandboxManager } = await import('../sandbox/manager')
+const { sandboxManager, _evalSandboxHooksFor } = await import('../sandbox/manager')
 const { workspaceRuntime } = await import('../sandbox/runtime')
 const { sandboxSecretEnv } = await import('../sandbox/secrets')
 const { getDecryptedSecrets, getSandboxOptedSecrets } = await import('../exec/secrets')
@@ -130,10 +130,12 @@ describe('C1 / N1: the docker CLI only touches the world\'s own offline containe
       ['start', TONY],
       ['exec', '-i', '--user', '10001:10001', TONY, '/bin/sh', '-c', 'id'],
       ['exec', '--privileged', spec.name, 'id'],
+      ['exec', '-it', spec.name, 'sh'],                                // an exec flag outside the known set
+      ['create', '--privileged', '--network', 'none', '--label', `${LABEL_EVAL_RUN}=${RUN}`, '--label', `${LABEL_EVAL_WORLD}=${SCHEMA}`, '--name', spec.name, 'img'],
       ['container', 'inspect', '--format', '{{.Id}}', TONY],
       ['container', 'rm', '-f', TONY],
       ['cp', `${TONY}:/workspace/x`, '/tmp/x'],
-      ['cp', '/etc/passwd', `${spec.name}:/workspace/x`],
+      ['cp', `${spec.name}:/workspace/x`, '/tmp/x'],                   // cp moves host files: never in a world
       ['logs', TONY],
       ['rm', '-f', spec.name, TONY],                                   // one foreign target is enough
       ['rm', '-f', 'a'.repeat(64)],                                    // an id the world never created
@@ -186,6 +188,17 @@ describe('C1: the workspace sandbox in a world', () => {
     await w.dispose()
     expect(stop).toHaveBeenCalledTimes(1)
     expect(await w.run(() => workspaceRuntime())).not.toBe(rt)
+  })
+
+  it('N6: the world runtime registers ITS hooks for the world\'s manager', async () => {
+    const w = world()
+    const { rt, hooks } = await w.run(() => ({ rt: workspaceRuntime(), hooks: _evalSandboxHooksFor(currentEvalScope()!) }))
+    expect(hooks).toBeDefined()
+    const kill = vi.spyOn(rt.shells, 'killAll').mockResolvedValue(undefined as never)
+    const cancel = vi.spyOn(rt.watches, 'cancelFor').mockResolvedValue(undefined as never)
+    await hooks!.onTainted!('11111111-1111-1111-1111-111111111111')
+    expect(kill).toHaveBeenCalled()
+    expect(cancel).toHaveBeenCalled()
   })
 
   it('sandboxManager() / workspaceRuntime() are the world\'s own: offline, eval-labelled, own dir', async () => {
