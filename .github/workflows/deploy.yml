@@ -7,6 +7,14 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**.md'
+  # Cycle 86: a manual run can pick the target explicitly (else the repo variable DEPLOY_TARGET).
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Where prod runs: lxc (LXC 114, the pre-cutover runtime) or macmini (bridget@192.168.2.35)'
+        type: choice
+        options: [lxc, macmini]
+        default: lxc
 
 # A newer push to master supersedes an in-flight deploy.
 concurrency:
@@ -57,9 +65,17 @@ jobs:
     needs: test
     if: github.ref == 'refs/heads/master'
     runs-on: [self-hosted, proxmox]
-    # 40 (cycle 82 final review M8): the first sandbox image build (apt toolchain on a 2-CPU box)
-    # adds several minutes; later builds are layer-cached.
     timeout-minutes: 40
+    env:
+      # Cycle 86: `lxc` = the old runtime (web + worker as systemd units in LXC 114, its own Docker
+      # Postgres); `macmini` = LXC 114 only BUILDS, the release runs on the Mac mini (launchd) against the
+      # central Postgres at 192.168.2.80. The controller flips the repo variable at cutover:
+      #   gh variable set DEPLOY_TARGET --body macmini
+      DEPLOY_TARGET: ${{ inputs.target || vars.DEPLOY_TARGET || 'lxc' }}
+      MINI: bridget@192.168.2.35
+      # The runner (root on the Proxmox host) reaches the mini with its own key; the host key is pinned
+      # in /root/.ssh/known_hosts (one-time setup: prod-deploy skill, "Runner SSH key").
+      MINI_SSH: ssh -i /root/.ssh/mymind_macmini -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -67,36 +83,41 @@ jobs:
       - name: Sync code into LXC 114
         run: |
           # Clear the tracked tree first — preserving runtime state that lives in
-          # /opt/mymind (.env, .env.native, plus any .data/.output/.nuxt/node_modules/workspace/.git,
-          # the agent worker's self-contained releases .worker/.worker-prev, which the RUNNING
-          # worker executes from, and (cycle 82) the sandbox workspaces' files in .workspaces) — then
-          # extract the fresh checkout so deletions propagate.
+          # /opt/mymind (.env, .env.native, .env.macmini (cycle 86: the .80 DB URL CD migrates with), plus
+          # any .data/.output/.nuxt/node_modules/workspace/.git, the agent worker's self-contained
+          # releases .worker/.worker-prev, which the RUNNING lxc worker executes from, and the old
+          # cycle-82 workspaces in .workspaces) — then extract the fresh checkout so deletions propagate.
           pct exec 114 -- bash -lc 'cd /opt/mymind && find . -maxdepth 1 -mindepth 1 \
-            ! -name .git ! -name .env ! -name .env.native ! -name .data ! -name .output \
+            ! -name .git ! -name .env ! -name .env.native ! -name .env.macmini ! -name .data ! -name .output \
             ! -name .nuxt ! -name node_modules ! -name workspace \
             ! -name .worker ! -name .worker-prev ! -name .workspaces -exec rm -rf {} +'
           tar -C "$GITHUB_WORKSPACE" \
             --exclude=.git --exclude=node_modules --exclude=.nuxt \
-            --exclude=.output --exclude=.data --exclude=.env --exclude=.env.native \
+            --exclude=.output --exclude=.data --exclude=.env --exclude=.env.native --exclude=.env.macmini \
             --exclude=.worker --exclude=.worker-prev --exclude=.worker-next --exclude=.workspaces \
+            --exclude=.macmini-out --exclude=.superpowers --exclude=.claude/worktrees \
             -cf - . | pct exec 114 -- tar -C /opt/mymind -xf -
 
-      - name: Ensure db + searxng up (keep the OLD app serving during the build)
-        run: |
-          # No --remove-orphans here: the previous app (docker container on first cutover,
-          # or the native service on later deploys) keeps serving while we build, so a slow
-          # or FAILED build never causes an outage.
-          pct exec 114 -- bash -lc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d db searxng'
+      # ───────────── target lxc: the pre-cutover runtime (web + worker units in LXC 114) ─────────────
 
-      - name: Provision native runtime (idempotent)
+      - name: '[lxc] Ensure db up (keep the OLD app serving during the build)'
+        if: env.DEPLOY_TARGET == 'lxc'
+        run: |
+          # No --remove-orphans here: the previous app keeps serving while we build, so a slow or
+          # FAILED build never causes an outage.
+          pct exec 114 -- bash -lc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d db'
+
+      - name: '[lxc] Provision native runtime (idempotent)'
+        if: env.DEPLOY_TARGET == 'lxc'
         run: |
           pct exec 114 -- bash -lc 'cd /opt/mymind && bash deploy/provision-native.sh'
 
-      - name: Install + build + migrate (migrate uses .env.native)
+      - name: '[lxc] Install + build + migrate (migrate uses .env.native)'
+        if: env.DEPLOY_TARGET == 'lxc'
         run: |
           # --max-old-space-size: the native nuxt/vite build needs >2GB heap; the V8 default
           # (~2GB) OOMs the server build in the LXC (the old docker build had its own limits).
-          # LXC 114 must have enough physical RAM for this heap + the running db/searxng/app.
+          # LXC 114 must have enough physical RAM for this heap + the running db/app.
           # The worker release is staged after the web build (cycle 81) into .worker-next — the running
           # worker keeps executing from .worker, untouched by the install/build — and is swapped in only
           # right before its restart below.
@@ -106,14 +127,15 @@ jobs:
           # fails the deploy (a stuck world is dropped at the worker's next boot sweep).
           pct exec 114 -- bash -lc 'cd /opt/mymind && pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build && MYMIND_GIT_SHA=${{ github.sha }} bash deploy/worker-release.sh stage && set -a && . ./.env.native && set +a && (NODE_ENV=production pnpm eval --cancel-all --wait 60 || echo "eval cancel failed (continuing)") && pnpm db:migrate'
 
-      - name: Cut over to native (drop old app container, start native on :3000)
+      - name: '[lxc] Restart the web on the new build'
+        if: env.DEPLOY_TARGET == 'lxc'
         run: |
-          # --remove-orphans drops the now-unlisted `app` container (first cutover); on later
-          # deploys it's a no-op. systemctl restart binds the freshly-built .output on :3000.
-          # Downtime is just this step (seconds), not the whole build.
-          pct exec 114 -- bash -lc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d --remove-orphans db searxng && systemctl restart mymind'
+          # --remove-orphans drops containers no longer in the compose file (cycle 86: the retired search container).
+          # systemctl restart binds the freshly-built .output on :3000. Downtime is this step (seconds).
+          pct exec 114 -- bash -lc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d --remove-orphans db && systemctl restart mymind'
 
-      - name: Health check (/api/health -> 200, DB-touching)
+      - name: '[lxc] Health check (/api/health -> 200, DB-touching)'
+        if: env.DEPLOY_TARGET == 'lxc'
         run: |
           # /api/health runs `select 1` against the app's runtimeConfig DB URL — it catches a
           # broken DB connection that /login (pure SSR, no DB) would silently pass. This is the
@@ -125,7 +147,8 @@ jobs:
             echo "waiting ($i): got $code"; sleep 5
           done; echo "never became healthy"; curl -s http://localhost:3000/api/health || true; exit 1'
 
-      - name: Restart the agent worker (drains in-flight runs, ≤60s)
+      - name: '[lxc] Restart the agent worker (drains in-flight runs, ≤60s)'
+        if: env.DEPLOY_TARGET == 'lxc'
         run: |
           # Cycle 81: after the web cutover + health check. `restart` sends SIGTERM: the old worker
           # stops claiming, lets in-flight runs finish (≤60s, TimeoutStopSec=90), exits; systemd
@@ -134,7 +157,8 @@ jobs:
           # Rollback: `bash deploy/worker-release.sh rollback && systemctl restart mymind-worker`.
           pct exec 114 -- bash -lc 'cd /opt/mymind && bash deploy/worker-release.sh activate && systemctl restart mymind-worker'
 
-      - name: Worker health (active + fresh heartbeat)
+      - name: '[lxc] Worker health (active + fresh heartbeat)'
+        if: env.DEPLOY_TARGET == 'lxc'
         run: |
           # The worker writes worker_heartbeat at boot and every 5s. Require the unit active and a
           # heartbeat row from a boot that started after this restart.
@@ -147,22 +171,85 @@ jobs:
             echo "waiting for worker ($i)"; sleep 5
           done; systemctl status mymind-worker --no-pager || true; journalctl -u mymind-worker -n 60 --no-pager || true; exit 1'
 
-      - name: Sandbox health (a warning, never a failure)
-        continue-on-error: true
-        # Follow-up N7: a hung psql must not hold the job to its 40 min timeout (a cancelled run
-        # reads red after a good deploy) — the poll below gives up after ~100s anyway.
-        timeout-minutes: 2
+      # ─────────── target macmini: LXC 114 builds, the Mac mini runs (spec 2026-10-13 §5) ───────────
+
+      - name: '[macmini] Reach the mini'
+        if: env.DEPLOY_TARGET == 'macmini'
         run: |
-          # Cycle 82 (final review I6): the new worker preflights its sandbox (Docker, image, firewall,
-          # resource limits, disk) right after its boot reconcile and puts the result on its heartbeat
-          # (worker_heartbeat.status.sandbox). A broken sandbox must not fail the deploy — it becomes a
-          # ::warning:: on this run (and "Sandbox unavailable: <reason>" in the app).
-          # shellcheck disable=SC2016
-          pct exec 114 -- bash -lc 'for i in $(seq 1 20); do
-            s=$(docker exec -i mymind-db psql -U mymind -d mymind -Atc "select (status->'\''sandbox'\''->>'\''ok'\'') || '\''|'\'' || coalesce(status->'\''sandbox'\''->>'\''reason'\'', '\'''\'') from worker_heartbeat where started_at > now() - interval '\''5 minutes'\'' and status ? '\''sandbox'\'' order by beat_at desc limit 1" 2>/dev/null || true)
-            case "$s" in
-              "true|"*) echo "sandbox ok"; exit 0 ;;
-              "false|"*) echo "::warning title=Sandbox unavailable::${s#false|}"; exit 0 ;;
-            esac
-            echo "waiting for the sandbox preflight ($i)"; sleep 5
-          done; echo "::warning title=Sandbox::the worker reported no sandbox status within 100 seconds"; exit 0'
+          $MINI_SSH "$MINI" 'echo "mini: $(hostname), $(sw_vers -productVersion)"'
+
+      - name: '[macmini] Provision the build box (build duties only)'
+        if: env.DEPLOY_TARGET == 'macmini'
+        run: |
+          pct exec 114 -- bash -lc 'cd /opt/mymind && bash deploy/provision-native.sh --build-only'
+
+      - name: '[macmini] Build web + worker releases in LXC 114'
+        if: env.DEPLOY_TARGET == 'macmini'
+        run: |
+          # Nothing runs from these in LXC 114: .macmini-out/{web,worker} are only streamed to the mini.
+          pct exec 114 -- bash -lc 'cd /opt/mymind && MYMIND_GIT_SHA=${{ github.sha }} bash deploy/macmini/build-artifacts.sh'
+
+      - name: '[macmini] Provision the mini (idempotent)'
+        if: env.DEPLOY_TARGET == 'macmini'
+        run: |
+          # Ships deploy/macmini to ~/mymind/deploy and runs it: dirs, ripgrep/libpq, ~/mymind/bin/{run,release}.sh,
+          # the LaunchAgent plists (plutil-linted), the env-file key check, the Hermes guard.
+          tar -C "$GITHUB_WORKSPACE/deploy/macmini" -cf - . | $MINI_SSH "$MINI" \
+            'mkdir -p ~/mymind/deploy && tar -x -C ~/mymind/deploy -f - && bash ~/mymind/deploy/provision-macmini.sh'
+
+      - name: '[macmini] Stage the releases on the mini (the running services are untouched)'
+        if: env.DEPLOY_TARGET == 'macmini'
+        run: |
+          # release.sh stage checks the entry file, that every linux native package has its darwin-arm64
+          # twin, and that the externals load with the mini's node — a bad release fails HERE, before any
+          # migration or restart.
+          set -o pipefail
+          for kind in web worker; do
+            pct exec 114 -- tar -C "/opt/mymind/.macmini-out/$kind" -cf - . \
+              | $MINI_SSH "$MINI" "bash ~/mymind/bin/release.sh stage $kind ${{ github.sha }}"
+          done
+
+      - name: '[macmini] Cancel evals + migrate the central DB (192.168.2.80)'
+        if: env.DEPLOY_TARGET == 'macmini'
+        run: |
+          # Runs in LXC 114 (it has the workspace + drizzle-kit) with /opt/mymind/.env.macmini: DATABASE_URL
+          # AND NUXT_DATABASE_URL for .80 (0600, written once at cutover; provision --build-only checks it).
+          # Both, exported BEFORE the CLI: `pnpm eval` loads .env with --env-file-if-exists, which fills
+          # every key not already set, and core prefers NUXT_DATABASE_URL — a missing one would send the
+          # cancel to LXC 114's old database. The cancel never fails the deploy (cycle 85 M1).
+          pct exec 114 -- bash -lc 'cd /opt/mymind && set -a && . ./.env.macmini && set +a && (NODE_ENV=production pnpm eval --cancel-all --wait 60 || echo "eval cancel failed (continuing)") && pnpm db:migrate'
+
+      - name: '[macmini] Activate + restart the web'
+        if: env.DEPLOY_TARGET == 'macmini'
+        run: |
+          $MINI_SSH "$MINI" 'bash ~/mymind/bin/release.sh activate web && bash ~/mymind/bin/release.sh restart web'
+
+      - name: '[macmini] Web health (/api/health over the LAN; rollback on failure)'
+        if: env.DEPLOY_TARGET == 'macmini'
+        run: |
+          # From the runner, by the mini's LAN IP: proves the DB-touching health route AND the 0.0.0.0 bind
+          # Pangolin depends on. A failure swaps app back to .app-prev and restarts it, then fails the run.
+          for i in $(seq 1 30); do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://192.168.2.35:3000/api/health || true)
+            if [ "$code" = "200" ]; then echo "healthy"; exit 0; fi
+            echo "waiting ($i): got $code"; sleep 5
+          done
+          echo "::error title=Web unhealthy::rolling the web back"
+          $MINI_SSH "$MINI" 'tail -n 80 ~/Library/Logs/mymind/web.log; bash ~/mymind/bin/release.sh rollback web && bash ~/mymind/bin/release.sh restart web' || true
+          exit 1
+
+      - name: '[macmini] Activate + restart the agent worker (drains in-flight runs, ≤60s)'
+        if: env.DEPLOY_TARGET == 'macmini'
+        run: |
+          # kickstart -k = SIGTERM: the old worker stops claiming, drains (≤60s; the plist's ExitTimeOut is
+          # 90), exits; launchd starts the new release. Queued runs wait in the DB meanwhile.
+          $MINI_SSH "$MINI" 'bash ~/mymind/bin/release.sh activate worker && bash ~/mymind/bin/release.sh restart worker'
+
+      - name: '[macmini] Worker health (fresh heartbeat from the launchd pid; rollback on failure)'
+        if: env.DEPLOY_TARGET == 'macmini'
+        run: |
+          # release.sh health: a worker_heartbeat row on .80 with the pid launchd reports and a beat < 30s old.
+          if $MINI_SSH "$MINI" 'bash ~/mymind/bin/release.sh health worker 120'; then exit 0; fi
+          echo "::error title=Worker unhealthy::rolling the worker back"
+          $MINI_SSH "$MINI" 'tail -n 80 ~/Library/Logs/mymind/worker.log; bash ~/mymind/bin/release.sh rollback worker && bash ~/mymind/bin/release.sh restart worker' || true
+          exit 1

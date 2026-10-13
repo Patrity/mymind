@@ -3,6 +3,8 @@
 > Audience: an agent or operator deploying MyMind to the homelab (Proxmox + Docker), internet-exposed.
 > Source of truth for **how the app works** is `docs/wiki/`; this doc is **how to run it**. If anything here disagrees with the code, the code + the newest `docs/handovers/` win — update this doc.
 
+> **Cycle 86: prod moves to the Mac mini** (launchd, user `bridget` @ `192.168.2.35`, DB on `192.168.2.80`); LXC 114 becomes the CI build box. See **§23** and the `prod-deploy` skill. §§17–22 describe the LXC 114 runtime (`DEPLOY_TARGET=lxc`), kept until cutover + 7 days.
+
 ## 0. What you're deploying
 
 MyMind is **one Nuxt 4 service** (Nitro `node-server`) plus, since cycle 81, a separate **agent
@@ -273,14 +275,11 @@ Then in a browser: sign in, open Documents/Gallery/Tasks/Memory/Sessions/Clipboa
 - **Single app instance** for the scheduled tasks (see §7).
 - Change the **default Postgres password** (`POSTGRES_PASSWORD`) — never ship `mymind/mymind`.
 
-## 13. SearXNG (bundled web-search backend)
+## 13. Web search (Brave)
 
-`docker-compose.prod.yml` includes a `searxng` service (image `searxng/searxng:latest`):
-- The app reaches it internally on the compose network as `searxng:8080`.
-- **Shared on the LAN** — the service publishes a host port (`SEARXNG_PORT`, default `8088`) so other homelab services can use the same SearXNG: point them at `http://<lxc-ip>:${SEARXNG_PORT}` (JSON API at `/search?format=json`). **Keep it LAN-only — do not expose this port to the internet** (no auth, rate-limiter off for internal use). If you ever need it public, front it with its own authenticated TLS proxy.
-- The app reads `SEARCH_SEARXNG_URL` (defaults to `http://searxng:8080`) as its search backend; override the active provider in-app at **`/settings → Search`**.
-- `searxng/settings.yml` (mounted to `/etc/searxng`) enables the JSON API (`search.formats: [html, json]`) and disables the rate-limiter for internal use.
-- **`SEARXNG_SECRET` is required in `.env`** (`openssl rand -hex 32`). Compose passes it to the `searxng` service via `environment:`; the container's entrypoint replaces the `ultrasecretkey` placeholder in `settings.yml` with the real value on boot. Without it, `docker compose up` fails fast.
+Search is **Brave Search API only** (cycle 86; the bundled SearXNG service is retired). The API key and
+the rate limit (`search.brave.qps`, default 1 req/s, burst 3) are set in-app at **`/settings → Search`** —
+no env vars. See `docs/wiki/web-research.md`.
 
 ## 14. Agent exec tool (B3.2 — native-root model)
 
@@ -412,7 +411,7 @@ The other `/api/agent/*` routes (`activity`, `undo`, `chat`) use the standard se
   red), `typecheck`, `test`, `build`. Gates the deploy.
 - **deploy** (self-hosted on `mini`, `master` only): syncs the checked-out tree into LXC
   114 at `/opt/mymind`, then runs the **native** flow (B3.1) — `docker compose up -d
-  --remove-orphans db searxng` (Postgres + SearXNG stay containers; the app is **not** a
+  --remove-orphans db` (Postgres stays a container; the app is **not** a
   container), `deploy/provision-native.sh` (idempotent), `pnpm install`/`build`, `pnpm
   db:migrate` (sourcing `.env.native`), then `systemctl restart mymind`. A `/login` health
   check (200, 30×5s retries) gates success. **See §18 for the native model** — §3's `docker
@@ -448,8 +447,8 @@ Verify in GitHub → Settings → Actions → Runners: the runner shows **Idle**
 ## 18. Native deploy (B3.1 — app runs outside Docker)
 
 As of **B3.1** the app runs **natively** as a `systemd` service in LXC 114, **not** as a Docker
-container, so the agent's `exec` runs in the LXC directly. **`db` (Postgres/pgvector) and
-`searxng` stay Docker containers** (Postgres published on `127.0.0.1:5432`); the corpus volume
+container, so the agent's `exec` runs in the LXC directly. **`db` (Postgres/pgvector) stays a
+Docker container** (Postgres published on `127.0.0.1:5432`); the corpus volume
 `mymind-pgdata` is never migrated. The §3 / §17 `docker compose up --build app` flow is **legacy**
 (kept for rollback); the `Dockerfile` is retired.
 
@@ -459,7 +458,6 @@ container, so the agent's `exec` runs in the LXC directly. **`db` (Postgres/pgve
 
 ```
 DATABASE_URL=postgres://mymind:<POSTGRES_PASSWORD>@127.0.0.1:5432/mymind
-SEARCH_SEARXNG_URL=http://127.0.0.1:8088
 STORAGE_LOCAL_DIR=/opt/mymind/.data/uploads
 NITRO_PORT=3000
 NITRO_HOST=0.0.0.0
@@ -491,13 +489,13 @@ checks must hit an authenticated endpoint, not just `/login`**, to catch this cl
 and installs+enables the unit. For a deliberate first cutover you can run it by hand first:
 `pct exec 114 -- bash -lc 'cd /opt/mymind && bash deploy/provision-native.sh'`.
 
-**Each deploy** (CD `deploy` job): sync tree → `docker compose up -d --remove-orphans db searxng`
+**Each deploy** (CD `deploy` job): sync tree → `docker compose up -d --remove-orphans db`
 (`--remove-orphans` drops the old `app` container, freeing `:3000`) → `provision-native.sh` →
 `pnpm install`/`build` → `pnpm db:migrate` (sources `.env.native`) → `systemctl restart mymind` →
 `/login` health check.
 
 **Ops:** `systemctl status mymind`, `journalctl -u mymind -f` for the app; `docker ps` shows only
-`mymind-db` + `mymind-searxng`. The in-process Nitro `scheduledTasks` (embeddings, enrichment,
+`mymind-db`. The in-process Nitro `scheduledTasks` (embeddings, enrichment,
 prune) run inside the native process — no separate cron.
 
 **Rollback:** the previous app image is still on the box. Restore the docker-app by checking out
@@ -662,7 +660,7 @@ packages' full dependency closure), not from the tree that CD wipes and `pnpm in
 `deploy/worker-release.sh stage|activate|rollback`. They take about 620 MB on disk at rest and about
 930 MB at peak during a deploy, so run `df -h /` before deploying.
 
-**Deploy order (CD, `deploy.yml`):** sync → db/searxng up → provision → install + **web build** +
+**Deploy order (CD, `deploy.yml`):** sync → db up → provision → install + **web build** +
 `worker-release.sh stage` + **cancel running evals** + migrate → `systemctl restart mymind` →
 `/api/health` → `worker-release.sh activate && systemctl restart mymind-worker` → worker health
 (unit active + a fresh `worker_heartbeat` row from the new boot). The web is cut over first.
@@ -768,7 +766,7 @@ provisioning):
 - installs two iptables chains — `MYMIND-SANDBOX-FWD` (jumped from `DOCKER-USER`: rejects every
   RFC1918/link-local/CGNAT/loopback/multicast/reserved destination, `RETURN`s everything else to the
   internet) and `MYMIND-SANDBOX-IN` (jumped from `INPUT`: rejects new connections to this host — the
-  docker gateway, the LXC's LAN IP, published Postgres/SearXNG ports) — applied in one atomic
+  docker gateway, the LXC's LAN IP, published Postgres port) — applied in one atomic
   `iptables-restore --noflush`, never flush-then-refill;
 - installs a systemd oneshot **`mymind-sandbox-net.service`** that re-applies the rules at every boot
   and docker restart, from its own copy at **`/usr/local/lib/mymind/install-network.sh`** (never the
@@ -811,3 +809,20 @@ See `docs/wiki/workspace.md#diagnosing-sandbox-unavailable` for the full reason 
 and the `prod-deploy` skill's **Sandbox ops** section for read-only commands to check all of this
 without printing secrets.
 
+## 23. Mac mini host (cycle 86)
+
+Prod runs natively on the Mac mini as user `bridget`: launchd agents `com.mymind.web` (`:3000`, heap
+1.5 GB) and `com.mymind.worker` (heap 2 GB), both via `~/mymind/bin/run.sh`, which sources
+`~/mymind/env/mymind.env`. Releases are symlink-swapped under `~/mymind/releases` by
+`deploy/macmini/release.sh`; logs in `~/Library/Logs/mymind/` (rotated by run.sh). The DB is the central
+Postgres at `192.168.2.80` (db/role `bridget`).
+
+CD (`.github/workflows/deploy.yml`, `DEPLOY_TARGET=macmini`): LXC 114 builds (`deploy/macmini/build-artifacts.sh`,
+darwin-arm64 natives via `pnpm-workspace.yaml` `supportedArchitectures`), the runner streams both releases
+to the mini (`release.sh stage`), cancels evals + migrates `.80` from LXC 114 (`.env.macmini`), activates +
+`launchctl kickstart -k`s the web, gates `/api/health` on the LAN IP, then the worker, gated on a fresh
+heartbeat — each gate rolls its service back on failure.
+
+Files: `deploy/macmini/{provision-macmini.sh,release.sh,run.sh,build-artifacts.sh,com.mymind.web.plist,com.mymind.worker.plist}`.
+Ops, one-time setup (runner SSH key, env files) and gotchas: the `prod-deploy` skill. Cutover runbook:
+`docs/superpowers/specs/2026-10-13-macmini-host-design.md` §6.

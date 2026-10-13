@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
-# One-time + idempotent provisioning for the native MyMind deploy in LXC 114.
-# Called by the CD deploy job (and safe to run by hand). Run from /opt/mymind as root.
+# One-time + idempotent provisioning of LXC 114. Called by the CD deploy job (and safe to run by hand).
+# Run from /opt/mymind as root.
+#
+#   provision-native.sh               target lxc: LXC 114 BUILDS and RUNS MyMind (web + worker systemd
+#                                     units, the Docker Postgres) — the pre-cutover runtime
+#   provision-native.sh --build-only  target macmini (cycle 86): LXC 114 only builds the releases CD ships
+#                                     to the Mac mini and runs the migrations against 192.168.2.80 — Node +
+#                                     pnpm and a check of .env.macmini; no units, no runtime env
 set -euo pipefail
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"   # /opt/mymind
 cd "$APP_DIR"
+BUILD_ONLY=0
+case "${1:-}" in --build-only) BUILD_ONLY=1 ;; '') ;; *) echo "usage: $0 [--build-only]" >&2; exit 2 ;; esac
 
 # 1. Node 22 + pnpm (skip if already present at v22)
 if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ]; then
@@ -14,14 +22,35 @@ fi
 corepack enable >/dev/null 2>&1 || true
 corepack prepare pnpm@latest --activate >/dev/null 2>&1 || true
 
+if [ "$BUILD_ONLY" = 1 ]; then
+  # .env.macmini: what CD exports before `pnpm eval --cancel-all` + `pnpm db:migrate` against the central
+  # DB. Written once by hand at cutover (0600); checked here by key name and DB host, never printed.
+  # BOTH keys: core prefers NUXT_DATABASE_URL, and the eval CLI fills unset keys from .env (the old DB).
+  f="$APP_DIR/.env.macmini"
+  [ -f "$f" ] || { echo "[provision] $f missing — write DATABASE_URL + NUXT_DATABASE_URL for 192.168.2.80 (0600)" >&2; exit 1; }
+  chmod 600 "$f"
+  for k in DATABASE_URL NUXT_DATABASE_URL; do
+    host="$(grep -E "^$k=" "$f" | tail -1 | cut -d= -f2- | sed -nE 's#^[a-z]+://([^@/]*@)?([^:/?]+).*#\2#p' || true)"
+    [ "$host" = 192.168.2.80 ] || { echo "[provision] $f: $k must point at 192.168.2.80 (host is '${host:-unset}')" >&2; exit 1; }
+  done
+  # After cutover the app runs on the mini only: a still-running LXC worker would execute Tony's jobs a
+  # second time against the old database. Stopping it is the cutover runbook's step, not this script's.
+  for u in mymind mymind-worker; do
+    if systemctl is-active --quiet "$u" 2>/dev/null; then
+      echo "::warning title=LXC 114 runtime still active::$u is running in LXC 114 while prod deploys to the Mac mini — systemctl disable --now $u"
+    fi
+  done
+  echo "[provision] build box ready"
+  exit 0
+fi
+
 # 2. .env.native (only if missing — never clobber a real one)
 if [ ! -f "$APP_DIR/.env.native" ]; then
   echo "[provision] writing .env.native"
   PW="$(grep -E '^POSTGRES_PASSWORD=' "$APP_DIR/.env" | head -1 | cut -d= -f2-)"
   cat > "$APP_DIR/.env.native" <<EOF
-# Plain vars — read directly from process.env (migrate/drizzle-kit, SearXNG client, Nitro host/port).
+# Plain vars — read directly from process.env (migrate/drizzle-kit, Nitro host/port).
 DATABASE_URL=postgres://mymind:${PW}@127.0.0.1:5432/mymind
-SEARCH_SEARXNG_URL=http://127.0.0.1:8088
 STORAGE_LOCAL_DIR=$APP_DIR/.data/uploads
 NITRO_PORT=3000
 NITRO_HOST=0.0.0.0
@@ -94,49 +123,6 @@ if [ -z "$(ls -A "$APP_DIR/.data/uploads" 2>/dev/null)" ]; then
     docker run --rm -v "$best":/src -v "$APP_DIR/.data/uploads":/dst alpine \
       sh -c 'cp -a /src/. /dst/ 2>/dev/null || true'
   fi
-fi
-
-# 3b. Cycle 82: the workspace sandbox — image (Debian + toolchain, ~670 MB) and its network + egress
-#     firewall (deploy/sandbox/install-network.sh: network, DOCKER-USER/INPUT rules, the
-#     mymind-sandbox-net oneshot that re-applies them at boot from its own copy in
-#     /usr/local/lib/mymind, /opt/mymind/.workspaces). The rebuild is layer-cached (seconds) unless
-#     deploy/sandbox/ changed; build-image.sh tags by content hash and prunes old sandbox images.
-#     Disk first (the box has hit 100% before): the build needs >= 6 GB free on / — the worker's
-#     watchdog stops every sandbox under 4 GB and resumes at 5 GB, so a build that leaves less would
-#     leave the sandbox refusing everything.
-#     NON-FATAL (rereview #6): a missing sandbox precondition (dockerd down, nft/legacy mismatch, no
-#     FORWARD->DOCKER-USER jump, no disk) must not block the web + worker deploy. Every problem is a
-#     GitHub `::warning::` on the deploy run (final review I6 — CD parses workflow commands from this
-#     output) and the worker stays fail-closed: no image / no firewall -> every workspace command is
-#     refused, and the app shows "Sandbox unavailable: <reason>".
-SANDBOX_MIN_BUILD_GB=6
-sandbox_warn() {
-  echo "::warning title=Sandbox::$*"
-  echo "[provision] ################################################################"
-  echo "[provision] WARNING: SANDBOX — $*"
-  echo "[provision] Fix, then re-run: bash $APP_DIR/deploy/sandbox/install-network.sh install"
-  echo "[provision]                   bash $APP_DIR/deploy/sandbox/build-image.sh"
-  echo "[provision] ################################################################"
-}
-# Final review M7: a failed REBUILD is not "no sandbox" — the previous image keeps working.
-sandbox_build_failed() {
-  local prev
-  prev="$(docker image inspect --format '{{.Id}}' mymind-sandbox:current 2>/dev/null | cut -c8-19 || true)"
-  if [ -n "$prev" ]; then
-    sandbox_warn "$1 — rebuild failed, previous image $prev still active (the sandbox keeps working on it)"
-  else
-    sandbox_warn "$1 — no sandbox image: workspace tools stay DISABLED (the worker refuses them)"
-  fi
-}
-if bash "$APP_DIR/deploy/sandbox/install-network.sh" install; then
-  AVAIL_GB="$(df -P -BG / | awk 'NR==2 {gsub("G","",$4); print $4}' || true)"
-  if [ "${AVAIL_GB:-0}" -ge "$SANDBOX_MIN_BUILD_GB" ]; then
-    bash "$APP_DIR/deploy/sandbox/build-image.sh" || sandbox_build_failed "the sandbox image build failed"
-  else
-    sandbox_build_failed "only ${AVAIL_GB:-?} GB free on / (the build needs >= ${SANDBOX_MIN_BUILD_GB} GB; docker builder prune?) — image build skipped"
-  fi
-else
-  sandbox_warn "install-network.sh failed (see its ERROR line above) — the sandbox firewall is not in place: workspace tools stay DISABLED"
 fi
 
 # 4. systemd units (refresh + enable; do NOT start here — the deploy restarts after build)
