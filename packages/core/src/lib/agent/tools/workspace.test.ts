@@ -530,3 +530,45 @@ describe('final fix wave', () => {
     vi.restoreAllMocks()
   })
 })
+
+describe('follow-up 2 (NB3): bash_output / kill_shell always reach the REAL container', () => {
+  it('in an `unverified`-only run: bash_output reads the live shell (not marked lost); kill_shell really kills it', async () => {
+    const { createShellRegistry } = await import('../../sandbox/shells')
+    const { SHELL_STATUS_MARK, shellKillCommand } = await import('../../sandbox/fs-ops')
+    const rows = new Map<string, Record<string, unknown>>()
+    const SH = '66666666-6666-4666-8666-000000000001'
+    rows.set(SH, { id: SH, workspaceId: WS, command: 'npm run dev', state: 'running', exitCode: null, reason: null, readOffset: 0, startedAt: new Date(), endedAt: null })
+    const shellCalls: Array<{ command: string; o?: ExecOptions }> = []
+    let killedInContainer = false
+    const shells = createShellRegistry({
+      // A one-off (offline) container has its own PID namespace: it cannot see the shell (`gone`).
+      exec: async (_id: string, command: string, o?: ExecOptions) => {
+        shellCalls.push({ command, o })
+        if (o?.offline) return res({ stdout: `${SHELL_STATUS_MARK}gone:0:0\n` })
+        if (command === shellKillCommand(SH)) { killedInContainer = true; return res({ stdout: `${SHELL_STATUS_MARK}gone:3:0\n` }) }
+        return res({ stdout: `${SHELL_STATUS_MARK}running:3:3\n${Buffer.from('abc').toString('base64')}` })
+      },
+      workspace: async () => ({ id: WS, state: 'running', tainted: false, deletedAt: null }) as never,
+      store: {
+        create: async () => null, get: async (id: string) => (rows.get(id) ?? null) as never,
+        listRunning: async () => [...rows.values()].filter(r => r.state === 'running') as never, list: async () => [] as never,
+        end: async (id: string, p: { state: string; reason?: string | null }) => { const r = rows.get(id)!; if (r.state !== 'running') return false; Object.assign(r, p); return true },
+        setOffset: async (id: string, off: number) => { rows.get(id)!.readOffset = off }
+      },
+      secretValues: async () => [],
+      log: { info: () => {}, warn: () => {}, error: () => {} }
+    })
+    const rt = install()
+    ;(rt as unknown as { shells: unknown }).shells = shells
+    const unverified: ToolContext = { signal: new AbortController().signal, isTainted: () => true, taint: () => ({ sources: ['unverified'], flags: [] }) }
+    const out = await run('bash_output', { shellId: SH }, unverified)
+    expect(out).toMatchObject({ state: 'running', output: 'abc' })
+    expect(rows.get(SH)!.state).toBe('running')
+    expect(out).not.toHaveProperty('workspaceTainted')
+    const k = await run('kill_shell', { shellId: SH }, unverified)
+    expect(killedInContainer).toBe(true)
+    expect(k).toMatchObject({ state: 'killed' })
+    expect(k).not.toHaveProperty('alreadyEnded', true)
+    expect(shellCalls.every(c => !c.o?.offline)).toBe(true)
+  })
+})

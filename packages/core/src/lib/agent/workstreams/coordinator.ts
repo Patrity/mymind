@@ -36,7 +36,7 @@ import {
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import { addWorkstreamTaint, storedTaintSources, budgetOf, childrenOf, getWorkstream, patchWorkstream, publishWorkstream, rollupTree, treeBudgetOf, usedOf, workstreamWorkspaceTainted, type WorkstreamRow } from './store'
 import { guardOutput, type GuardDeps } from '../judge/guard'
-import { persistableTaint, TAINT_SOURCES, type TaintSource } from '../judge/types'
+import { persistableTaint, type TaintSource } from '../judge/types'
 import { recordEvent } from '../../observability/record'
 import { cancelWorkstream, childTitle, enqueueWhy, kick, questionNote, tagQuestion, threadTitle, tonyFacing, withQueuedSegment } from './loop'
 import { pushSteer } from '../runtime/inbox'
@@ -291,15 +291,10 @@ function fitReport<T>(kids: WorkstreamRow[], full: T[], short: (i: number) => T,
  *  first when any is tainted (that taints the reading run). `o.full`: read_workstream's one child. */
 export async function childrenResult(kids: WorkstreamRow[], extra: Record<string, unknown> = {}, o: { full?: boolean } = {}): Promise<Record<string, unknown>> {
   let tainted = false
-  const childTaint = new Set<TaintSource>()
-  for (const k of kids) {
-    if (!(await childTainted(k))) continue
-    tainted = true
-    // Final follow-up: the child's persisted sources ride along — the reading run inherits them.
-    for (const x of storedTaintSources(k)) childTaint.add(x)
-  }
-  const inherited = TAINT_SOURCES.filter(x => childTaint.has(x))
-  const head = { ...(tainted ? { workspaceTainted: true } : {}), ...(inherited.length ? { childTaint: inherited } : {}), ok: true, note: CHILD_UNTRUSTED_NOTE, ...extra }
+  for (const k of kids) if (await childTainted(k)) tainted = true
+  // Follow-up 2 (NB2): reading a tainted child's output (its row OR its workspace is tainted) gives the
+  // reading run the persisted `child` source — sticky for the coordinator's life, inherited by its work.
+  const head = { ...(tainted ? { workspaceTainted: true, childTaint: ['child'] } : {}), ok: true, note: CHILD_UNTRUSTED_NOTE, ...extra }
   const views: Array<ChildView | Record<string, unknown>> = kids.map(k => childView(k, false, o))
   const children = o.full ? views : fitReport(kids, views,
     i => ({ id: kids[i]!.id, goal: clipGoal(kids[i]!.goal), state: kids[i]!.state, note: 'Not shown here (the result is too long) — read_workstream for the full text.' }),

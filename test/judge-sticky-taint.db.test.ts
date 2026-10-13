@@ -517,3 +517,53 @@ describe('follow-up N4: a legacy tainted row keeps its implied mail', () => {
     expect((await getWorkstream(ws.id))!.taintSources.slice().sort()).toEqual(['flagged', 'mail'])
   }, 30_000)
 })
+
+describe('follow-up 2 (NB1): the segment end waits for its taint writes', () => {
+  it('a slow write lands before the next segment starts (its seed comes from the row)', async () => {
+    let landed = 0
+    Object.assign(segmentTaintDeps, { write: async (id: string, s: readonly ('mail' | 'flagged' | 'child' | 'workspace' | 'unverified')[]) => { await sleep(1500); landed = Date.now(); return realTaintDeps.write(id, s) } })
+    const ws = await newWorkstream('slow taint write')
+    // The read is the segment's last tool call; the model then ends its turn at once.
+    const { seen, runFn } = harness(() => [[...text('reading'), call('r', 'gmail_read_thread', { threadId: 't' }), finish('tool-calls')], [...text('read it'), finish('stop')]])
+    await driveSegment(ws.conversationId, runFn, ws.id)
+    const segmentEnded = Date.now()
+    expect(landed).toBeGreaterThan(0)
+    expect(landed).toBeLessThanOrEqual(segmentEnded)
+    await driveSegment(ws.conversationId, runFn, ws.id)
+    expect(seen[1]!.initial).toEqual(['mail'])
+  }, 60_000)
+
+  it('a write that keeps failing after the run already ended still counts as taint-failed (no clean continue)', async () => {
+    Object.assign(segmentTaintDeps, { retryMs: 200, write: async () => { throw new Error('db down') } })
+    const ws = await newWorkstream('late taint failure')
+    const { runFn } = harness(() => [[...text('reading'), call('r', 'gmail_read_thread', { threadId: 't' }), finish('tool-calls')], [...text('read it'), finish('stop')]])
+    await driveSegment(ws.conversationId, runFn, ws.id)
+    expect((await getWorkstream(ws.id))!.failures).toBe(1)
+  }, 60_000)
+})
+
+describe('follow-up 2 (NB2): reading a tainted child\'s output persists `child` on the coordinator', () => {
+  it('a child tainted by its row, and one tainted only by its workspace, both give the reader `child`; it is inherited by the next spawn', async () => {
+    const { childrenResult } = await import('@mymind/core/lib/agent/workstreams/coordinator')
+    const coord = await newWorkstream('NB2 coordinator')
+    const { children } = await spawnChildren(coord.id, [{ goal: 'judge-sticky NB2 row child' }, { goal: 'judge-sticky NB2 ws child' }], { labels: [], kick: false })
+    for (const k of children) convIds.push(k.conversationId)
+    await addWorkstreamTaint(children[0]!.id, ['mail'])
+    await until(async () => (await useDb().select().from(workspaces).where(eq(workspaces.workstreamId, children[1]!.id)))[0])
+    await useDb().update(workspaces).set({ tainted: true }).where(eq(workspaces.workstreamId, children[1]!.id))
+    // The coordinator's segment reads the workspace-only child through a read tool.
+    const kidRow = (await getWorkstream(children[1]!.id))!
+    const readChild: AgentTool = { name: 'read_child', description: 'read', kind: 'read', toolset: 'core', schema: {}, handler: async () => ({ result: await childrenResult([kidRow], {}, { full: true }), summary: 'read' }) }
+    const { seen, runFn } = harness(() => [[...text('reading the child'), call('c', 'read_child', {}), finish('tool-calls')], [...text('ok'), finish('stop')]], [readChild])
+    await driveSegment(coord.conversationId, runFn, coord.id)
+    expect(await getWorkstream(coord.id)).toMatchObject({ tainted: true, taintSources: ['child'] })
+    // Sticky: the next segment starts with it, and a spawn inherits it.
+    await driveSegment(coord.conversationId, runFn, coord.id)
+    expect(seen[1]!.initial).toEqual(['child'])
+    const { children: more } = await spawnChildren(coord.id, [{ goal: 'judge-sticky NB2 grandchild-ish' }], { labels: [], kick: false })
+    convIds.push(more[0]!.conversationId)
+    expect(await getWorkstream(more[0]!.id)).toMatchObject({ tainted: true, taintSources: ['child'] })
+    // A row-tainted child's view carries the same `child` marker.
+    expect(await childrenResult([(await getWorkstream(children[0]!.id))!])).toMatchObject({ workspaceTainted: true, childTaint: ['child'] })
+  }, 60_000)
+})

@@ -89,10 +89,11 @@ export function verdictView(judge: ApprovalVerdictDTO | null | undefined): Verdi
 const TAINT_LABELS: Record<TaintSource, string> = {
   flagged: 'flagged content',
   mail: 'mail read',
+  child: 'tainted child output',
   workspace: 'tainted workspace',
   unverified: 'unchecked content'
 }
-const TAINT_ORDER: TaintSource[] = ['flagged', 'mail', 'workspace', 'unverified']
+const TAINT_ORDER: TaintSource[] = ['flagged', 'mail', 'child', 'workspace', 'unverified']
 
 /** The card's "run tainted" chip text, or null for a clean run: "run tainted · flagged content, mail read". */
 export function taintLabel(sources: readonly TaintSource[] | null | undefined): string | null {

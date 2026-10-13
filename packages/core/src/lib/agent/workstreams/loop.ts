@@ -496,6 +496,9 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
       await Promise.all(costs)
       if (!o.skip) await checkpoint()
       await chain
+      // Follow-up 2 (NB1): every taint write of this segment lands (or fails, setting `taint-failed`)
+      // before onSegmentFinished reads `stop` and the next segment reads the row.
+      await taintChain.catch(() => {})
       if (mirror) await mirror.close().catch(err => console.error('[workstreams] origin mirror flush failed:', err))
       active.delete(run.id)
       ended.set(run.id, seg)

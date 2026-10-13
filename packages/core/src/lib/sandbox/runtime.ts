@@ -111,6 +111,17 @@ export async function taintRunWorkspace(runId: string | undefined): Promise<void
   await rt.manager.markTainted(ref.workspaceId)
 }
 
+/** Follow-up 2 (NB4): the run that works in this workspace read content the injection check could
+ *  not verify — its live background shells are stopped and its watches cancelled (they would run
+ *  files that run writes, with network). The workspace keeps its network for later untainted runs. */
+export const UNVERIFIED_REASON = 'a run in this workspace read content the injection check could not verify'
+export async function quarantineRunWorkspace(runId: string | undefined): Promise<void> {
+  const rt = workspaceRuntime()
+  const ref = await rt.resolve(runId)
+  await rt.shells.killAll(ref.workspaceId, `stopped: ${UNVERIFIED_REASON}`)
+  await rt.watches.cancelFor(ref.workspaceId, UNVERIFIED_REASON)
+}
+
 export const OVER_QUOTA_REASON = 'the workspace went over its disk quota (or the server ran low on disk)'
 
 /** Build a runtime around a given manager (tests: a labelled manager on a temp dir). */

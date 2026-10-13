@@ -247,12 +247,13 @@ export function warningTaintOf(text: string): 'flagged' | 'unverified' | null {
   return kind
 }
 
-/** Final follow-up: a coordinator's view of tainted children carries THEIR persisted sources
- *  (`childTaint`, next to `workspaceTainted`) — the reading run inherits them (mail / flagged). */
+/** Final follow-up 2 (NB2): a coordinator's view of a tainted child (its row OR its workspace is
+ *  tainted) carries `childTaint: ['child']` next to `workspaceTainted` — the reading run gets the
+ *  persisted `child` source. Only persisted kinds are read from it. */
 export function childTaintOf(result: unknown): TaintSource[] {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return []
   const c = (result as Record<string, unknown>).childTaint
-  return Array.isArray(c) ? (['flagged', 'mail'] as const).filter(x => c.includes(x)) : []
+  return Array.isArray(c) ? (['flagged', 'mail', 'child'] as const).filter(x => c.includes(x)) : []
 }
 
 /** applyHistoryPolicy's out-of-window marker: the result is gone from the prompt. */

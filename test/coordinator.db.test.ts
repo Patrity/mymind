@@ -736,7 +736,7 @@ describe('coordinator: taint, approvals, workspaces, cascade', () => {
     expect(child.tainted).toBe(true)
     expect(coordTaintedBeforeRead).toBe(false)                   // the wake report itself withheld its words
     expect((await getWorkstream(ws.id))!.tainted).toBe(true)      // reading its output tainted the coordinator
-    expect((await getWorkstream(ws.id))!.taintSources).toEqual(['mail'])   // the child's own kind, inherited
+    expect((await getWorkstream(ws.id))!.taintSources).toEqual(['child'])   // follow-up 2 (NB2): read a tainted child's output
     const { segmentPrimaryModelId } = await import('@mymind/core/lib/agent/runtime/pools')
     const childSeg = (await segRuns(child.conversationId))[0]!
     expect(childSeg.modelDefId).toBe(await segmentPrimaryModelId(child))

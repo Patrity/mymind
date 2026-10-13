@@ -38,6 +38,10 @@ const searchMemories: AgentTool = {
   name: 'search_memories', description: 'd', kind: 'read', toolset: 'memory', schema: {},
   handler: async () => ({ result: { hits: [INJECTED] }, summary: 's' })
 }
+const gmailRead: AgentTool = {
+  name: 'gmail_read_thread', description: 'd', kind: 'read', toolset: 'gmail', taints: true, schema: {},
+  handler: async () => ({ result: { messages: [{ body: 'hi' }] }, summary: 'read' })
+}
 const exec: AgentTool = {
   name: 'exec', description: 'd', kind: 'destructive', toolset: 'admin', dangerous: true, allowlistable: true, schema: { command: z.string() },
   autoApprove: async () => true,
@@ -56,12 +60,13 @@ function setup(o: Partial<RunHooks> = {}) {
   const events: ToolResultEvent[] = []
   const ask = vi.fn(async (_r: ApprovalRequest) => ({ approved: false }))
   const taintWorkspace = vi.fn(async (_runId: string | undefined) => {})
-  const set = buildAiTools([webFetch, readFile, research, searchMemories, exec], {
-    signal: new AbortController().signal, runId: 'run-1', requestApproval: ask, taintWorkspace, guard: heuristicGuard,
+  const quarantineWorkspace = vi.fn(async (_runId: string | undefined) => {})
+  const set = buildAiTools([webFetch, readFile, research, searchMemories, exec, gmailRead], {
+    signal: new AbortController().signal, runId: 'run-1', requestApproval: ask, taintWorkspace, quarantineWorkspace, guard: heuristicGuard,
     onEvent: (e) => { if (e.type === 'tool-result') events.push(e) }, ...o
   })
   const call = (name: string, input: Record<string, unknown> = {}) => (set[name]!.execute as Exec)(input, { toolCallId: `c-${name}` })
-  return { call, ask, events, taintWorkspace }
+  return { call, ask, events, taintWorkspace, quarantineWorkspace }
 }
 
 beforeEach(() => { page.content = QUIET; recordEvent.mockClear() })
@@ -344,5 +349,39 @@ describe('taintRunWorkspace', () => {
       expect(resolve).toHaveBeenCalledWith('run-7')
       expect(markTainted).toHaveBeenCalledWith('ws-9')
     } finally { setWorkspaceRuntime(null) }
+  })
+})
+
+describe('follow-up 2 (NB4): becoming tainted ONLY `unverified` stops the workspace\'s live shells and watches', () => {
+  it('the first fail-closed flag quarantines the run\'s workspace once, before the result returns; the workspace is not tainted', async () => {
+    page.content = INJECTED
+    const { call, quarantineWorkspace, taintWorkspace } = setup()
+    expect(await call('web_fetch', { url: 'https://a.example' })).toMatchObject({ [INJECTION_WARNING_KEY]: expect.any(String) })
+    expect(quarantineWorkspace).toHaveBeenCalledTimes(1)
+    expect(quarantineWorkspace).toHaveBeenCalledWith('run-1')
+    expect(taintWorkspace).not.toHaveBeenCalled()
+    await call('read_file')                                     // a second fail-closed flag: already quarantined
+    expect(quarantineWorkspace).toHaveBeenCalledTimes(1)
+  })
+  it('a run already tainted otherwise (a mail read) is not quarantined — its commands taint the workspace (cycle 82)', async () => {
+    page.content = INJECTED
+    const { call, quarantineWorkspace } = setup()
+    await call('gmail_read_thread')
+    await call('read_file')
+    expect(quarantineWorkspace).not.toHaveBeenCalled()
+  })
+  it('a REAL verdict never quarantines (it taints the run `flagged`)', async () => {
+    page.content = INJECTED
+    const { call, quarantineWorkspace } = setup({ guard: llmFlag })
+    await call('web_fetch', { url: 'https://a.example' })
+    expect(quarantineWorkspace).not.toHaveBeenCalled()
+  })
+  it('a quarantine that fails is recorded; the flagged result still reaches the model', async () => {
+    page.content = INJECTED
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { call } = setup({ quarantineWorkspace: async () => { throw new Error('docker down') } })
+    expect(await call('read_file')).toMatchObject({ [INJECTION_WARNING_KEY]: expect.any(String) })
+    expect(recordEvent).toHaveBeenCalledWith(expect.objectContaining({ name: 'judge:quarantine-failed', severity: 'error' }))
+    warn.mockRestore()
   })
 })

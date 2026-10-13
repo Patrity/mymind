@@ -142,14 +142,15 @@ export interface OutputWarningDTO {
  * (79b); `flagged` — the output guard flagged a result as aimed at the agent (cycle 84 §3.3);
  * `workspace` — a workspace that handled untrusted content (cycle 82).
  */
-export type TaintSource = 'mail' | 'flagged' | 'workspace' | 'unverified'
+export type TaintSource = 'mail' | 'flagged' | 'child' | 'workspace' | 'unverified'
 /** Display / prompt order: the most specific reason first. Final follow-up: `unverified` — the guard
  *  could not check a result (timeout, slot wait expired, judge down) and failed closed. Run-only. */
-export const TAINT_SOURCES: readonly TaintSource[] = ['flagged', 'mail', 'workspace', 'unverified']
+export const TAINT_SOURCES: readonly TaintSource[] = ['flagged', 'mail', 'child', 'workspace', 'unverified']
 /** Final follow-up (rulings N1/N2): the only sources ever persisted on a workstream row (and inherited
- *  by work it starts): a mail/calendar read, and `flagged` from a REAL verdict. `workspace` is derived
- *  live from the workspace's own flag; `unverified` lives and dies with its run. */
-export const PERSISTED_TAINT_SOURCES: readonly TaintSource[] = ['flagged', 'mail']
+ *  by work it starts): a mail/calendar read, `flagged` from a REAL verdict, and (follow-up 2, NB2)
+ *  `child` — a coordinator read output from a child whose row or workspace is tainted. `workspace` is
+ *  derived live from the workspace's own flag; `unverified` lives and dies with its run. */
+export const PERSISTED_TAINT_SOURCES: readonly TaintSource[] = ['flagged', 'mail', 'child']
 export function persistableTaint(sources: readonly string[] | null | undefined): TaintSource[] {
   return PERSISTED_TAINT_SOURCES.filter(x => sources?.includes(x))
 }

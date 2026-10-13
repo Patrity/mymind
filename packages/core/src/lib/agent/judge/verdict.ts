@@ -27,6 +27,7 @@ export const JUDGE_LIMITS = { callChars: 8000, goalChars: 2000, descriptionChars
 export const TAINT_SOURCE_TEXT: Record<TaintSource, string> = {
   flagged: 'the injection guard flagged content this run read as instructions aimed at the agent',
   mail: "the run read Tony's Google mail, calendar or contacts (third-party text)",
+  child: 'the run read output from a child workstream that handled untrusted content',
   workspace: 'the run used a workspace that has handled untrusted content',
   unverified: 'the run read content the injection guard could not check (it timed out or was unavailable), so it is treated as untrusted'
 }

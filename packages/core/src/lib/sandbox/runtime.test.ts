@@ -36,3 +36,24 @@ describe('final review I2: the manager hooks', async () => {
     expect(killed).toEqual([['w', 'stopped: idle']])
   })
 })
+
+describe('follow-up 2 (NB4): quarantineRunWorkspace', async () => {
+  const { quarantineRunWorkspace, setWorkspaceRuntime, UNVERIFIED_REASON } = await import('./runtime')
+  it('stops the run\'s workspace shells and cancels its watches — and never touches the network flag', async () => {
+    const killed: Array<[string, string]> = []
+    const cancelled: Array<[string, string]> = []
+    const markTainted = vi.fn()
+    setWorkspaceRuntime({
+      resolve: async (runId: string | undefined) => ({ workspaceId: `ws-of-${runId}`, kind: 'workstream', workstreamId: 'w', conversationId: 'c' }),
+      shells: { killAll: async (id: string, why: string) => { killed.push([id, why]); return 1 } },
+      watches: { cancelFor: async (id: string, why: string) => { cancelled.push([id, why]); return 1 } },
+      manager: { markTainted }
+    } as never)
+    try {
+      await quarantineRunWorkspace('run-9')
+      expect(killed).toEqual([['ws-of-run-9', `stopped: ${UNVERIFIED_REASON}`]])
+      expect(cancelled).toEqual([['ws-of-run-9', UNVERIFIED_REASON]])
+      expect(markTainted).not.toHaveBeenCalled()
+    } finally { setWorkspaceRuntime(null) }
+  })
+})

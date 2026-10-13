@@ -70,6 +70,14 @@ async function begin(ctx: ToolContext, scope: Scope): Promise<Call> {
   return { ref, tainted, offline, opts: { tainted, ...(offline ? { offline: true } : {}), signal: ctx.signal } }
 }
 
+/** Follow-up 2 (NB3): options for bash_output / kill_shell — fixed, non-model commands on a live
+ *  background shell. An `offline` run drops `offline` (a one-off cannot see the shell); a `tainted`
+ *  run keeps its options (its workspace's networked container, and its shells, are gone already). */
+function liveShellOpts(c: Call): ExecOptions {
+  const { offline: _offline, ...rest } = c.opts
+  return rest
+}
+
 function exec(c: Call, command: string, o: ExecOptions = {}): Promise<SandboxExecResult> {
   return workspaceRuntime().manager.exec(c.ref.workspaceId, command, { ...c.opts, ...o })
 }
@@ -360,7 +368,9 @@ export const bashOutputTool: AgentTool = {
   schema: { shellId: z.string().uuid().describe('From bash with run_in_background') },
   handler: (a, ctx) => guard('bash_output', ctx, async (scope) => {
     const c = await begin(ctx, scope)
-    const o = await workspaceRuntime().shells.output(c.ref.workspaceId, a.shellId as string, c.opts)
+    // Follow-up 2 (NB3): a fixed read of a live shell — always against the real container, never in an
+    // offline one-off (which cannot see the shell's process and would mark it lost).
+    const o = await workspaceRuntime().shells.output(c.ref.workspaceId, a.shellId as string, liveShellOpts(c))
     const { tainted: _t, ...body } = o
     return {
       result: withTaint(o, { ...body, untrusted: WORKSPACE_UNTRUSTED_NOTE }),
@@ -377,7 +387,8 @@ export const killShellTool: AgentTool = {
   schema: { shellId: z.string().uuid().describe('From bash with run_in_background') },
   handler: (a, ctx) => guard('kill_shell', ctx, async (scope) => {
     const c = await begin(ctx, scope)
-    const k = await workspaceRuntime().shells.kill(c.ref.workspaceId, a.shellId as string, c.opts)
+    // NB3: the kill must reach the process in the real container.
+    const k = await workspaceRuntime().shells.kill(c.ref.workspaceId, a.shellId as string, liveShellOpts(c))
     return { result: withTaint(k, { shellId: k.shellId, state: k.state, ...(k.alreadyEnded ? { alreadyEnded: true } : {}) }), summary: k.alreadyEnded ? `shell already ${k.state}` : `stopped shell (${k.state})` }
   })
 }

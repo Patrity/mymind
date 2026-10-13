@@ -12,7 +12,7 @@ import { recordEvent, withSpan } from '../observability/record'
 import type { ToolsetId } from './toolsets'
 import { carriesInjectionWarning, carriesWorkspaceTaint, childTaintOf, producedContent } from './tool-history'
 import { guardOutput, guardReasons, guardWarning, outputWarningDTO, wrapFlagged, type GuardInput, type GuardVerdict } from './judge/guard'
-import { RUN_CALL_ARGS_CHARS, TAINT_SOURCES, type OutputWarningDTO, type RunCall, type RunTaint, type TaintFlag, type TaintSource } from './judge/types'
+import { onlyUnverified, RUN_CALL_ARGS_CHARS, TAINT_SOURCES, type OutputWarningDTO, type RunCall, type RunTaint, type TaintFlag, type TaintSource } from './judge/types'
 import { cutAt } from './judge/verdict'
 
 export interface RunHooks {
@@ -42,6 +42,10 @@ export interface RunHooks {
   /** Final fix wave (M5): this run is a subagent's own (research_web) — its guarded results are
    *  checked by heuristics only; the parent classifies the subagent's report once. */
   nestedGuard?: boolean
+  /** Follow-up 2 (NB4): the run just became tainted ONLY `unverified` — stop its workspace's live
+   *  background shells and cancel its watches (tests inject one). Default:
+   *  sandbox/runtime.ts quarantineRunWorkspace. */
+  quarantineWorkspace?: (runId: string | undefined) => Promise<void>
   /** Cycle 84 final fix wave (C1): the run gained a taint source (also fired once at the start when
    *  it begins tainted) — the runner persists it on the workstream at once. Errors are swallowed. */
   onTaint?: (t: RunTaint) => void
@@ -78,6 +82,12 @@ export const TAINT_TITLES: Record<TaintSource, { web: string; background: string
     background: OUTBOUND_BACKGROUND_TITLE,
     command: TAINTED_COMMAND_TITLE,
     clause: 'Bridget read your Google mail, calendar or contacts recently'
+  },
+  child: {
+    web: 'Web request after reading a tainted child\'s output',
+    background: 'Background work after reading a tainted child\'s output',
+    command: 'Command after reading a tainted child\'s output',
+    clause: 'Bridget read output from a child workstream that handled untrusted content'
   },
   workspace: {
     web: 'Web request from a tainted workspace',
@@ -182,6 +192,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
   const guard = hooks.guard ?? guardOutput
   // Imported at call time: the sandbox runtime reaches back into the agent loop (watch wakes).
   const taintWorkspace = hooks.taintWorkspace ?? (async (runId: string | undefined) => (await import('../sandbox/runtime')).taintRunWorkspace(runId))
+  const quarantine = hooks.quarantineWorkspace ?? (async (runId: string | undefined) => (await import('../sandbox/runtime')).quarantineRunWorkspace(runId))
 
   /**
    * Cycle 84 Task 3 (spec §3.3): scan a `guard` tool's result. Unflagged → null (the result is
@@ -207,7 +218,16 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
     // Final follow-up (N2): only a REAL verdict (flag-alone heuristic, classifier, a flagged nested
     // source) is `flagged` — persisted on a workstream for life. A fail-closed flag (the check could not
     // run) is `unverified`: this run only, never persisted or inherited.
+    const wasOnlyUnverified = onlyUnverified(runTaint().sources)
     addTaint(v.by === 'fail-closed' ? 'unverified' : 'flagged')
+    // Follow-up 2 (NB4): the run JUST became tainted by `unverified` only — its commands now run
+    // offline, but live networked shells/watches would run whatever it writes: stop them first.
+    if (!wasOnlyUnverified && onlyUnverified(runTaint().sources)) {
+      try { await quarantine(hooks.runId) } catch (err) {
+        console.warn(`[guard] stopping the shells/watches of run ${hooks.runId ?? '-'} failed:`, (err as Error).message)
+        recordEvent({ kind: 'tool', name: 'judge:quarantine-failed', severity: 'error', meta: { tool: t.name, runId: hooks.runId ?? null, error: (err as Error).message.slice(0, 300) } })
+      }
+    }
     // Final fix wave (I5): only a REAL verdict — a flag-alone heuristic signal or the classifier saying
     // injection — takes the workspace offline (persistent). A fail-closed flag (the classifier timed
     // out, waited too long for a slot, errored, was off, or Stop cancelled it) decided nothing about
