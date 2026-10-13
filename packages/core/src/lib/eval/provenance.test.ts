@@ -52,6 +52,8 @@ describe('gateway allow-list', () => {
     expect(allow('http://gw.lan:4000.evil.net/v1')).toBe(false)
     expect(allow('http://gw.lan:4000@evil.net/v1')).toBe(false)
     expect(allow('http://gw.lan.evil.net:4000/v1')).toBe(false)
+    expect(allow('http://gw.lan:40001/v1')).toBe(false) // a longer port shares the prefix
+    expect(allow('https://judge.example.evil.net/x')).toBe(false) // a longer host shares the prefix
     expect(allow('https://gw.lan:4000/v1')).toBe(false) // scheme differs
     expect(allow('http://gw.lan:4001/v1')).toBe(false) // port differs
     expect(allow('http://user:pw@gw.lan:4000/v1')).toBe(false) // credentials in the URL
