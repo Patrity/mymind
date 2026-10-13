@@ -178,14 +178,14 @@ describe('fix round 1', () => {
     await expect(downloadRoute(ev('session', { query: { path: 'a.txt' } }))).rejects.toMatchObject({ statusCode: 503 })
     expect(sendCommand).not.toHaveBeenCalled()
   })
-  it('M5: a claimed command that outlives the budget says the sandbox is still starting; the budget covers a cold start', async () => {
+  it('M5: a claimed command that outlives the budget says so (504); the budget covers a 60s script + the bus', async () => {
     const { CommandTimeoutError } = await import('@mymind/core/lib/bus/commands')
     const { VIEW_TIMEOUT_MS } = await import('../server/utils/workspaces-http')
-    expect(VIEW_TIMEOUT_MS).toBeGreaterThanOrEqual(180_000) // create 60s + start 60s + script 60s
+    expect(VIEW_TIMEOUT_MS).toBeGreaterThanOrEqual(75_000) // cycle 86: the script ≤ 60s (no container to start)
     sendCommand.mockRejectedValue(new CommandTimeoutError('workspace-view', 1, VIEW_TIMEOUT_MS, true))
     const e = await filesRoute(ev('session')).catch(x => x)
     expect(e).toMatchObject({ statusCode: 504 })
-    expect(e.data.message).toMatch(/still starting/)
+    expect(e.data.message).toMatch(/still running/)
   })
   it('M10: GET …/home creates the home workspace only for a web session; a token reads it or gets 404', async () => {
     db.rows = []

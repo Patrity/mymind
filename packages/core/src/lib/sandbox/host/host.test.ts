@@ -6,7 +6,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { confinementProfile, sbplString } from './profile'
+import { confinementProfile, credentialPaths, MACH_DENY, sbplString } from './profile'
 import { assertEvalSpawn, registerEvalScratch, runHost, unregisterEvalScratch, type HostCommand } from './spawn'
 import { assertSecretName, confinedEnv, hostBaseEnv } from './env'
 
@@ -31,14 +31,19 @@ describe('the sandbox-exec profile', () => {
   it('denies network, writes everywhere but the workspace + tmp, Apple events, LaunchServices/pasteboard/DNS-SD, open/osascript — allows LAST', () => {
     const p = confinementProfile({ writable: ['/w/ws', '/w/tmp/'] })
     const lines = p.split('\n')
-    expect(lines.slice(0, 3)).toEqual(['(version 1)', '(allow default)', '(deny network*)'])
-    expect(p).toContain('(deny appleevent-send)')
+    expect(lines.slice(0, 5)).toEqual(['(version 1)', '(allow default)', '(deny network*)', '(deny user-preference-write)', '(deny appleevent-send)'])
     expect(p).toContain('(global-name "com.apple.coreservices.launchservicesd")')
     expect(p).toContain('(global-name "com.apple.dnssd.service")')
-    expect(p).toContain('(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript"))')
+    expect(p).toContain('(global-name "com.apple.SecurityServer")')
+    expect(p).toContain(`(deny mach-lookup ${MACH_DENY.join(' ')})`)
+    expect(p).toContain('(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript") (literal "/usr/bin/shortcuts"))')
     // The allow follows its deny (sandbox-exec: the last matching rule wins), trailing slash trimmed.
     expect(lines.indexOf('(deny file-write*)')).toBeLessThan(lines.findIndex(l => l.startsWith('(allow file-write*')))
     expect(lines.at(-1)).toMatch(/^\(allow file-write\* \(subpath "\/w\/ws"\) \(subpath "\/w\/tmp"\) \(literal "\/dev\/null"\)/)
+    // credential read-denies come LAST (nothing after them can re-allow)
+    const withSecrets = confinementProfile({ writable: ['/w/ws'], denyReadUnder: '/h', readable: ['/h/w'], secretPaths: ['/h/w/.ssh'], secretNameUnder: ['/h/.config'] }).split('\n')
+    expect(withSecrets.at(-1)).toBe('(deny file-read* (subpath "/h/w/.ssh") (regex #"^/h/\\.config/.*([Tt]oken|[Cc]redential|[Ss]ecret)"))')
+    expect(credentialPaths('/Users/b', ['/srv/app/.env'])).toEqual(expect.arrayContaining(['/Users/b/.ssh', '/Users/b/.config/gh', '/Users/b/.netrc', '/Users/b/.aws', '/Users/b/.docker', '/Users/b/Library/Keychains', '/Users/b/Library/Application Support/Google/Chrome', '/Users/b/mymind/env', '/srv/app/.env']))
     expect(p).not.toContain('file-read*')
   })
 
@@ -66,7 +71,8 @@ describe('the env', () => {
     expect(c.TMPDIR).toBe('/t')
   })
   it('reserved secret names are refused', () => {
-    for (const n of ['PATH', 'HOME', 'DYLD_INSERT_LIBRARIES', 'LD_PRELOAD', 'SSH_AUTH_SOCK', 'NODE_OPTIONS', 'BASH_ENV', 'TMPDIR', '1X', 'a-b']) expect(() => assertSecretName(n), n).toThrow(/invalid sandbox secret name/)
+    for (const n of ['PATH', 'HOME', 'DYLD_INSERT_LIBRARIES', 'LD_PRELOAD', 'SSH_AUTH_SOCK', 'NODE_OPTIONS', 'BASH_ENV', 'TMPDIR', '1X', 'a-b',
+      'PERL5OPT', 'PERL5LIB', 'RUBYOPT', 'GIT_SSH_COMMAND', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_PARAMETERS', 'GIT_EXEC_PATH', 'SHELLOPTS']) expect(() => assertSecretName(n), n).toThrow(/invalid sandbox secret name/)
     expect(() => assertSecretName('GITHUB_TOKEN')).not.toThrow()
   })
 })
@@ -217,5 +223,94 @@ describe.runIf(darwin)('confinement under sandbox-exec (macOS)', () => {
       expect(r.stdout).toMatch(/home=(?!0)\d+/)
       expect(r.stdout).toContain('ws=0')
     } finally { await rm(homeFile, { force: true }) }
+  })
+})
+
+// ── fix round 1: out-of-process escapes and credential reads (macOS) ──────────────────────────
+
+describe.runIf(darwin)('fix round 1: what a confined command can no longer reach (real sandbox-exec probes)', () => {
+  const run = (command: string, confined: boolean, extra: Partial<HostCommand> = {}) =>
+    runHost({ ...base(), env: confined ? confinedEnv(hostBaseEnv(), tmp) : hostBaseEnv(), ...(confined ? { confine: { writable: [ws, tmp] } } : {}), command, ...extra })
+
+  it('mach services that act for the caller (keychain, LaunchServices, pasteboard, DNS-SD, URL sessions, Messages, AirDrop, Shortcuts) can not be looked up', async () => {
+    const lookup = path.join(root, 'look.py')
+    await writeFile(lookup, ['import ctypes, sys', 'lib = ctypes.CDLL("/usr/lib/libSystem.dylib")', 'bp = ctypes.c_uint.in_dll(lib, "bootstrap_port")',
+      'for n in sys.argv[1:]:', '    port = ctypes.c_uint(0)', '    print(n, lib.bootstrap_look_up(bp, n.encode(), ctypes.byref(port)))'].join('\n'))
+    const names = ['com.apple.coreservices.launchservicesd', 'com.apple.dnssd.service', 'com.apple.nsurlsessiond', 'com.apple.pasteboard.1', 'com.apple.SecurityServer',
+      'com.apple.securityd.xpc', 'com.apple.imagent.desktop.auth', 'com.apple.imtransferservices.IMTransferAgent', 'com.apple.sharingd', 'com.apple.shortcuts']
+    const parse = (out: string) => Object.fromEntries(out.trim().split('\n').map(l => l.split(' ')).map(([n, r]) => [n, Number(r)]))
+    const clean = parse((await run(`python3 -I ${lookup} ${names.join(' ')}`, false)).stdout)
+    const present = names.filter(n => clean[n] === 0) // a service this Mac does not run proves nothing
+    expect(present.length).toBeGreaterThanOrEqual(8)
+    const confined = parse((await run(`python3 -I ${lookup} ${present.join(' ')}`, true)).stdout)
+    for (const n of present) expect(confined[n], n).toBe(1100) // BOOTSTRAP_UNKNOWN_SERVICE: the sandbox hides it
+  })
+
+  it('the keychain: a credential stored for git is readable clean, refused confined (securityd is out of reach)', async () => {
+    const helper = path.join((await runHost({ ...base(), command: 'git --exec-path' })).stdout.trim(), 'git-credential-osxkeychain')
+    const id = `protocol=https\nhost=mm-host-test-${process.pid}.invalid\nusername=mmprobe\n`
+    await runHost({ ...base(), command: `${helper} store`, input: `${id}password=probe-secret-${process.pid}\n\n` })
+    try {
+      expect((await run(`${helper} get`, false, { input: `${id}\n` })).stdout).toContain(`password=probe-secret-${process.pid}`)
+      const c = await run(`${helper} get`, true, { input: `${id}\n` })
+      expect(c.stdout).not.toContain('probe-secret')
+      expect(c.code).not.toBe(0)
+    } finally { await runHost({ ...base(), command: `${helper} erase`, input: `${id}\n` }) }
+  })
+
+  it('no preference writes through cfprefsd (`defaults write` persists nothing)', async () => {
+    const domain = `mm.host.test.${process.pid}`
+    const r = await run(`defaults write ${domain} k v; echo "rc=$?"`, true)
+    expect(r.stdout).toMatch(/rc=[1-9]/)
+    await expect(readFile(path.join(os.homedir(), 'Library/Preferences', `${domain}.plist`))).rejects.toThrow(/ENOENT/)
+  })
+
+  it('/usr/bin/shortcuts can not even start (nothing of Tony\'s is run: the exec itself is refused)', async () => {
+    const r = await run('/usr/bin/shortcuts list >/dev/null 2>&1; echo "rc=$?"', true)
+    expect(r.stdout).toBe('rc=126\n')
+  })
+
+  it('AF_UNIX sockets are network too: a local socket server is reachable clean, refused confined', async () => {
+    const sock = path.join(root, 's.sock')
+    let accepted = 0
+    const server = net.createServer((c) => { accepted++; c.end('hi') })
+    await new Promise<void>(r => server.listen(sock, () => r()))
+    try {
+      const probe = `python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); print(s.recv(2).decode())' ${sock}`
+      expect((await run(probe, false)).stdout).toBe('hi\n')
+      const c = await run(probe, true)
+      expect(c.code).not.toBe(0)
+      expect(c.stderr).toMatch(/Operation not permitted|PermissionError/)
+      expect(accepted).toBe(1)
+    } finally { await new Promise(r => server.close(r)) }
+  })
+
+  it('appleevent-send (probed alone, so no real event is ever sent): an event to Finder is refused as if Finder were not running', async () => {
+    // The full profile already refuses /usr/bin/osascript itself, and a copy of it is killed by
+    // macOS launch constraints — so the Apple-event rule is probed on its own here (the profile
+    // test above pins that the real profile carries it).
+    const r = await runHost({ ...base(), command: `/usr/bin/sandbox-exec -p '(version 1) (allow default) (deny appleevent-send)' /usr/bin/osascript -e 'tell application "Finder" to count windows'` })
+    expect(r.code).not.toBe(0)
+    expect(r.stderr).toMatch(/-600/)
+  })
+
+  it('C1: credential paths are unreadable confined (dirs, files, a *token* name under ~/.config, MyMind\'s env); the rest of home is not', async () => {
+    const home = path.join(root, 'fakehome')
+    const files: Record<string, string> = {
+      '.ssh/id_ed25519': 'KEY', '.config/gh/hosts.yml': 'GH', '.netrc': 'NETRC', '.aws/credentials': 'AWS', '.docker/config.json': 'DOCKER',
+      'Library/Keychains/login.keychain-db': 'KC', 'Library/Application Support/Google/Chrome/Default/Cookies': 'COOKIE',
+      '.config/someapp/api_token': 'TOKEN', 'mymind/env/mymind.env': 'ENV', 'notes.txt': 'NOTES'
+    }
+    for (const [rel, v] of Object.entries(files)) { await mkdir(path.dirname(path.join(home, rel)), { recursive: true }); await writeFile(path.join(home, rel), v) }
+    const extraEnv = path.join(root, 'app.env')
+    await writeFile(extraEnv, 'DATABASE_URL=x')
+    const confine = { writable: [ws, tmp], secretPaths: credentialPaths(home, [extraEnv]), secretNameUnder: [path.join(home, '.config')] }
+    const cat = (rel: string) => `cat ${JSON.stringify(path.join(home, rel))} 2>/dev/null; echo "|$?"`
+    for (const rel of Object.keys(files).filter(r => r !== 'notes.txt')) {
+      expect((await runHost({ ...base(), command: cat(rel) })).stdout, `clean ${rel}`).toBe(`${files[rel]}|0\n`)
+      expect((await runHost({ ...base(), confine, command: cat(rel) })).stdout, `confined ${rel}`).toMatch(/^\|1\n$/)
+    }
+    expect((await runHost({ ...base(), confine, command: `cat ${extraEnv} 2>/dev/null; echo "|$?"` })).stdout).toBe('|1\n')
+    expect((await runHost({ ...base(), confine, command: cat('notes.txt') })).stdout).toBe('NOTES|0\n')
   })
 })

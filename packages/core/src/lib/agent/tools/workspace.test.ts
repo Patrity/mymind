@@ -498,6 +498,27 @@ describe('Task 3 fix round 2: a secret store that fails MID-call withholds the o
   })
 })
 
+describe('fix round 1: export_to_document reads strictly once mail/calendar content is involved', () => {
+  it('a clean run in a clean workspace: no strict flag; a tainted run, an unverified run or a tainted workspace: strict', async () => {
+    const docs = await import('../../../services/documents')
+    vi.spyOn(docs, 'findDocByPath').mockResolvedValue(null)
+    vi.spyOn(docs, 'createDoc').mockResolvedValue({ id: 'd1', path: '/input/r.md', title: 'r', project: null, type: 'note', contentHash: 'h', content: '' } as never)
+    execResult = command => command === READ_TEXT_SCRIPT ? res({ stdout: JSON.stringify({ content: 'x', bytes: 1, path: 'r.md' }) }) : res()
+    const strictOf = async (c: ToolContext) => {
+      await tool('export_to_document').handler({ path: 'r.md', docPath: '/input/r.md' }, c)
+      const call = calls.filter(x => x.command === READ_TEXT_SCRIPT).at(-1)!
+      expect(call.o.internal).toBe(true)
+      return JSON.parse(call.o.input!).strict === true
+    }
+    expect(await strictOf(ctx(false))).toBe(false)
+    expect(await strictOf(ctx(true))).toBe(true)
+    expect(await strictOf({ signal: new AbortController().signal, isTainted: () => true, taint: () => ({ sources: ['unverified'], flags: [] }) })).toBe(true)
+    wsTainted = true
+    expect(await strictOf(ctx(false))).toBe(true)
+    vi.restoreAllMocks()
+  })
+})
+
 describe('final fix wave', () => {
   type Exec = (i: unknown, o: unknown) => Promise<unknown>
   const SHELL = '44444444-4444-4444-8444-444444444444'

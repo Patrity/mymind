@@ -29,7 +29,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { assertSecretName, confinedEnv, hostBaseEnv } from './host/env'
 import { runHost, registerEvalScratch } from './host/spawn'
-import { SANDBOX_EXEC, type Confinement } from './host/profile'
+import { credentialPaths, SANDBOX_EXEC, type Confinement } from './host/profile'
 import { SandboxDiskLowError, SandboxUnavailableError } from './errors'
 import { dbWorkspaceStore, type WorkspaceRow, type WorkspaceStore } from './store'
 import type { SandboxHealth } from '../../shared/types/workspaces'
@@ -155,6 +155,10 @@ export interface SandboxManagerOptions extends SandboxRuntimeHooks {
   evalWorld?: string
   /** Where a command's base env comes from (tests). */
   env?: NodeJS.ProcessEnv
+  /** Bridget's home (default os.homedir()) — its credential paths are unreadable when confined. */
+  home?: string
+  /** More never-readable paths (default: the worker's own .env / .env.native and MYMIND_SECRET_PATHS). */
+  secretPaths?: string[]
   /** The activity recorder (default observability/record recordEvent). */
   record?: (e: SpanInput) => void
   log?: Pick<Console, 'info' | 'warn' | 'error'>
@@ -220,6 +224,13 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   let lowDisk: { freeBytes: number } | null = null
   /** The eval world's realpath'd root (scratch dir), once created. */
   let evalRoot: string | null = null
+  const home = opts.home ?? os.homedir()
+  /** Fix round 1 (C1): never readable by a confined command — her logins, MyMind's env. */
+  const secretPaths = credentialPaths(home, opts.secretPaths ?? [
+    path.resolve('.env'), path.resolve('.env.native'),
+    ...(process.env.MYMIND_SECRET_PATHS ?? '').split(':').filter(p => p.startsWith('/'))
+  ])
+  const secretNameUnder = [path.join(home, '.config')]
 
   function hostDir(id: string): string {
     if (!UUID.test(id)) throw new Error(`invalid workspace id ${id}`)
@@ -356,7 +367,11 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     const secrets = o.secrets ?? {}
     for (const k of Object.keys(secrets)) assertSecretName(k)
     if (evalWorld && Object.keys(secrets).length) throw new SandboxUnavailableError('eval: secrets are never available in an eval world')
-    let row = await liveRow(id)
+    // Fix round 1 (minor 7): a MODEL command's confinement decision reads the row UNDER the workspace
+    // lock, so it can't slip past a taint another run is landing at the same moment. Internal scripts
+    // skip it: they are never confined outside eval, and the shell kills of stopIf / the idle stop /
+    // destroy run while that lock is already held.
+    let row = o.tainted || internal ? await liveRow(id) : await locked(id, () => liveRow(id))
     const dir = await ensureDir(id)
     const ctrl = o.tainted ? await taint(id) : null
     let tmp: string | null = null
@@ -377,11 +392,11 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
       if (reason) {
         tmp = await newTmpDir()
         env = confinedEnv(base, tmp)
-        confine = { writable: [dir, tmp] }
+        confine = { writable: [dir, tmp], secretPaths, secretNameUnder }
         if (evalWorld) {
           const root = await ensureEvalRoot()
           env.HOME = path.join(root, '.home')
-          confine = { writable: [dir, tmp], denyReadUnder: os.homedir(), readable: [root] }
+          confine = { writable: [dir, tmp], denyReadUnder: os.homedir(), readable: [root], secretPaths, secretNameUnder }
         }
         record({ kind: 'tool', name: 'sandbox:confined', severity: 'info', meta: { workspaceId: id, reason, ...(o.audit?.tool ? { tool: o.audit.tool } : {}), ...(o.audit?.runId ? { runId: o.audit.runId } : {}) } })
       } else {

@@ -52,9 +52,9 @@ describe('fs-ops shell scripts', () => {
   it('the command goes in on stdin (never in argv); a bad id is refused', () => {
     expect(shellStartCommand('66666666-6666-4666-8666-000000000001')).toContain('cat > "$d/cmd"')
     expect(() => shellStartCommand('../../etc')).toThrow(/bad shell id/)
-    expect(shellOutputCommand('66666666-6666-4666-8666-000000000001', 10, 100)).toContain('tail -c +11')
+    // Fix round 1: the data is read by a python O_NOFOLLOW reader from byte 10 (never `tail` on a path).
+    expect(shellOutputCommand('66666666-6666-4666-8666-000000000001', 10, 100)).toMatch(/python3 -I -c '.*O_NOFOLLOW.*' '66666666-6666-4666-8666-000000000001' 10 "\$n" b64/s)
     // Cycle 86: portable (macOS base64 has no -w; no /proc, no setsid, no GNU stat).
-    expect(shellOutputCommand('66666666-6666-4666-8666-000000000001', 10, 100)).toContain("| base64 | tr -d '\\n'")
     for (const c of [shellStartCommand('66666666-6666-4666-8666-000000000001'), shellOutputCommand('66666666-6666-4666-8666-000000000001', 0, 1)]) {
       expect(c).not.toMatch(/\/proc\/|\bsetsid\b(?! *\()|stat -c|base64 -w/)
     }
@@ -102,7 +102,7 @@ describe('shell registry', () => {
     expect(store.rows.get(shellId)!.readOffset).toBe(4)
     setReply(() => res({ stdout: status('exit:0', 10, 6, Buffer.from('efghij').toString('base64')) }))
     const o = await reg.output(WS, shellId)
-    expect(calls.at(-1)!.command).toContain('tail -c +5')
+    expect(calls.at(-1)!.command).toContain("'66666666-6666-4666-8666-000000000001' 4 \"$n\" b64")
     expect(o).toMatchObject({ state: 'exited', exitCode: 0, output: 'efghij', more: false })
     const { shellId: s2 } = await (setReply(() => res({ stdout: '__mm_shell_pid__:2\n' })), reg.start(WS, 'y'))
     setReply(() => res({ stdout: status('gone', 0, 0) }))

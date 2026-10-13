@@ -3,7 +3,7 @@
 // unconfined, still no secrets), persistent workspace taint + re-enable, the eval world (always
 // confined, whatever the switch), the low-disk alarm, the idle stop, and background shells as
 // process groups (kill, restart re-attach / lost).
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -261,5 +261,77 @@ describe('background shells as process groups (real processes)', () => {
     const { m, store } = mgr({ switchOn: true })
     const reg = createShellRegistry({ exec: m.exec, peek: m.peek, workspace: (id: string) => store.get(id), store: memShells(), secretValues: async () => [] })
     await expect(reg.start(WS, 'sleep 30', { tainted: true })).rejects.toThrow(/not available while commands run confined/)
+  })
+})
+
+describe('fix round 1: MyMind\'s own (unconfined) readers never follow a planted link', () => {
+  it('bash_output / the Shells tail: an out file (or a parent) swapped for a symlink reads nothing', async () => {
+    const { m, store } = mgr()
+    const secret = path.join(outside, `cred-${process.pid}`)
+    await writeFile(secret, 'GH_TOKEN_VALUE')
+    const dir = await m.ensureDir(WS)
+    const SID = '00000000-0000-4000-8000-0000000000f1'
+    const shells = (() => {
+      const row = { id: SID, workspaceId: WS, command: 'x', state: 'running', exitCode: null, reason: null, readOffset: 0, startedAt: new Date(), endedAt: null } as WorkspaceShellRow
+      return { create: async () => row, get: async () => row, listRunning: async () => [row], list: async () => [row], end: async () => true, setOffset: async () => {} } as ShellStore
+    })()
+    const reg = createShellRegistry({ exec: m.exec, peek: m.peek, workspace: id => store.get(id), store: shells, secretValues: async () => [] })
+    await mkdir(path.join(dir, '.mymind/shells', SID), { recursive: true })
+    await writeFile(path.join(dir, '.mymind/shells', SID, 'exit'), '0')
+    await symlink(secret, path.join(dir, '.mymind/shells', SID, 'out'))
+    await expect(reg.output(WS, SID)).rejects.toThrow(/could not read the shell's output/)
+    expect((await reg.tail(WS, SID)).output).not.toContain('GH_TOKEN')
+    // A symlinked parent (the shells dir itself) is refused the same way.
+    await rm(path.join(dir, '.mymind'), { recursive: true })
+    const fake = path.join(outside, `fake-mymind-${process.pid}`)
+    await mkdir(path.join(fake, 'shells', SID), { recursive: true })
+    await writeFile(path.join(fake, 'shells', SID, 'out'), 'GH_TOKEN_VALUE')
+    await writeFile(path.join(fake, 'shells', SID, 'exit'), '0')
+    await symlink(fake, path.join(dir, '.mymind'))
+    await expect(reg.output(WS, SID)).rejects.toThrow(/could not read the shell's output/)
+    expect((await reg.tail(WS, SID)).output).not.toContain('GH_TOKEN')
+  })
+
+  it('export reads in strict mode (a tainted run / workspace): relative paths only, never through a symlink; non-strict reads anywhere', async () => {
+    const { m } = mgr()
+    const { READ_TEXT_SCRIPT } = await import('./fs-ops')
+    const dir = await m.ensureDir(W2)
+    const secret = path.join(outside, `cred2-${process.pid}`)
+    await writeFile(secret, 'SECRET_KEY')
+    await writeFile(path.join(dir, 'ok.md'), '# ok')
+    await symlink(secret, path.join(dir, 'link.md'))
+    await mkdir(path.join(outside, `d-${process.pid}`), { recursive: true })
+    await writeFile(path.join(outside, `d-${process.pid}`, 'x.md'), 'SECRET_KEY')
+    await symlink(path.join(outside, `d-${process.pid}`), path.join(dir, 'linkdir'))
+    const read = async (p: string, strict: boolean) => JSON.parse((await m.exec(W2, READ_TEXT_SCRIPT, { input: JSON.stringify({ path: p, ...(strict ? { strict: true } : {}) }), internal: true })).stdout)
+    expect(await read('ok.md', true)).toMatchObject({ content: '# ok' })
+    expect(await read('link.md', true)).toMatchObject({ error: 'symlink' })
+    expect(await read('linkdir/x.md', true)).toMatchObject({ error: 'symlink' })
+    expect(await read(secret, true)).toMatchObject({ error: 'outside' })
+    expect(await read('../x', true)).toMatchObject({ error: 'outside' })
+    // Clean runs keep "absolute anywhere" (and links are theirs to follow).
+    expect(await read(secret, false)).toMatchObject({ content: 'SECRET_KEY' })
+  })
+})
+
+describe('fix round 1: minors', () => {
+  it('destroyWorkspace kills the workspace\'s shells (onStopped) before removing its dir and row', async () => {
+    const onStopped = vi.fn()
+    const { m, store } = mgr({ onStopped })
+    await m.exec(W2, 'echo x > f')
+    await m.destroyWorkspace(W2)
+    expect(onStopped).toHaveBeenCalledWith(W2, 'stopped: the workspace was deleted')
+    expect(store.rows.has(W2)).toBe(false)
+  })
+
+  it.runIf(darwin)('a clean command issued while a taint is landing reads the flag under the lock — it runs confined', async () => {
+    const { m, store } = mgr({ switchOn: true })
+    // Slow the taint's own write so the race window is wide open.
+    const realSet = store.setTainted
+    store.setTainted = async (id, t) => { await new Promise(r => setTimeout(r, 50)); return realSet(id, t) }
+    const tainting = m.markTainted(WS)
+    const clean = m.exec(WS, 'echo hi')
+    await tainting
+    expect((await clean).confined).toEqual({ reason: 'tainted-workspace' })
   })
 })

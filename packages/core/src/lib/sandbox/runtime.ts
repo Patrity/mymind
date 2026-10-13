@@ -278,7 +278,12 @@ export async function readWorkspaceText(workspaceId: string, path: string, o: Pi
     if (!r) throw new WorkspaceFileError('the agent worker returned nothing')
     return r
   }
-  const r = await workspaceRuntime().manager.exec(workspaceId, READ_TEXT_SCRIPT, { input: JSON.stringify({ path }), capBytes: READ_TEXT_CAP_BYTES, timeoutSec: 60, ...o, internal: true })
+  // Fix round 1: this is MyMind's own (unconfined) reader — after mail/calendar content (the run or
+  // the workspace is tainted) it reads only a relative path inside the workspace, never through a
+  // symlink, so a tainted run can't export Bridget's credentials. Fails closed: an unreadable row is strict.
+  const row = await dbWorkspaceStore.get(workspaceId).catch(() => null)
+  const strict = o.tainted === true || o.offline === true || row?.tainted !== false
+  const r = await workspaceRuntime().manager.exec(workspaceId, READ_TEXT_SCRIPT, { input: JSON.stringify({ path, ...(strict ? { strict: true } : {}) }), capBytes: READ_TEXT_CAP_BYTES, timeoutSec: 60, ...o, internal: true })
   let j: { content?: string; bytes?: number; path?: string; error?: string; message?: string } | null = null
   try { j = r.exitCode === 0 ? JSON.parse(r.stdout) : null } catch { j = null }
   if (!j) throw new WorkspaceFileError(r.truncated ? 'the file is too large to export' : `could not read ${path}: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)

@@ -255,7 +255,7 @@ export function shellOutputCommand(id: string, offset: number, max: number): str
     ...shellStatusLines(shellDir(id)),
     `n=$((sz - ${off})); [ "$n" -gt ${m} ] && n=${m}; [ "$n" -lt 0 ] && n=0`,
     `printf '${SHELL_STATUS_MARK}%s:%s:%s\\n' "$st" "$sz" "$n"`,
-    `[ "$n" -gt 0 ] && tail -c +${off + 1} "$d/out" | head -c "$n" | base64 | tr -d '\\n'; exit 0`
+    `[ "$n" -gt 0 ] && python3 -I -c ${shq(SHELL_READ_SCRIPT)} ${shq(id)} ${off} "$n" b64; exit 0`
   ].join('\n')
 }
 
@@ -271,7 +271,7 @@ export function shellTailCommand(id: string, max: number): string {
     ...shellStatusLines(shellDir(id)),
     `n=$sz; [ "$n" -gt ${m} ] && n=${m}`,
     `printf '${SHELL_STATUS_MARK}%s:%s:%s\\n' "$st" "$sz" "$n"`,
-    `[ "$n" -gt 0 ] && tail -c "$n" "$d/out"; exit 0`
+    `[ "$n" -gt 0 ] && python3 -I -c ${shq(SHELL_READ_SCRIPT)} ${shq(id)} $((sz - n)) "$n" raw; exit 0`
   ].join('\n')
 }
 
@@ -367,19 +367,61 @@ export const DELETE_SCRIPT = py([
 /** Largest file export_to_document copies into a MyMind document. */
 export const EXPORT_MAX_BYTES = 400_000
 
+/** Python: open a path RELATIVE to the cwd with O_NOFOLLOW at every component (dir_fd chain), so
+ *  no symlink — a final one or one in a parent — is ever followed. Raises OSError (ELOOP/ENOTDIR). */
+const PY_OPEN_NOFOLLOW = [
+  'def open_nofollow(rel):',
+  '    parts = [x for x in rel.split("/") if x not in ("", ".")]',
+  '    if not parts or ".." in parts or rel.startswith("/"): raise OSError(1, "not a relative path inside the workspace")',
+  '    fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY)',
+  '    try:',
+  '        for x in parts[:-1]:',
+  '            nfd = os.open(x, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd); os.close(fd); fd = nfd',
+  '        return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)',
+  '    finally: os.close(fd)'
+].join('\n')
+
+/**
+ * A whole UTF-8 text file for export_to_document. `strict` (fix round 1 — the run or the workspace is
+ * tainted; this script runs unconfined as MyMind's own): only a relative path inside the workspace,
+ * opened with O_NOFOLLOW at every component, so neither an absolute path nor a planted symlink can
+ * pull Bridget's credentials into a document.
+ */
 export const READ_TEXT_SCRIPT = py([
   PY_PRELUDE,
+  PY_OPEN_NOFOLLOW,
   `p = a["path"]; cap = ${EXPORT_MAX_BYTES}`,
-  'try: st = os.stat(p)',
-  'except FileNotFoundError: out({"error": "not_found"})',
-  'except PermissionError: out({"error": "permission_denied"})',
+  'if a.get("strict"):',
+  '    if p.startswith("/") or ".." in p.split("/"): out({"error": "outside", "message": "after reading mail or calendar content only files inside the workspace (a relative path, no ..) can be exported"})',
+  '    try: fd = open_nofollow(p)',
+  '    except FileNotFoundError: out({"error": "not_found"})',
+  '    except OSError: out({"error": "symlink", "message": "a symbolic link (in the path or the file itself) can not be exported after reading mail or calendar content"})',
+  'else:',
+  '    try: fd = os.open(p, os.O_RDONLY)',
+  '    except FileNotFoundError: out({"error": "not_found"})',
+  '    except PermissionError: out({"error": "permission_denied"})',
+  '    except IsADirectoryError: out({"error": "not_a_regular_file"})',
+  'st = os.fstat(fd)',
   'if not stat.S_ISREG(st.st_mode): out({"error": "not_a_regular_file"})',
   'if st.st_size > cap: out({"error": "too_large", "message": "%d bytes (the limit is %d)" % (st.st_size, cap)})',
-  'with open(p, "rb") as f: raw = f.read(cap + 1)',
+  'with os.fdopen(fd, "rb") as f: raw = f.read(cap + 1)',
   'if b"\\0" in raw[:8192]: out({"error": "binary", "message": "binary file — only text can become a document"})',
   'try: text = raw.decode("utf-8")',
   'except UnicodeDecodeError: out({"error": "not_utf8", "message": "not UTF-8 text"})',
   'out({"content": text, "bytes": len(raw), "path": os.path.abspath(p)})'
 ].join('\n'))
+
+/** Background-shell output (bash_output / the Shells tail): `.mymind/shells/<id>/out` from byte
+ *  argv[2], at most argv[3] bytes, base64 when argv[4] == "b64" — always O_NOFOLLOW at every
+ *  component (fix round 1: the out file lives in the writable workspace; a confined command could
+ *  swap it for a symlink to a credential and this unconfined reader would hand it back). */
+export const SHELL_READ_SCRIPT = [
+  'import os, sys, base64',
+  PY_OPEN_NOFOLLOW,
+  'try: fd = open_nofollow(".mymind/shells/%s/out" % sys.argv[1])',
+  'except OSError: sys.exit(3)',
+  'os.lseek(fd, int(sys.argv[2]), 0); data = os.read(fd, int(sys.argv[3]))',
+  'sys.stdout.buffer.write(base64.b64encode(data) if sys.argv[4] == "b64" else data)'
+].join('\n')
 /** JSON-escaped (≤ 2× for text), an export-sized file stays under this. */
 export const READ_TEXT_CAP_BYTES = 1024 * 1024

@@ -17,10 +17,10 @@ import { ensureHomeWorkspace } from '@mymind/core/lib/sandbox/store'
 import { workspacePathProblem } from '@mymind/core/lib/sandbox/paths'
 import type { WorkspaceDTO } from '@mymind/core/shared/types/workspaces'
 
-/** Fix round 1 (M5): a COLD read can need the preflight, `docker create` (≤ 60s), `docker start`
- *  (≤ 60s) and then the script (≤ 60s) — the budget covers that. A dead worker never waits for it:
- *  the heartbeat is checked first (fail fast). */
-export const VIEW_TIMEOUT_MS = 200_000
+/** A UI read is one of MyMind's own scripts on the host (≤ 60s, cycle 86 — no container to create
+ *  or start any more); the budget adds the bus round trip. A dead worker never waits for it: the
+ *  heartbeat is checked first (fail fast). */
+export const VIEW_TIMEOUT_MS = 90_000
 
 function fail(statusCode: number, message: string): Error {
   // h3 strips non-ASCII from statusMessage — the readable text rides in data.message.
@@ -90,7 +90,7 @@ export async function askWorker<K extends CommandType>(type: K, payload: Command
     const message = err instanceof Error ? err.message : String(err)
     if (err instanceof CommandTimeoutError) {
       throw fail(504, err.claimed
-        ? 'The workspace sandbox is still starting (or the read is slow) — try again in a moment.'
+        ? 'The workspace read is still running (or the agent worker is slow) — try again in a moment.'
         : 'The agent worker did not pick this up (the workspace lives there). Is it running?')
     }
     if (err instanceof CommandFailedError) {
