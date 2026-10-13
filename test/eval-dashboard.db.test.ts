@@ -13,7 +13,7 @@ const { evalSuites, evalCases, evalRuns, evalResults } = await import('@mymind/c
 const { setBusNs } = await import('@mymind/core/lib/bus/ns')
 const { subscribeChanges } = await import('@mymind/core/utils/live-bus')
 const { importSuite, updateCase, setCaseEnabled, EvalCaseConflictError } = await import('@mymind/core/lib/eval/suites')
-const { enqueueEvalRun, cancelEvalRun, EvalRunConflictError } = await import('@mymind/core/lib/eval/runs')
+const { enqueueEvalRun, cancelEvalRun, EvalRunConflictError, EVAL_RUN_LOCK_NS } = await import('@mymind/core/lib/eval/runs')
 const { scoringSpecOf } = await import('@mymind/core/lib/eval/scoring-spec')
 const { listSuiteOverviews, getSuiteDetail, getRunView, getAttemptView, getCaseView } = await import('@mymind/core/lib/eval/dashboard')
 type LiveEvent = import('@mymind/core/shared/types/live').LiveEvent
@@ -151,6 +151,25 @@ describe('fix round 1: one queued/running run per suite', () => {
     expect(next.status).toBe('queued')
     expect((await useDb().select({ id: evalRuns.id }).from(evalRuns).where(eq(evalRuns.suiteId, suiteId)))).toHaveLength(2)
     await useDb().delete(evalRuns).where(eq(evalRuns.suiteId, suiteId))
+  })
+
+  it('the check-and-insert holds the per-suite advisory lock: while another session holds it, a start waits', async () => {
+    const pg = (await import('pg')).default
+    const other = new pg.Client({ connectionString: process.env.DATABASE_URL })
+    await other.connect()
+    try {
+      await other.query('begin')
+      await other.query('select pg_advisory_xact_lock($1, hashtext($2))', [EVAL_RUN_LOCK_NS, suiteId])
+      let settled = false
+      const p = enqueueEvalRun(suiteId, {}, { send: noSend }).finally(() => { settled = true })
+      await new Promise(r => setTimeout(r, 400))
+      expect(settled).toBe(false)
+      await other.query('commit')
+      expect((await p).status).toBe('queued')
+    } finally {
+      await other.end()
+      await useDb().delete(evalRuns).where(eq(evalRuns.suiteId, suiteId))
+    }
   })
 })
 

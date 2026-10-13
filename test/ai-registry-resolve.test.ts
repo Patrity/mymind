@@ -137,4 +137,10 @@ describe('eval model override', () => {
     expect(evalOverrideChainFrom(withSubs(), 'e1').map(m => m.modelDefId)).toEqual(['m1', 'm2'])
     expect(evalOverrideChainFrom(withSubs(), 'nope').map(m => m.modelDefId)).toEqual(['m1', 'm2'])
   })
+  it('an embedding model mis-assigned to subagents is neither listed nor allowed to lead', () => {
+    const d = withSubs()
+    d.assignments = { ...d.assignments, subagents: ['s1', 'e1'] }
+    expect(evalOverrideModelsFrom(d).map(m => m.id)).toEqual(['m1', 'm2', 's1'])
+    expect(evalOverrideChainFrom(d, 'e1').map(m => m.modelDefId)).toEqual(['m1', 'm2'])
+  })
 })
