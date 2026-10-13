@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build box (LXC 114, /opt/mymind, root) half of a macmini deploy (cycle 86): build the web and the
-# worker, and lay out the two release trees CD streams to the mini (release.sh stage reads them as tar):
+# Build box (LXC 114, /opt/mymind-build, root) half of a macmini deploy (cycle 86): build the web and
+# the worker, and lay out the two release trees CD streams to the mini (release.sh stage reads them as tar):
 #
 #   .macmini-out/web/      .output/   (Nitro's self-contained server + public assets)
 #   .macmini-out/worker/   dist/ + node_modules/ (stage.mjs closure) + evals/ + release.env
@@ -9,9 +9,19 @@
 # `pnpm install` fetch the darwin-arm64 native packages too (sharp, @napi-rs/canvas) — but pnpm skips
 # an install it believes is current, so a node_modules from before that setting is wiped first.
 #
+# It runs in its OWN checkout (/opt/mymind-build, synced by CD), never in /opt/mymind: that tree holds
+# the retired LXC runtime — .output (mymind.service) and .worker (mymind-worker.service) — which is the
+# 7-day rollback target, and must keep the pre-cutover build. The build dir has no .env, so nothing of
+# LXC 114's env is baked into the mini's bundle (the mini's env file supplies every NUXT_ twin).
+#
 # Usage: MYMIND_GIT_SHA=<sha> bash deploy/macmini/build-artifacts.sh
 set -euo pipefail
-APP_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+APP_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
+LXC_RUNTIME_DIR="${MYMIND_LXC_RUNTIME_DIR:-/opt/mymind}"
+if [ -d "$LXC_RUNTIME_DIR" ] && [ "$APP_DIR" = "$(cd "$LXC_RUNTIME_DIR" && pwd -P)" ]; then
+  echo "[build] refusing to build in $LXC_RUNTIME_DIR: it is the LXC runtime (rollback target) — CD builds in /opt/mymind-build" >&2
+  exit 1
+fi
 cd "$APP_DIR"
 OUT="$APP_DIR/.macmini-out"
 
@@ -35,9 +45,9 @@ cp -a .output "$OUT/web/.output"
 # the mini with the darwin ones).
 node apps/worker/stage.mjs "$OUT/worker"
 cp -a evals "$OUT/worker/evals"
-# pnpm's supportedArchitectures is a cross product (os × cpu): drop the platforms nobody runs —
-# linux-arm64 and darwin-x64 — so only this box's linux-x64 and the mini's darwin-arm64 ship.
-find "$OUT" -depth -type d \( -name '*-linux-arm64*' -o -name '*-darwin-x64*' -o -name '*-linuxmusl-*' \) -exec rm -rf {} +
+# pnpm's supportedArchitectures is a cross product (os × cpu): drop the platforms nobody runs, and
+# prove this box's linux-x64 and the mini's darwin-arm64 binaries both survived.
+bash "$APP_DIR/deploy/macmini/prune-arch.sh" "$OUT/web" "$OUT/worker"
 if [ -n "${MYMIND_GIT_SHA:-}" ]; then
   for k in web worker; do printf 'MYMIND_GIT_SHA=%s\n' "$MYMIND_GIT_SHA" > "$OUT/$k/release.env"; done
 fi

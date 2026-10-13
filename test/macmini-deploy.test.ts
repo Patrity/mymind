@@ -175,6 +175,25 @@ describe('release.sh activate / rollback', () => {
     expect(r.out).toContain('is a real directory')
   })
 
+  it('final wave N3: status is "<pointer> <release>" per line — exactly what CD\'s STAGED_* awk reads', () => {
+    stage('web', 'a', WEB); release(['activate', 'web']); stage('web', 'b', WEB)
+    stage('worker', 'z', WORKER)
+    const out = release(['status']).out
+    expect(out.split('\n').filter(Boolean)).toEqual([
+      'app           web-a',
+      '.app-prev     -',
+      '.app-next     web-b',
+      '.worker       -',
+      '.worker-prev  -',
+      '.worker-next  worker-z'
+    ])
+    const wf = readFileSync('.github/workflows/deploy.yml', 'utf8')
+    for (const [ptrName, want] of [['.app-next', 'web-b'], ['.worker-next', 'worker-z']] as const) {
+      const prog = wf.match(new RegExp(`awk '(\\$1 == "${ptrName.replace('.', '\\.')}" \\{ print \\$2 \\})'`))![1]!
+      expect(execFileSync('awk', [prog], { input: out, encoding: 'utf8' }).trim()).toBe(want)
+    }
+  })
+
   it('status prints each pointer', () => {
     stage('web', 'a', WEB); release(['activate', 'web'])
     stage('worker', 'z', WORKER)
@@ -234,7 +253,7 @@ esac
     // Answers 1 only for the query shape health must send: this pid, a started_at bound, a fresh beat.
     writeFileSync(join(bin, 'psql'), `#!/bin/bash
 q="\${@: -1}"; echo "$q" > "$FAKE_LC/sql"
-case "$q" in *"pid = $HEALTHY_PID "*"started_at > to_timestamp("*"beat_at > now() - interval '30 seconds'"*) echo 1 ;; *) echo 0 ;; esac
+case "$q" in *"pid = $HEALTHY_PID "*"started_at > now() - interval '"*" seconds' and beat_at > now() - interval '30 seconds'"*) echo 1 ;; *) echo 0 ;; esac
 `, { mode: 0o755 })
     writeFileSync(join(dirname(root), 'mymind.env'), 'DATABASE_URL=postgres://u:secret@192.168.2.80/bridget\n')
     mkdirSync(join(root, 'agents'))
@@ -294,11 +313,30 @@ case "$q" in *"pid = $HEALTHY_PID "*"started_at > to_timestamp("*"beat_at > now(
     const ok = rel(['health', 'worker', '0'], { HEALTHY_PID: '101' })
     expect(ok.code, ok.out).toBe(0)
     expect(ok.out).toContain('worker healthy (pid 101)')
-    const since = readFileSync(join(root, '.restarted-worker'), 'utf8').split(' ')[0]
-    expect(readFileSync(join(fake, 'sql'), 'utf8')).toContain(`started_at > to_timestamp(${since}) - interval '5 seconds'`)
+    // The bound is on the DB's clock: now() minus the time elapsed since the restart (+5 s slack).
+    expect(readFileSync(join(fake, 'sql'), 'utf8')).toMatch(/started_at > now\(\) - interval '([5-9]|1[0-9]) seconds'/)
     expect(ok.out).not.toContain('secret')
     // The DB says nothing fresh for this pid → red.
     expect(rel(['health', 'worker', '0'], { HEALTHY_PID: '999' }).code).not.toBe(0)
+  })
+
+  it('final wave N1: the started_at bound is the elapsed time since the restart, on the DB clock — the mini clock never leaks into SQL', () => {
+    writeFileSync(join(fake, 'com.mymind.worker.pid'), '101')
+    const now = Math.floor(Date.now() / 1000)
+    writeFileSync(join(root, '.restarted-worker'), `${now - 120} 100\n`)
+    expect(rel(['health', 'worker', '0'], { HEALTHY_PID: '101' }).code).toBe(0)
+    const sql = readFileSync(join(fake, 'sql'), 'utf8')
+    const ago = Number(sql.match(/started_at > now\(\) - interval '(\d+) seconds'/)![1])
+    expect(ago).toBeGreaterThanOrEqual(125)
+    expect(ago).toBeLessThan(135)
+    expect(sql).not.toContain(String(now - 120))
+    expect(sql).not.toContain('to_timestamp')
+    // A restart stamp "in the future" (the mini clock stepped back) clamps to the 5 s slack.
+    writeFileSync(join(root, '.restarted-worker'), `${now + 3600} 100\n`)
+    expect(rel(['health', 'worker', '0'], { HEALTHY_PID: '101' }).code).toBe(0)
+    expect(readFileSync(join(fake, 'sql'), 'utf8')).toContain("started_at > now() - interval '5 seconds'")
+    writeFileSync(join(root, '.restarted-worker'), `1;drop 100\n`)
+    expect(rel(['health', 'worker', '0'], { HEALTHY_PID: '101' }).out).toContain('malformed')
   })
 
   it('health never accepts the pid restart replaced, even with a fresh beat', () => {
@@ -432,7 +470,7 @@ describe('deploy.yml', () => {
       expect(s.if).toBe(`env.DEPLOY_TARGET == '${target}'`)
     }
     const last = steps.at(-1)!
-    expect(last.if).toBe("failure() && env.DEPLOY_TARGET == 'macmini'")
+    expect(last.if).toBe("(failure() || cancelled()) && env.DEPLOY_TARGET == 'macmini'")
     expect(last.run).toContain('release.sh undo $kind $rel')
     expect(last.run).toMatch(/for kind in worker web/)
   })
@@ -482,10 +520,113 @@ describe('deploy.yml', () => {
     expect(all).toContain('.env.macmini')
   })
 
+  it('final wave I2: a macmini run syncs, builds and migrates in /opt/mymind-build — never in the LXC runtime tree', () => {
+    const sync = steps[1]!
+    expect(sync.name).toBe('Sync code into LXC 114')
+    const pick = sync.run!.split('\n').find(l => l.includes('dir=/opt/mymind-build'))!
+    const dirFor = (target: string) => spawnSync('bash', ['-c', `${pick}\necho "$dir"`], { env: { ...process.env, DEPLOY_TARGET: target }, encoding: 'utf8' }).stdout.trim()
+    expect(dirFor('macmini')).toBe('/opt/mymind-build')
+    expect(dirFor('lxc')).toBe('/opt/mymind')
+    expect(sync.run).toContain('mkdir -p $dir && cd $dir')
+    expect(sync.run).toContain('tar -C "$dir" -xf -')
+    expect(sync.run!.split('\n').filter(l => !l.trim().startsWith('#')).join('\n')).not.toMatch(/\/opt\/mymind[/' ]/)
+    const mini = steps.filter(s => s.name.startsWith('[macmini]')).map(s => s.run ?? '').join('\n')
+    expect(mini).toContain('cd /opt/mymind-build && MYMIND_GIT_SHA=')
+    expect(mini).toContain('cd /opt/mymind-build && set -a && . ./.env.macmini')
+    expect(mini).toContain('/opt/mymind-build/.macmini-out/$kind')
+    expect(mini).not.toMatch(/\/opt\/mymind(?!-build)/)
+  })
+
   it('carries no SearXNG and no cycle-82 sandbox steps', () => {
     for (const f of ['.github/workflows/deploy.yml', 'deploy/provision-native.sh', '.claude/skills/prod-deploy/SKILL.md', 'docker-compose.prod.yml']) {
       expect(readFileSync(f, 'utf8'), f).not.toMatch(/searx/i)
     }
     expect(readFileSync('.github/workflows/deploy.yml', 'utf8')).not.toMatch(/sandbox/i)
+  })
+})
+
+describe('build-artifacts.sh never builds in the LXC runtime tree (final wave I2)', () => {
+  function tree(name: string) {
+    const app = join(dirname(root), name)
+    mkdirSync(join(app, 'deploy/macmini'), { recursive: true })
+    for (const f of ['build-artifacts.sh', 'prune-arch.sh']) writeFileSync(join(app, 'deploy/macmini', f), readFileSync(`deploy/macmini/${f}`))
+    return app
+  }
+  const fakePnpm = () => {
+    const bin = join(dirname(root), 'fakebin'); mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, 'pnpm'), '#!/bin/bash\necho "pnpm $*" >> "$PNPM_LOG"\n', { mode: 0o755 })
+    return bin
+  }
+  const build = (app: string, runtime: string) => {
+    const log = join(dirname(root), 'pnpm.log')
+    const r = spawnSync('bash', [join(app, 'deploy/macmini/build-artifacts.sh')], {
+      env: { ...process.env, PATH: `${fakePnpm()}:${process.env.PATH}`, PNPM_LOG: log, MYMIND_LXC_RUNTIME_DIR: runtime },
+      encoding: 'utf8'
+    })
+    return { code: r.status, out: `${r.stdout}${r.stderr}`, pnpm: existsSync(log) ? readFileSync(log, 'utf8') : '' }
+  }
+
+  it('refuses when its checkout IS the LXC runtime dir (also through a symlink) and writes nothing', () => {
+    const app = tree('opt-mymind')
+    mkdirSync(join(app, '.output/server'), { recursive: true }); writeFileSync(join(app, '.output/server/index.mjs'), 'cycle-85')
+    for (const runtime of [app, `${app}-link`]) {
+      if (runtime !== app) execFileSync('ln', ['-s', app, runtime])
+      const r = build(app, runtime)
+      expect(r.code).toBe(1)
+      expect(r.out).toContain('refusing to build in')
+      expect(r.pnpm).toBe('')
+    }
+    expect(readFileSync(join(app, '.output/server/index.mjs'), 'utf8')).toBe('cycle-85')
+    expect(existsSync(join(app, '.macmini-out'))).toBe(false)
+  })
+
+  it('a separate build checkout passes the guard (and goes on to install)', () => {
+    const r = build(tree('opt-mymind-build'), tree('opt-mymind'))
+    expect(r.out).not.toContain('refusing to build in')
+    expect(r.pnpm).toContain('pnpm install --frozen-lockfile')
+  })
+})
+
+describe('prune-arch.sh (final wave, Task 3 M1)', () => {
+  const PRUNE = resolve('deploy/macmini/prune-arch.sh')
+  const nodeFiles = (dir: string) => execFileSync('find', [dir, '-name', '*.node'], { encoding: 'utf8' }).trim().split('\n').filter(Boolean).map(f => f.slice(dir.length + 1)).sort()
+  const prune = (...dirs: string[]) => { const r = spawnSync('bash', [PRUNE, ...dirs], { encoding: 'utf8' }); return { code: r.status, out: `${r.stdout}${r.stderr}` } }
+  const PLATFORMS: Files = {
+    'node_modules/@img/sharp-linux-x64/lib/sharp-linux-x64.node': 'x',
+    'node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node': 'x',
+    'node_modules/@img/sharp-linux-arm64/lib/sharp-linux-arm64.node': 'x',
+    'node_modules/@img/sharp-darwin-x64/lib/sharp-darwin-x64.node': 'x',
+    'node_modules/@img/sharp-linuxmusl-x64/lib/sharp-linuxmusl-x64.node': 'x',
+    'node_modules/@napi-rs/canvas-linux-x64-gnu/skia.linux-x64-gnu.node': 'x',
+    'node_modules/@napi-rs/canvas-linux-arm64-gnu/skia.linux-arm64-gnu.node': 'x',
+    'node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node': 'x',
+    'node_modules/@napi-rs/canvas-darwin-x64/skia.darwin-x64.node': 'x',
+    'node_modules/@img/sharp-libvips-darwin-arm64/lib/libvips-cpp.dylib': 'x'
+  }
+
+  it('keeps exactly the linux-x64 and darwin-arm64 binaries, in every dir given', () => {
+    const web = join(dirname(root), 'web'); const worker = join(dirname(root), 'worker')
+    writeTree(web, PLATFORMS); writeTree(worker, PLATFORMS)
+    const r = prune(web, worker)
+    expect(r.code, r.out).toBe(0)
+    for (const d of [web, worker]) {
+      expect(nodeFiles(d)).toEqual([
+        'node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node',
+        'node_modules/@img/sharp-linux-x64/lib/sharp-linux-x64.node',
+        'node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node',
+        'node_modules/@napi-rs/canvas-linux-x64-gnu/skia.linux-x64-gnu.node'
+      ])
+      expect(existsSync(join(d, 'node_modules/@img/sharp-libvips-darwin-arm64/lib/libvips-cpp.dylib'))).toBe(true)
+    }
+  })
+
+  it('fails the release when a platform that runs it has no binary left', () => {
+    for (const lost of ['darwin-arm64', 'linux-x64']) {
+      const d = join(dirname(root), `lost-${lost}`)
+      writeTree(d, Object.fromEntries(Object.entries(PLATFORMS).filter(([p]) => !p.endsWith('.node') || !p.includes(lost))))
+      const r = prune(d)
+      expect(r.code).toBe(1)
+      expect(r.out).toContain(`no ${lost} *.node left`)
+    }
   })
 })

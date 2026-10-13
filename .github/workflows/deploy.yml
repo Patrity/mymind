@@ -83,21 +83,25 @@ jobs:
 
       - name: Sync code into LXC 114
         run: |
-          # Clear the tracked tree first — preserving runtime state that lives in
-          # /opt/mymind (.env, .env.native, .env.macmini (cycle 86: the .80 DB URL CD migrates with), plus
+          # lxc → /opt/mymind (the tree the LXC units run from). macmini → /opt/mymind-build, a separate
+          # build checkout (final review I2): /opt/mymind and its .output/.worker stay on the pre-cutover
+          # build, the 7-day rollback target, and are never touched by a macmini deploy.
+          if [ "$DEPLOY_TARGET" = macmini ]; then dir=/opt/mymind-build; else dir=/opt/mymind; fi
+          # Clear the tracked tree first — preserving runtime state that lives in the dir
+          # (.env, .env.native, .env.macmini (cycle 86: the .80 DB URL CD migrates with), plus
           # any .data/.output/.nuxt/node_modules/workspace/.git, the agent worker's self-contained
           # releases .worker/.worker-prev, which the RUNNING lxc worker executes from, and the old
           # cycle-82 workspaces in .workspaces) — then extract the fresh checkout so deletions propagate.
-          pct exec 114 -- bash -lc 'cd /opt/mymind && find . -maxdepth 1 -mindepth 1 \
+          pct exec 114 -- bash -lc "mkdir -p $dir && cd $dir && find . -maxdepth 1 -mindepth 1 \
             ! -name .git ! -name .env ! -name .env.native ! -name .env.macmini ! -name .data ! -name .output \
             ! -name .nuxt ! -name node_modules ! -name workspace \
-            ! -name .worker ! -name .worker-prev ! -name .workspaces -exec rm -rf {} +'
+            ! -name .worker ! -name .worker-prev ! -name .workspaces -exec rm -rf {} +"
           tar -C "$GITHUB_WORKSPACE" \
             --exclude=.git --exclude=node_modules --exclude=.nuxt \
             --exclude=.output --exclude=.data --exclude=.env --exclude=.env.native --exclude=.env.macmini \
             --exclude=.worker --exclude=.worker-prev --exclude=.worker-next --exclude=.workspaces \
             --exclude=.macmini-out --exclude=.superpowers --exclude=.claude/worktrees \
-            -cf - . | pct exec 114 -- tar -C /opt/mymind -xf -
+            -cf - . | pct exec 114 -- tar -C "$dir" -xf -
 
       # ───────────── target lxc: the pre-cutover runtime (web + worker units in LXC 114) ─────────────
 
@@ -196,13 +200,13 @@ jobs:
       - name: '[macmini] Provision the build box (build duties only)'
         if: env.DEPLOY_TARGET == 'macmini'
         run: |
-          pct exec 114 -- bash -lc 'cd /opt/mymind && bash deploy/provision-native.sh --build-only'
+          pct exec 114 -- bash -lc 'cd /opt/mymind-build && bash deploy/provision-native.sh --build-only'
 
       - name: '[macmini] Build web + worker releases in LXC 114'
         if: env.DEPLOY_TARGET == 'macmini'
         run: |
           # Nothing runs from these in LXC 114: .macmini-out/{web,worker} are only streamed to the mini.
-          pct exec 114 -- bash -lc 'cd /opt/mymind && MYMIND_GIT_SHA=${{ github.sha }} bash deploy/macmini/build-artifacts.sh'
+          pct exec 114 -- bash -lc 'cd /opt/mymind-build && MYMIND_GIT_SHA=${{ github.sha }} bash deploy/macmini/build-artifacts.sh'
 
       - name: '[macmini] Provision the mini (idempotent)'
         if: env.DEPLOY_TARGET == 'macmini'
@@ -220,7 +224,7 @@ jobs:
           # release fails HERE, before any migration or restart.
           set -o pipefail
           for kind in web worker; do
-            pct exec 114 -- tar -C "/opt/mymind/.macmini-out/$kind" -cf - . \
+            pct exec 114 -- tar -C "/opt/mymind-build/.macmini-out/$kind" -cf - . \
               | $MINI_SSH "$MINI" "bash ~/mymind/bin/release.sh stage $kind ${{ github.sha }}"
           done
           # The exact releases this run staged: the failure step rolls back only these.
@@ -231,12 +235,12 @@ jobs:
       - name: '[macmini] Cancel evals + migrate the central DB (192.168.2.80)'
         if: env.DEPLOY_TARGET == 'macmini'
         run: |
-          # Runs in LXC 114 (it has the workspace + drizzle-kit) with /opt/mymind/.env.macmini: DATABASE_URL
+          # Runs in LXC 114's build checkout (it has the workspace + drizzle-kit) with /opt/mymind-build/.env.macmini: DATABASE_URL
           # AND NUXT_DATABASE_URL for .80 (0600, written once at cutover; provision --build-only checks it).
           # Both, exported BEFORE the CLI: `pnpm eval` loads .env with --env-file-if-exists, which fills
           # every key not already set, and core prefers NUXT_DATABASE_URL — a missing one would send the
           # cancel to LXC 114's old database. The cancel never fails the deploy (cycle 85 M1).
-          pct exec 114 -- bash -lc 'cd /opt/mymind && set -a && . ./.env.macmini && set +a && (NODE_ENV=production pnpm eval --cancel-all --wait 60 || echo "eval cancel failed (continuing)") && pnpm db:migrate'
+          pct exec 114 -- bash -lc 'cd /opt/mymind-build && set -a && . ./.env.macmini && set +a && (NODE_ENV=production pnpm eval --cancel-all --wait 60 || echo "eval cancel failed (continuing)") && pnpm db:migrate'
 
       - name: '[macmini] Activate + restart the web'
         if: env.DEPLOY_TARGET == 'macmini'
@@ -273,9 +277,9 @@ jobs:
           $MINI_SSH "$MINI" 'bash ~/mymind/bin/release.sh health worker 120'
 
       - name: '[macmini] Roll back web + worker on failure'
-        if: failure() && env.DEPLOY_TARGET == 'macmini'
+        if: (failure() || cancelled()) && env.DEPLOY_TARGET == 'macmini'
         run: |
-          # Any failure after a pointer swap (a restart that never got a new pid, a red gate, a dropped ssh)
+          # Any failure — or a cancelled run — after a pointer swap (a restart that never got a new pid, a red gate, a dropped ssh)
           # lands here. Both kinds go back together (no web/worker version skew) — but only a release THIS
           # run activated: `undo` is a no-op unless current is exactly the release staged above.
           $MINI_SSH "$MINI" 'tail -n 60 ~/Library/Logs/mymind/web.log; tail -n 60 ~/Library/Logs/mymind/worker.log' || true

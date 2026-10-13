@@ -6,9 +6,11 @@
 #                                     units, the Docker Postgres) — the pre-cutover runtime
 #   provision-native.sh --build-only  target macmini (cycle 86): LXC 114 only builds the releases CD ships
 #                                     to the Mac mini and runs the migrations against 192.168.2.80 — Node +
-#                                     pnpm and a check of .env.macmini; no units, no runtime env
+#                                     pnpm and a check of .env.macmini; no units, no runtime env. Run from
+#                                     the separate build checkout /opt/mymind-build (never /opt/mymind,
+#                                     which keeps the retired LXC runtime as the rollback target)
 set -euo pipefail
-APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"   # /opt/mymind
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"   # /opt/mymind (lxc) or /opt/mymind-build (--build-only)
 cd "$APP_DIR"
 BUILD_ONLY=0
 case "${1:-}" in --build-only) BUILD_ONLY=1 ;; '') ;; *) echo "usage: $0 [--build-only]" >&2; exit 2 ;; esac

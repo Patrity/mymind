@@ -186,7 +186,8 @@ cmd_restart() {
   local svc plist pending old pid i
   svc="gui/$(id -u)/$LABEL"; plist="$LAUNCH_AGENTS/$LABEL.plist"; pending="$PENDING/$LABEL.plist"
   old="$(pid_of "$LABEL" || true)"
-  # What `health` compares against: the pid being replaced and when (epoch seconds, this clock).
+  # What `health` compares against: the pid being replaced and when (epoch seconds, THIS clock — health
+  # turns it into an elapsed time, so the mini's clock never has to agree with the DB's).
   printf '%s %s\n' "$(date +%s)" "${old:-0}" > "$ROOT/.restarted-$1"
   if [ -f "$pending" ] && ! cmp -s "$pending" "$plist"; then
     if loaded "$LABEL"; then
@@ -219,21 +220,25 @@ cmd_restart() {
 }
 
 # The worker launchd runs now — not the pid `restart` replaced — wrote a heartbeat row that started
-# after that restart (5 s clock slack) on this host, beating < 30 s ago. Polls up to $2 seconds.
+# after that restart on this host, beating < 30 s ago. Polls up to $2 seconds. "After the restart" is
+# measured on the DB's clock: started_at > the DB's now() minus the time elapsed since the restart BY
+# THIS CLOCK (+5 s slack) — a mini clock that is off from .80's never fails or loosens the gate.
 cmd_health() {
   [ "$1" = worker ] || die "health: only 'worker' (the web is checked over HTTP)"
-  local pid n wait="${2:-60}" host since old
+  local pid n wait="${2:-60}" host since old ago
   host="$(hostname)"
   [ -r "$ENV_FILE" ] || die "$ENV_FILE unreadable"
   [ -r "$ROOT/.restarted-worker" ] || die "no restart recorded — run release.sh restart worker first"
   read -r since old < "$ROOT/.restarted-worker"
+  [[ "$since" =~ ^[0-9]+$ ]] || die "$ROOT/.restarted-worker is malformed"
   local deadline=$((SECONDS + wait))
   while :; do
     pid="$(pid_of com.mymind.worker || true)"
     if [ -n "$pid" ] && [ "$pid" != "$old" ]; then
+      ago=$(( $(date +%s) - since )); [ "$ago" -ge 0 ] || ago=0; ago=$((ago + 5))
       # Sourced in a subshell for the DB URL only; never echoed.
       n="$( (set -a; . "$ENV_FILE"; set +a; "$PSQL" "${NUXT_DATABASE_URL:-$DATABASE_URL}" -Atc \
-        "select count(*) from worker_heartbeat where pid = $pid and host = '$host' and started_at > to_timestamp($since) - interval '5 seconds' and beat_at > now() - interval '30 seconds'") 2>/dev/null || echo 0)"
+        "select count(*) from worker_heartbeat where pid = $pid and host = '$host' and started_at > now() - interval '$ago seconds' and beat_at > now() - interval '30 seconds'") 2>/dev/null || echo 0)"
       if [ "${n:-0}" -gt 0 ] 2>/dev/null; then say "worker healthy (pid $pid)"; return 0; fi
     fi
     [ "$SECONDS" -lt "$deadline" ] || break
