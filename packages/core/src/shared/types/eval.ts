@@ -1,5 +1,6 @@
 // Cycle 85 (spec §3): the eval substrate's DTOs — what the runner stores (eval_runs.summary,
 // eval_results.tool_log / outcome) and what the /evals dashboard (Task 4) renders.
+import type { OutcomeVerification } from './workstreams'
 
 export type EvalMatchMode = 'ordered_subset' | 'exact' | 'subset' | 'contains_any'
 export type EvalRunStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
@@ -124,6 +125,17 @@ export interface EvalAttemptOutcome {
   scoring: EvalAttemptScoring
   /** Approval cards the scripted approver answered. */
   approvals: Array<{ tool: string; approved: boolean }>
+  /** Final fix wave (M4): a workstream case's OWN in-run outcome verification (cycle 85 Task 1) — what
+   *  the finish_workstream verifier said and how often it sent the finish back. Absent for chat cases
+   *  and results stored before it was recorded. */
+  workstream?: EvalWorkstreamOutcome | null
+}
+
+export interface EvalWorkstreamOutcome {
+  /** The workstream's state when the attempt ended. */
+  state: string
+  verification: OutcomeVerification | null
+  sendBacks: number
 }
 
 export interface EvalRunDTO {

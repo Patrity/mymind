@@ -730,4 +730,14 @@ describe('final fix wave', () => {
     expect((row!.summary as { attempts: number }).attempts).toBe(n)
     expect((await listEvalTenants()).filter(s => s.startsWith(evalRunPrefix(run.id)))).toEqual([])
   }, 60_000)
+  it('M4: a workstream attempt records the workstream\'s own verification and send-backs; a chat attempt none', async () => {
+    const suiteId = await testSuite(['workstream-garage-sale', 'task-create'])
+    const runId = randomUUID(); runIds.push(runId)
+    const ctx = { runId, params: {}, allowNetwork: () => false, limits: {}, defaultModel: null, opts: { runner, verify: metVerify } }
+    const ws = await runAttempt(await caseRow(suiteId, 'workstream-garage-sale'), 1, ctx)
+    expect(ws.failed).toBeNull()
+    expect(ws.outcome.workstream).toMatchObject({ state: 'done', sendBacks: 0, verification: { verdict: 'met', outcome: 'finished' } })
+    const chat = await runAttempt(await caseRow(suiteId, 'task-create'), 1, ctx)
+    expect(chat.outcome.workstream).toBeUndefined()
+  }, 60_000)
 })

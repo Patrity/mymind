@@ -36,8 +36,9 @@ import { scoringSpecOf } from './scoring-spec'
 import { createEvalPool, evalPool, evalShareOf, type EvalPool } from './pool'
 import { casePromptHash, gatewayAllow, gatewayOriginsFrom, gitSha, modelLabel, primaryModelFrom, runPromptHash, toolsHash } from './provenance'
 import type { EvalSetup } from './setup'
-import type { EvalAttemptOutcome, EvalAttemptScoring, EvalRunParams, EvalRunSummary, EvalToolLogEntry } from '../../shared/types/eval'
+import type { EvalAttemptOutcome, EvalAttemptScoring, EvalRunParams, EvalRunSummary, EvalToolLogEntry, EvalWorkstreamOutcome } from '../../shared/types/eval'
 import type { CapturedWrite } from './context'
+import type { OutcomeVerification } from '../../shared/types/workstreams'
 
 /** Per-attempt wall cap (global constraint). */
 export const ATTEMPT_WALL_MS = 10 * 60_000
@@ -322,6 +323,14 @@ async function finalTextOf(root: Root): Promise<string> {
   return ((await lastAssistantText(root.conversationId)) ?? '').slice(0, FINAL_TEXT_CAP)
 }
 
+/** Final fix wave (M4): a workstream attempt's own verification (in-world). */
+async function workstreamOutcome(root: Root): Promise<EvalWorkstreamOutcome | null> {
+  if (!root.workstreamId) return null
+  const { getWorkstream } = await import('../agent/workstreams/store')
+  const ws = await getWorkstream(root.workstreamId)
+  return ws ? { state: ws.state, verification: (ws.verification as OutcomeVerification | null) ?? null, sendBacks: ws.sendBacks ?? 0 } : null
+}
+
 /** Fix round 1 (S1): whether the attempt's run ended tainted — a workstream's stored (sticky) taint, or
  *  a chat thread's taint as its next turn would start with it (the same policed-history rule run.ts
  *  seeds from). In-world. */
@@ -408,6 +417,7 @@ export async function runAttempt(c: EvalCaseRow, attempt: number, x: AttemptCont
   let judge: EvalAttemptOutcome['judge'] = null
   let captured: CapturedWrite[] = []
   let taint: { tainted: boolean; sources: string[] } = { tainted: false, sources: [] }
+  let workstream: EvalWorkstreamOutcome | null = null
   const stuck: string[] = []
   const pool = x.opts.pool ?? evalPool
   try {
@@ -441,6 +451,7 @@ export async function runAttempt(c: EvalCaseRow, attempt: number, x: AttemptCont
     if (root) {
       const r = root
       finalText = await w.run(() => finalTextOf(r))
+      workstream = await w.run(() => workstreamOutcome(r)).catch(() => null)
       if (c.expectTainted) taint = await w.run(() => worldTaint(r))
       if (c.rubric && !failed) {
         const evidence = await w.run(() => buildOutcomeEvidence({ goal: rubricGoal(c), summary: finalText || '(no final answer)', conversationId: r.conversationId, workspaceId: r.workspaceId, ns: w.schema }))
@@ -482,7 +493,7 @@ export async function runAttempt(c: EvalCaseRow, attempt: number, x: AttemptCont
   }
   return {
     caseId: c.id, attempt, score, passed: !failed && !forbiddenHit && score >= CASE_PASS_MEAN, forbidden: forbiddenHit, failed,
-    toolLog, finalText, outcome: { judge, scoring, approvals }, captured, durationMs: Date.now() - started, tokens
+    toolLog, finalText, outcome: { judge, scoring, approvals, ...(workstream ? { workstream } : {}) }, captured, durationMs: Date.now() - started, tokens
   }
 }
 

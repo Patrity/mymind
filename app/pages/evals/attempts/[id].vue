@@ -25,6 +25,10 @@ const result = computed(() => data.value?.result ?? null)
 const scoring = computed<EvalAttemptScoring | null>(() => result.value?.outcome?.scoring ?? null)
 const judge = computed(() => result.value?.outcome?.judge ?? null)
 const approvals = computed(() => result.value?.outcome?.approvals ?? [])
+// Final fix wave (M4): a workstream case's own finish_workstream verification (absent for chat cases).
+const wsOutcome = computed(() => result.value?.outcome?.workstream ?? null)
+const wsVerification = computed(() => wsOutcome.value?.verification ?? null)
+const wsOutcomeLabel: Record<string, string> = { 'sent-back': 'sent back', 'finished': 'finished', 'flagged': 'finished ⚠ flagged', 'skipped': 'skipped (judge off)' }
 const caseJson = computed(() => (data.value?.case?.json ?? null) as null | {
   prompt: string; rubric: string | null; expected_actions: ActionSpecLike[]; forbidden_actions: ActionSpecLike[]
   expected_content: string[]; expect_flagged: boolean; expect_tainted: boolean; count_failed: boolean
@@ -326,6 +330,65 @@ const detail = (d: Record<string, unknown>) => JSON.stringify(d, null, 2)
                 class="mt-1 text-sm text-error break-words"
               >
                 {{ judge.error }}
+              </p>
+            </template>
+          </UCard>
+
+          <UCard
+            v-if="wsOutcome"
+            class="shrink-0"
+            data-testid="eval-attempt-workstream"
+          >
+            <template #header>
+              <span class="text-sm font-medium text-highlighted">Workstream's own verification</span>
+            </template>
+            <p class="text-xs text-muted">
+              The finish_workstream verifier inside the run (separate from the scorer's rubric judge) ·
+              workstream {{ wsOutcome.state }} · {{ wsOutcome.sendBacks }} send-back{{ wsOutcome.sendBacks === 1 ? '' : 's' }}
+            </p>
+            <p
+              v-if="!wsVerification"
+              class="mt-2 text-sm text-muted"
+            >
+              Never verified — the workstream did not finish through finish_workstream.
+            </p>
+            <template v-else>
+              <div class="mt-2 flex flex-wrap items-center gap-2">
+                <UBadge
+                  :color="verdictColor(wsVerification.verdict)"
+                  variant="subtle"
+                  :label="wsVerification.verdict ?? 'no verdict'"
+                />
+                <UBadge
+                  :color="wsVerification.outcome === 'flagged' ? 'warning' : 'neutral'"
+                  variant="outline"
+                  :label="wsOutcomeLabel[wsVerification.outcome] ?? wsVerification.outcome"
+                />
+                <span class="text-xs text-muted">confidence {{ wsVerification.confidence.toFixed(2) }} · {{ wsVerification.model ?? 'no model' }}</span>
+              </div>
+              <ul
+                v-if="wsVerification.gaps.length"
+                class="mt-2 list-disc ps-4 text-sm"
+              >
+                <li
+                  v-for="(g, k) in wsVerification.gaps"
+                  :key="k"
+                  class="whitespace-pre-wrap break-words"
+                >
+                  {{ g }}
+                </li>
+              </ul>
+              <p
+                v-if="wsVerification.nextStep"
+                class="mt-1 text-sm whitespace-pre-wrap break-words"
+              >
+                Next: {{ wsVerification.nextStep }}
+              </p>
+              <p
+                v-if="wsVerification.error"
+                class="mt-1 text-sm text-error break-words"
+              >
+                {{ wsVerification.error }}
               </p>
             </template>
           </UCard>
