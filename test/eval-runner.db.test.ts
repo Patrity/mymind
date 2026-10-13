@@ -820,4 +820,13 @@ describe('final fix wave', () => {
     // Nothing active: a no-op.
     expect(await cancelAllEvalRuns({ waitMs: 0, send: async () => { throw new Error('not called') } })).toEqual({ cancelled: [], leftWorlds: [] })
   }, 30_000)
+  it('Task 3 N4: the housekeeping tick is single-flight — a slow check is never overlapped', async () => {
+    let live = 0
+    let maxLive = 0
+    let calls = 0
+    const stop = startEvalHousekeeping({ everyMs: 10, check: async () => { calls++; live++; maxLive = Math.max(maxLive, live); await new Promise(r => setTimeout(r, 80)); live--; return [] } })
+    try { await new Promise(r => setTimeout(r, 300)) } finally { stop() }
+    expect(calls).toBeGreaterThanOrEqual(2)
+    expect(maxLive).toBe(1)
+  })
 })

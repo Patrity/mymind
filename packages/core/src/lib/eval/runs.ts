@@ -189,12 +189,18 @@ export async function failOrphanedEvalRuns(o: { staleMs?: number; anyOtherBoot?:
   return out
 }
 
-/** Worker (fix round 1, I2): the stale-heartbeat check every minute. Returns the stop. Never throws. */
-export function startEvalHousekeeping(o: { everyMs?: number; staleMs?: number } = {}): () => void {
+/** Worker (fix round 1, I2): the stale-heartbeat check every minute. Returns the stop. Never throws.
+ *  Final fix wave (Task 3 N4): single-flight — a tick still dropping worlds (docker can be slow) is
+ *  never overlapped by the next one. */
+export function startEvalHousekeeping(o: { everyMs?: number; staleMs?: number; check?: typeof failOrphanedEvalRuns } = {}): () => void {
+  let busy = false
   const timer = setInterval(() => {
-    failOrphanedEvalRuns({ staleMs: o.staleMs })
+    if (busy) return
+    busy = true
+    ;(o.check ?? failOrphanedEvalRuns)({ staleMs: o.staleMs })
       .then(ids => { if (ids.length) console.info(`[eval] marked ${ids.length} orphaned eval run(s) failed`) })
       .catch(err => console.warn('[eval] orphan check failed:', (err as Error).message))
+      .finally(() => { busy = false })
   }, o.everyMs ?? 60_000)
   timer.unref?.()
   return () => clearInterval(timer)
