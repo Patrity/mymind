@@ -870,4 +870,37 @@ describe('final fix wave', () => {
     // The built-in suite passes.
     await expect(seedSuite({ ...seedJson, name: `${SUITE}-builtin-ok` })).resolves.toMatchObject({ added: seedJson.cases.length })
   })
+  it('Task 4: a workstream that ends inside a world is torn down by the WORLD\'s runtime, never Tony\'s', async () => {
+    const { setWorkspaceRuntime, startWorkspaceRuntime, workspaceRuntime } = await import('@mymind/core/lib/sandbox/runtime')
+    const { patchWorkstream } = await import('@mymind/core/lib/agent/workstreams/store')
+    const { ensureWorkstreamWorkspace } = await import('@mymind/core/lib/sandbox/store')
+    const tonyStops: string[] = []
+    const tony = { manager: { stopIf: async (id: string) => { tonyStops.push(id); return false } }, shells: {}, watches: { stop: () => {} }, resolve: async () => ({}) } as never
+    setWorkspaceRuntime(tony)
+    const warns: string[] = []
+    const started = startWorkspaceRuntime({ info: () => {}, warn: (...a: unknown[]) => { warns.push(a.map(String).join(' ')) }, error: () => {} })
+    const w = await installEvalWorld(randomUUID(), {})
+    runIds.push(w.runId)
+    const worldStops: string[] = []
+    try {
+      await w.run(async () => {
+        const wrt = workspaceRuntime()
+        const real = wrt.manager.stopIf
+        ;(wrt.manager as { stopIf: typeof real }).stopIf = async (id, ...rest) => { worldStops.push(id); return real(id, ...rest).catch(() => false) }
+        const conv = await createConversation({ title: 'ws' })
+        const ws = await insertWorkstream({ conversationId: conv.id, goal: 'teardown', isChild: false, modelLabel: null, budget: { maxSteps: 10, maxWallMs: 60_000 } } as never)
+        await useDb().update((await import('@mymind/core/db/schema')).workstreams).set({ state: 'running' }).where(eq((await import('@mymind/core/db/schema')).workstreams.id, ws.id))
+        const space = await ensureWorkstreamWorkspace(ws.id)
+        await patchWorkstream(ws.id, { state: 'done', finishedAt: new Date() }, ['queued', 'running'])
+        for (let i = 0; i < 100 && !worldStops.length; i++) await new Promise(r => setTimeout(r, 20))
+        expect(worldStops).toEqual([space.id])
+      })
+      expect(tonyStops).toEqual([])
+      expect(warns.filter(x => /refused in an eval world/.test(x))).toEqual([])
+    } finally {
+      started.stop()
+      setWorkspaceRuntime(null)
+      await w.dispose()
+    }
+  }, 30_000)
 })

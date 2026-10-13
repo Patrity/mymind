@@ -241,7 +241,11 @@ export function startWorkspaceRuntime(log: Pick<Console, 'info' | 'warn' | 'erro
   // transition never waits on Docker); the minute tick catches anything this missed.
   setWorkstreamTerminalHook((workstreamId) => {
     if (stopped) return
-    void teardownWorkstreamWorkspace(rt, workstreamId).catch(err => log.warn(`[sandbox] teardown of workstream ${workstreamId}'s workspace failed:`, (err as Error).message))
+    // Cycle 85 final fix wave (Task 4): a workstream that ends INSIDE an eval world is torn down by
+    // that world's runtime (its offline manager, its container names) — never by Tony's, whose
+    // container names the world's docker guard refuses.
+    const target = currentEvalScope() ? workspaceRuntime() : rt
+    void teardownWorkstreamWorkspace(target, workstreamId).catch(err => log.warn(`[sandbox] teardown of workstream ${workstreamId}'s workspace failed:`, (err as Error).message))
   })
   return {
     onTick: async () => {
