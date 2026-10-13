@@ -33,7 +33,8 @@ if (mode === 'commands') {
     'workspace-view': async () => undefined,
     'workspace-kill-shell': async () => undefined,
     'imessage-health': async () => ({ ok: true, privateApi: null, checkedAt: null }),
-    'eval:run-suite': async () => ({ started: false })
+    'eval:run-suite': async () => ({ started: false }),
+    'eval:cancel': async () => ({ stopped: [] })
   }, { pollMs: 200 })
   await listenReady()
   console.log('READY')

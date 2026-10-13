@@ -48,6 +48,8 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
     },
     workspaceKillShell: p => view.killShellFromUi(p.workspaceId, p.shellId),
     // Cycle 85: the eval job — claims the queued run and runs it in the background.
-    evalRun: async p => (await import('@mymind/core/lib/eval/runs')).startEvalRun(p.runId)
+    evalRun: async p => (await import('@mymind/core/lib/eval/runs')).startEvalRun(p.runId),
+    // Final fix wave (M1): the deploy's pre-migration cancel — stop those runs now, not at a heartbeat.
+    evalCancel: async p => ({ stopped: (await import('@mymind/core/lib/eval/runner')).stopEvalRunsNow(p.runIds) })
   }
 }

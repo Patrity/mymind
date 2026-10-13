@@ -49,6 +49,8 @@ export interface WorkerDeps {
   workspaceKillShell(p: CommandPayloads['workspace-kill-shell']): Promise<CommandResults['workspace-kill-shell']>
   /** Cycle 85: claim a queued eval run and start it in the background (lib/eval/runs.ts). */
   evalRun(p: CommandPayloads['eval:run-suite']): Promise<CommandResults['eval:run-suite']>
+  /** Cycle 85 final fix wave (M1): stop cancelled eval runs executing here at once (lib/eval/runner.ts). */
+  evalCancel(p: CommandPayloads['eval:cancel']): Promise<CommandResults['eval:cancel']>
   startSchedule(): () => void
   startRecorderFlush(): () => void
   /** Cycle 82: sandbox housekeeping — boot reconcile, then idle-stop + quota every minute and the
@@ -81,7 +83,7 @@ export interface WorkerProcess {
 }
 
 /** Handlers for every command type. Each returns once its action has started (bus contract). */
-export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate' | 'workstreamControl' | 'workspaceReenableNetwork' | 'workspaceReadText' | 'workspaceView' | 'workspaceKillShell' | 'evalRun'>
+export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate' | 'workstreamControl' | 'workspaceReenableNetwork' | 'workspaceReadText' | 'workspaceView' | 'workspaceKillShell' | 'evalRun' | 'evalCancel'>
 export function commandHandlers(deps: CommandDeps): CommandHandlers {
   return {
     kick: async () => { deps.kick() },
@@ -130,6 +132,10 @@ export function commandHandlers(deps: CommandDeps): CommandHandlers {
     'eval:run-suite': async (p) => {
       if (!p || !isUuid(p.runId)) throw new Error('eval:run-suite: bad payload')
       return deps.evalRun({ runId: p.runId })
+    },
+    'eval:cancel': async (p) => {
+      if (!p || !Array.isArray(p.runIds) || p.runIds.length > 100 || !p.runIds.every(isUuid)) throw new Error('eval:cancel: bad payload')
+      return deps.evalCancel({ runIds: p.runIds })
     }
   }
 }

@@ -130,6 +130,39 @@ export async function cancelEvalRun(runId: string): Promise<boolean> {
   return rows.length > 0
 }
 
+/**
+ * Final fix wave (M1): the deploy's guard before `db:migrate` — cancels every queued/running eval run,
+ * asks the worker to stop them at once (`eval:cancel`), and waits (≤ `waitMs`) until their worlds are
+ * gone, so no live world is caught by a migration (tenant drift, AccessShare locks). Never throws on a
+ * slow worker: returns what is left.
+ */
+export async function cancelAllEvalRuns(o: { waitMs?: number; pollMs?: number; send?: (runIds: string[]) => Promise<unknown> } = {}): Promise<{ cancelled: string[]; leftWorlds: string[] }> {
+  const rows = await useDb().update(evalRuns).set({ status: 'cancelled', finishedAt: new Date() })
+    .where(inArray(evalRuns.status, ['queued', 'running'])).returning({ id: evalRuns.id })
+  const cancelled = rows.map(r => r.id)
+  for (const id of cancelled) publishChange({ resource: 'eval', action: 'updated', id })
+  if (cancelled.length) {
+    const send = o.send ?? (async (runIds: string[]) => (await import('../bus/commands')).sendCommand('eval:cancel', { runIds }))
+    await send(cancelled).catch(err => console.warn('[eval] eval:cancel did not reach the worker (it stops at its next heartbeat):', (err as Error).message))
+  }
+  const { listEvalTenants, evalRunPrefix } = await import('./tenant')
+  const prefixes = cancelled.map(evalRunPrefix)
+  const left = async () => (await listEvalTenants()).filter(s => prefixes.some(p => s.startsWith(p)))
+  const until = Date.now() + (o.waitMs ?? 60_000)
+  let worlds = await left()
+  while (worlds.length && Date.now() < until) {
+    await new Promise(r => setTimeout(r, o.pollMs ?? 1_000))
+    worlds = await left()
+  }
+  // A world no live process holds (its worker died) is dropped here; a held one is left (and named).
+  if (worlds.length) {
+    const { dropEvalSchema } = await import('./tenant')
+    for (const s of worlds) await dropEvalSchema(s).catch(() => false)
+    worlds = await left()
+  }
+  return { cancelled, leftWorlds: worlds }
+}
+
 export const ORPHANED_RUN_ERROR = 'the worker stopped mid-run (a crash or a restart) — partial results kept'
 
 /** Marks running runs of another boot failed — those whose heartbeat is stale, or (`anyOtherBoot`,

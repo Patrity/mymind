@@ -1,4 +1,5 @@
 // Cycle 85 (spec §3.3): `pnpm eval <suite> [--case <slug>]… [--n <runs>] [--model <modelDefId>] [--no-wait] [--local --i-know]`
+//                       `pnpm eval --cancel <runId>` · `pnpm eval --cancel-all [--wait <seconds>]`
 //
 // Enqueues an eval run (the worker job `eval:run-suite` — the worker in THIS bus namespace runs it,
 // so it must be up: `pnpm dev` locally, mymind-worker in prod) and tails its progress until it ends.
@@ -7,6 +8,9 @@
 // namespace, a local DB — lib/eval/local-guard.ts says why); Ctrl-C then cancels it.
 // Built-in suites (evals/*.json) are seeded first, so `pnpm eval bridget-core` works on a fresh DB.
 // Exit code: 0 when the run finished (`done`), 1 otherwise.
+// `--cancel-all` (final fix wave M1 — the deploy runs it right before `db:migrate`): cancels every
+// queued/running eval run, tells the worker to stop them now, and waits (default 60 s) until their
+// worlds are gone. Exit 0 (it never blocks a deploy); it prints any world still held.
 import { initCore } from '@mymind/core/config'
 import { fromEnv } from '@mymind/core/config-env'
 
@@ -16,7 +20,7 @@ const { eq, asc } = await import('drizzle-orm')
 const { useDb } = await import('@mymind/core/db')
 const { evalSuites, evalRuns, evalResults, evalCases } = await import('@mymind/core/db/schema')
 const { seedBuiltinSuites } = await import('@mymind/core/lib/eval/suites')
-const { enqueueEvalRun, cancelEvalRun, startEvalRun, _evalRunSettled, EvalRunError } = await import('@mymind/core/lib/eval/runs')
+const { enqueueEvalRun, cancelEvalRun, cancelAllEvalRuns, startEvalRun, _evalRunSettled, EvalRunError } = await import('@mymind/core/lib/eval/runs')
 const { busNs } = await import('@mymind/core/lib/bus/ns')
 const { EVAL_RUN_TERMINAL } = await import('@mymind/core/shared/types/eval')
 const { localRunRefusal } = await import('@mymind/core/lib/eval/local-guard')
@@ -26,7 +30,7 @@ type Summary = import('@mymind/core/shared/types/eval').EvalRunSummary
 
 function usage(msg?: string): never {
   if (msg) console.error(`eval: ${msg}`)
-  console.error('usage: pnpm eval <suite> [--case <slug>]… [--n <runs>] [--model <modelDefId>] [--no-wait] [--local --i-know]\n       pnpm eval --cancel <runId>')
+  console.error('usage: pnpm eval <suite> [--case <slug>]… [--n <runs>] [--model <modelDefId>] [--no-wait] [--local --i-know]\n       pnpm eval --cancel <runId>\n       pnpm eval --cancel-all [--wait <seconds>]')
   process.exit(2)
 }
 
@@ -37,6 +41,8 @@ let n: number | undefined
 let model: string | undefined
 let wait = true
 let cancel: string | null = null
+let cancelAll = false
+let waitSec = 60
 let local = false
 let iKnow = false
 for (let i = 0; i < argv.length; i++) {
@@ -49,6 +55,8 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--local') local = true
   else if (a === '--i-know') iKnow = true
   else if (a === '--cancel') cancel = val()
+  else if (a === '--cancel-all') cancelAll = true
+  else if (a === '--wait') { waitSec = Number(val()); if (!Number.isFinite(waitSec) || waitSec < 0 || waitSec > 600) usage('--wait must be 0–600 seconds') }
   else if (a.startsWith('--')) usage(`unknown option ${a}`)
   else if (!suiteName) suiteName = a
   else usage(`unexpected argument ${a}`)
@@ -58,6 +66,12 @@ const db = useDb()
 if (local) {
   const refusal = localRunRefusal({ env: process.env, databaseUrl: coreConfig().databaseUrl as string | undefined, iKnow, workerOnline: (await workerStatus()).online })
   if (refusal) usage(refusal)
+}
+if (cancelAll) {
+  const r = await cancelAllEvalRuns({ waitMs: waitSec * 1000 })
+  console.log(r.cancelled.length ? `cancelled ${r.cancelled.length} eval run(s): ${r.cancelled.join(', ')}` : 'no eval run was queued or running')
+  if (r.leftWorlds.length) console.warn(`still held after ${waitSec} s (the worker is unwinding them): ${r.leftWorlds.join(', ')}`)
+  process.exit(0)
 }
 if (cancel) {
   console.log((await cancelEvalRun(cancel)) ? `cancelled ${cancel}` : `${cancel} is not queued or running`)

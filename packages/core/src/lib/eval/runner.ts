@@ -84,6 +84,8 @@ export interface EvalRunnerOptions {
   unwindMs?: number
   /** A case's system-prompt hash (default provenance.ts casePromptHash) — a test seam. */
   promptHash?: (c: EvalCaseRow) => Promise<string>
+  /** Runs right after a world is installed, before the drift check — a test seam. */
+  afterInstall?: (world: EvalWorld) => Promise<void>
   /** Writes one attempt's result (default: insert into eval_results + publish) — a test seam. */
   writeResult?: (runId: string, r: AttemptRecord) => Promise<void>
 }
@@ -200,6 +202,11 @@ async function startCase(c: EvalCaseRow, setup: EvalSetup, o: { model: string | 
 }
 
 class AttemptStopped extends Error {}
+
+/** M1: the world was already drifted before the attempt started — nothing was run. */
+class TenantDriftError extends Error {
+  constructor(tables: string[]) { super(`tenant drift before the attempt: public has tables this world does not shadow (${tables.slice(0, 5).join(', ')}) — nothing was run`) }
+}
 
 /**
  * Runs the case's work in the world until it is over: a chat attempt when its thread has nothing
@@ -426,6 +433,12 @@ export async function runAttempt(c: EvalCaseRow, attempt: number, x: AttemptCont
     const runFn = (r: AgentRun) => runTurn(r, x.opts.runner ?? {})
     let root: Root | null = null
     try {
+      // Final fix wave (M1): drift BEFORE the attempt too — a public table this world does not shadow
+      // (a migration landed since it was built) would take an in-world write straight to Tony's table;
+      // the post-attempt check below only reports it after the fact. Nothing runs in a drifted world.
+      if (x.opts.afterInstall) await x.opts.afterInstall(w)
+      const before = await w.drift()
+      if (before.length) throw new TenantDriftError(before)
       root = await w.run(() => startCase(c, w.setup, { model: x.params.model ?? null, writeFiles: x.opts.writeFiles ?? sandboxWriteFiles }))
       const r = root
       await w.run(() => driveAttempt(r, {
@@ -436,7 +449,8 @@ export async function runAttempt(c: EvalCaseRow, attempt: number, x: AttemptCont
     } catch (err) {
       failed = err instanceof AttemptStopped
         ? (wallHit ? `wall cap: the attempt ran past ${Math.round(wallMs / 1000)} s` : 'stopped: the run was cancelled or the worker is draining')
-        : `error: ${oneLine((err as Error).message ?? String(err), 300)}`
+        : err instanceof TenantDriftError ? err.message
+          : `error: ${oneLine((err as Error).message ?? String(err), 300)}`
     }
     clearTimeout(wall)
     if (stuck.length) failed = `${failed ? `${failed}; ` : ''}${stuck.length} run(s) ignored the abort — their eval slots were force-released`
@@ -544,6 +558,21 @@ async function writeResult(runId: string, r: AttemptRecord): Promise<void> {
   publishChange({ resource: 'eval', action: 'created', id: runId })
 }
 
+/** Final fix wave (M1): the eval runs executing in this process → their immediate stop. */
+const activeStops = new Map<string, () => void>()
+
+/** Stops these runs NOW if this process executes them (their attempts abort and unwind, their worlds are
+ *  dropped) — for runs already marked cancelled; the heartbeat would notice within EVAL_RUN_BEAT_MS.
+ *  Returns the ids it stopped. */
+export function stopEvalRunsNow(runIds: string[]): string[] {
+  const out: string[] = []
+  for (const id of runIds) {
+    const stop = activeStops.get(id)
+    if (stop) { stop(); out.push(id) }
+  }
+  return out
+}
+
 /**
  * Executes one CLAIMED eval run (status 'running', owner this boot — runs.ts claimEvalRun) to the end.
  * Never throws: any failure ends the run `failed` with its error and the results written so far.
@@ -564,6 +593,7 @@ export async function executeEvalRun(runId: string, opts: EvalRunnerOptions = {}
   let planned = 0
   let promptHashes: Record<string, string> = {}
   let overBudget: string | null = null
+  activeStops.set(runId, () => { cancelled = true; stop.abort() })
   try {
     const [run] = await useDb().select().from(evalRuns).where(eq(evalRuns.id, runId))
     if (!run || run.status !== 'running' || run.owner !== BOOT_ID) return run ?? null
@@ -635,6 +665,7 @@ export async function executeEvalRun(runId: string, opts: EvalRunnerOptions = {}
     await patchRun(runId, { status: 'failed', error: oneLine((err as Error).message ?? String(err), 500), finishedAt: new Date(), ...(summary ? { summary: summary as unknown as Record<string, unknown> } : {}) }, { onlyRunning: true }).catch(() => {})
   } finally {
     clearInterval(beat)
+    activeStops.delete(runId)
     await cleanupEvalRun(runId).catch(err => console.warn(`[eval] cleanup of run ${runId} failed:`, (err as Error).message))
   }
   const [row] = await useDb().select().from(evalRuns).where(eq(evalRuns.id, runId))

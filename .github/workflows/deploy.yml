@@ -100,7 +100,11 @@ jobs:
           # The worker release is staged after the web build (cycle 81) into .worker-next — the running
           # worker keeps executing from .worker, untouched by the install/build — and is swapped in only
           # right before its restart below.
-          pct exec 114 -- bash -lc 'cd /opt/mymind && pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build && MYMIND_GIT_SHA=${{ github.sha }} bash deploy/worker-release.sh stage && set -a && . ./.env.native && set +a && pnpm db:migrate'
+          # Cycle 85 final fix wave (M1): no eval world may live through a migration (a new table would
+          # make it drift; its build would hold AccessShare locks the ALTERs queue behind) — cancel every
+          # eval run, have the running worker stop them now, wait ≤ 60 s for their worlds to go. Never
+          # fails the deploy (a stuck world is dropped at the worker's next boot sweep).
+          pct exec 114 -- bash -lc 'cd /opt/mymind && pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build && MYMIND_GIT_SHA=${{ github.sha }} bash deploy/worker-release.sh stage && set -a && . ./.env.native && set +a && (NODE_ENV=production pnpm eval --cancel-all --wait 60 || echo "eval cancel failed (continuing)") && pnpm db:migrate'
 
       - name: Cut over to native (drop old app container, start native on :3000)
         run: |

@@ -74,6 +74,9 @@ export interface CommandPayloads {
   'imessage-health': { action: 'check' | 'reset' }
   /** Cycle 85: start a queued eval run (lib/eval/runs.ts) — the worker job `eval:run-suite`. */
   'eval:run-suite': { runId: string }
+  /** Cycle 85 final fix wave (M1): stop these (already cancelled) eval runs in this worker NOW, not at
+   *  their next heartbeat — the deploy runs it before `db:migrate`. */
+  'eval:cancel': { runIds: string[] }
 }
 export type CommandType = keyof CommandPayloads
 
@@ -94,6 +97,8 @@ export interface CommandResults {
   'imessage-health': ImessageHealth
   /** False when the run was not queued any more (already claimed, cancelled or gone). */
   'eval:run-suite': { started: boolean }
+  /** The runs this worker was executing and has told to stop. */
+  'eval:cancel': { stopped: string[] }
 }
 
 /** What the worker publishes with every heartbeat (worker_heartbeat.status). */

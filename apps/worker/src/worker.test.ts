@@ -32,6 +32,7 @@ function fakeDeps(over: Partial<WorkerDeps> = {}) {
     workspaceView: vi.fn(async (p: { op: string }) => ({ op: p.op })),
     workspaceKillShell: vi.fn(async (p: { shellId: string }) => ({ shellId: p.shellId, state: 'killed', alreadyEnded: false })),
     evalRun: vi.fn(async () => ({ started: true })),
+    evalCancel: vi.fn(async (p: { runIds: string[] }) => ({ stopped: p.runIds })),
     startSchedule: vi.fn(() => { calls.push('schedule:start'); return () => { calls.push('schedule:stop') } }),
     startRecorderFlush: vi.fn(() => { calls.push('flush-loop:start'); return () => { calls.push('flush-loop:stop') } }),
     startSandbox: vi.fn(() => { calls.push('sandbox:start'); return () => { calls.push('sandbox:stop') } }),
@@ -207,6 +208,17 @@ describe('worker boot', () => {
     await expect(h['eval:run-suite']({ runId: '../x' })).rejects.toThrow(/bad payload/)
     await expect(h['eval:run-suite'](null as never)).rejects.toThrow(/bad payload/)
     expect(deps.evalRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('eval:cancel (final fix wave M1) reaches evalCancel with the run ids and refuses a bad payload', async () => {
+    const { deps } = fakeDeps()
+    const h = commandHandlers(deps)
+    const id = '11111111-2222-4333-8444-555555555555'
+    expect(await h['eval:cancel']({ runIds: [id] })).toEqual({ stopped: [id] })
+    expect(deps.evalCancel).toHaveBeenCalledWith({ runIds: [id] })
+    await expect(h['eval:cancel']({ runIds: ['../x'] })).rejects.toThrow(/bad payload/)
+    await expect(h['eval:cancel']({ runIds: 'x' } as never)).rejects.toThrow(/bad payload/)
+    expect(deps.evalCancel).toHaveBeenCalledTimes(1)
   })
 
   // Cycle 81 Task 4: each command reaches its dependency with the payload's fields, and returns the

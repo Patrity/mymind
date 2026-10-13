@@ -763,4 +763,61 @@ describe('final fix wave', () => {
       await db().delete(activityLog).where(sql`${activityLog.meta}->>'runId' = ${run.id}`)
     }
   }, 60_000)
+  it('M1: drift BEFORE the attempt fails it and nothing runs in the drifted world', async () => {
+    const suiteId = await testSuite(['task-create'])
+    const c = await caseRow(suiteId, 'task-create')
+    const runId = randomUUID(); runIds.push(runId)
+    const table = `evalpredrift_${TAG}`
+    const admin = new pg.Client({ connectionString: process.env.DATABASE_URL })
+    await admin.connect()
+    let modelRan = false
+    beforeModel = async () => { modelRan = true }
+    try {
+      const rec = await runAttempt(c, 1, { runId, params: {}, allowNetwork: () => false, limits: {}, defaultModel: null, opts: { runner, afterInstall: async () => { await admin.query(`create table if not exists public.${table} (id int)`) } } })
+      expect(rec.failed).toEqual(expect.stringMatching(new RegExp(`^tenant drift before the attempt.*${table}.*nothing was run`)))
+      expect(rec.score).toBe(0)
+      expect(rec.toolLog).toEqual([])
+      expect(modelRan).toBe(false)
+    } finally {
+      beforeModel = null
+      await admin.query(`drop table if exists public.${table}`)
+      await admin.end()
+    }
+    expect((await listEvalTenants()).filter(s => s.startsWith(evalRunPrefix(runId)))).toEqual([])
+  }, 30_000)
+
+  it('M1: cancelAllEvalRuns (the deploy guard) cancels every active run, stops it in-process at once, and waits for its worlds to go', async () => {
+    const { cancelAllEvalRuns } = await import('@mymind/core/lib/eval/runs')
+    const { stopEvalRunsNow } = await import('@mymind/core/lib/eval/runner')
+    const suiteId = await testSuite(['task-create'])
+    const run = await enqueueEvalRun(suiteId, {}, { send: noSend })
+    runIds.push(run.id)
+    let entered = false
+    const hung = {
+      ...runner,
+      runAgent: ((_m: AgentMessage[], ctx: RunAgentCtx) => (async function* () {
+        entered = true
+        await new Promise<void>((_, reject) => {
+          const stop = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+          if (ctx.signal.aborted) stop()
+          else ctx.signal.addEventListener('abort', stop, { once: true })
+        })
+        yield { type: 'done' as const }
+      })()) as never
+    }
+    await startEvalRun(run.id, { runner: hung, concurrency: 1, allowNetwork: () => false, unwindMs: 2_000 })
+    for (let i = 0; i < 100 && !entered; i++) await new Promise(r => setTimeout(r, 50))
+    expect(entered).toBe(true)
+    expect((await listEvalTenants()).some(s => s.startsWith(evalRunPrefix(run.id)))).toBe(true)
+    const sent: string[][] = []
+    const t0 = Date.now()
+    const r = await cancelAllEvalRuns({ waitMs: 10_000, pollMs: 100, send: async (ids) => { sent.push(ids); return stopEvalRunsNow(ids) } })
+    expect(Date.now() - t0).toBeLessThan(10_000) // not the 15 s heartbeat
+    expect(r).toEqual({ cancelled: [run.id], leftWorlds: [] })
+    expect(sent).toEqual([[run.id]])
+    await _evalRunSettled(run.id)
+    expect((await db().select({ s: evalRuns.status }).from(evalRuns).where(eq(evalRuns.id, run.id)))[0]!.s).toBe('cancelled')
+    // Nothing active: a no-op.
+    expect(await cancelAllEvalRuns({ waitMs: 0, send: async () => { throw new Error('not called') } })).toEqual({ cancelled: [], leftWorlds: [] })
+  }, 30_000)
 })
