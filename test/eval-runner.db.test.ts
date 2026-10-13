@@ -39,7 +39,7 @@ const { listEvalTenants, evalRunPrefix, createEvalTenant } = await import('@mymi
 const { approvalFor } = await import('@mymind/core/lib/agent/runtime/approvals')
 const { loadConfig } = await import('@mymind/core/lib/ai/registry/store')
 const { primaryModelFrom, gatewayOriginsFrom } = await import('@mymind/core/lib/eval/provenance')
-const { runAttempt: _ra, poolKeyOf } = await import('@mymind/core/lib/eval/runner')
+const { runAttempt: _ra, poolKeyOf, evalThrottle } = await import('@mymind/core/lib/eval/runner')
 const { createEvalPool } = await import('@mymind/core/lib/eval/pool')
 const { withJudgeSlot, judgeSlotStats } = await import('@mymind/core/lib/agent/judge/limiter')
 const { startEvalHousekeeping } = await import('@mymind/core/lib/eval/runs')
@@ -592,26 +592,45 @@ describe('fix round 1', () => {
     unblock()
   }, 30_000)
 
-  it('M2: in a world, judge calls take the eval judge share (half the judge semaphore)', async () => {
+  it('M2 / final fix wave I1: in a world, judge calls take the eval\'s ONE slot of their class — classes independent', async () => {
     const suiteId = await testSuite(['task-create'])
     const c = await caseRow(suiteId, 'task-create')
     const runId = randomUUID(); runIds.push(runId)
-    let now = 0
-    let max = 0
-    const burst = () => Promise.all(Array.from({ length: 4 }, () => withJudgeSlot(undefined, async () => {
-      now++; max = Math.max(max, now)
+    const now: Record<string, number> = { guard: 0, approval: 0, outcome: 0 }
+    const max: Record<string, number> = { guard: 0, approval: 0, outcome: 0 }
+    let together = 0
+    let maxTogether = 0
+    const burst = () => Promise.all((['guard', 'approval', 'outcome'] as const).flatMap(k => Array.from({ length: 3 }, () => withJudgeSlot(k, undefined, async () => {
+      now[k]!++; max[k] = Math.max(max[k]!, now[k]!); together++; maxTogether = Math.max(maxTogether, together)
       await new Promise(r => setTimeout(r, 60))
-      now--
-    })))
+      now[k]!--; together--
+    }))))
     beforeModel = async () => { await burst() }
     try { await runAttempt(c, 1, { ...ctxFor(runId), opts: { runner, pool: createEvalPool() } }) } finally { beforeModel = null }
-    const share = Math.max(1, Math.floor(judgeSlotStats().max / 2))
-    expect(max).toBe(share)
-    // Control: outside a world the same burst uses the whole semaphore.
-    max = 0; await burst()
-    expect(max).toBe(Math.min(4, judgeSlotStats().max))
-    expect(max).toBeGreaterThan(share)
+    expect(max).toEqual({ guard: 1, approval: 1, outcome: 1 })
+    expect(maxTogether).toBe(3) // one per class, at once — a busy verifier never holds up the eval's guard
+    // Control: outside a world the same burst uses each class's whole semaphore.
+    for (const k of Object.keys(max)) max[k] = 0
+    await burst()
+    expect(max).toEqual({ guard: Math.min(3, judgeSlotStats('guard').max), approval: Math.min(3, judgeSlotStats('approval').max), outcome: Math.min(3, judgeSlotStats('outcome').max) })
+    expect(max.guard).toBeGreaterThan(1)
   }, 30_000)
+
+  it('final fix wave I2: a research subagent runs on its parent run\'s eval slot — an attempt\'s subagents take turns', async () => {
+    const pool = createEvalPool()
+    const throttle = evalThrottle(pool)
+    const a = await throttle('subagent')
+    let second = false
+    const b = throttle('subagent').then((r) => { second = true; return r })
+    await new Promise(r => setTimeout(r, 20))
+    expect(second).toBe(false) // the second waits for the first
+    a(); (await b)()
+    // Never a model-pool key: subagents add no slot of the model's eval budget.
+    expect(pool.inUse('default')).toBe(0)
+    // Another attempt's throttle is independent (its own parent slot).
+    const other = evalThrottle(pool)
+    const x = await throttle('subagent'); const y = await other('subagent'); x(); y()
+  })
 
   it('M6: a child segment is pooled under its subagents model, not the reasoning head', async () => {
     const doc = await loadConfig()

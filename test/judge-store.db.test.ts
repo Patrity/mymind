@@ -134,19 +134,19 @@ describe('agent settings doc (DB)', () => {
     await useDb().delete(settings).where(eq(settings.key, AGENT_SETTINGS_KEY))
     invalidateAgentSettings()
     expect(await getAgentSettings()).toEqual(defaultAgentSettings())
-    expect(await getJudgeSettings()).toEqual({ enabled: true, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9, maxInFlight: 4 })
+    expect(await getJudgeSettings()).toEqual({ enabled: true, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9, maxInFlight: { guard: 4, approval: 2, outcome: 2 } })
   })
 
   it('save merges a patch, persists it, and caches until invalidated', async () => {
     const saved = await saveAgentSettings({ judge: { smartApprovals: { chat: true }, confidence: 0.8 } })
-    expect(saved.judge).toEqual({ enabled: true, smartApprovals: { workstreams: false, chat: true }, confidence: 0.8, maxInFlight: 4 })
+    expect(saved.judge).toEqual({ enabled: true, smartApprovals: { workstreams: false, chat: true }, confidence: 0.8, maxInFlight: { guard: 4, approval: 2, outcome: 2 } })
     const [row] = await useDb().select().from(settings).where(eq(settings.key, AGENT_SETTINGS_KEY))
     expect(row!.value).toEqual(saved)
     // Another process writes behind this one's back: the cache holds until invalidated.
     await useDb().update(settings).set({ value: { judge: { enabled: false } } }).where(eq(settings.key, AGENT_SETTINGS_KEY))
     expect((await getJudgeSettings()).enabled).toBe(true)
     invalidateAgentSettings()
-    expect(await getJudgeSettings()).toEqual({ enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9, maxInFlight: 4 })
+    expect(await getJudgeSettings()).toEqual({ enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9, maxInFlight: { guard: 4, approval: 2, outcome: 2 } })
   })
 
   it('I5: judge.maxInFlight sizes this process\'s judge/guard limiter — on save and on every (re)read', async () => {

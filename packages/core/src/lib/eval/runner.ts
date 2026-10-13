@@ -31,7 +31,7 @@ import { installEvalWorld, cleanupEvalRun, type EvalWorld } from './world'
 import { approvalChecks, contentMatches, forbiddenHits, matchActions, type EvalToolCall, type MatchMode } from './matcher'
 import { attemptHitForbidden, scoreAttempt, summarizeRun, CASE_PASS_MEAN, type CaseForSummary } from './score'
 import { scoringSpecOf } from './scoring-spec'
-import { evalPool, evalShareOf, type EvalPool } from './pool'
+import { createEvalPool, evalPool, evalShareOf, type EvalPool } from './pool'
 import { casePromptHash, gatewayAllow, gatewayOriginsFrom, gitSha, modelLabel, primaryModelFrom, runPromptHash, toolsHash } from './provenance'
 import type { EvalSetup } from './setup'
 import type { EvalAttemptOutcome, EvalAttemptScoring, EvalRunParams, EvalRunSummary, EvalToolLogEntry } from '../../shared/types/eval'
@@ -329,19 +329,24 @@ async function worldTaint(root: Root): Promise<{ tainted: boolean; sources: stri
   return { tainted: t.sources.length > 0, sources: [...t.sources] }
 }
 
-/** Fix round 1 (M2): the eval share for model calls outside a run's own slot — judge/guard/verifier
- *  calls take half the judge semaphore, research subagents half the reasoning model's pool, each under
- *  its own key (a run holding its slot while its tool's guard waits can never deadlock). */
-function evalThrottle(pool: EvalPool, x: Pick<AttemptContext, 'limits' | 'defaultModel'>): NonNullable<import('./context').EvalScope['throttle']> {
+/** Model calls an attempt makes outside a run's own eval slot (final fix wave):
+ *  - a judge class (guard / approval / outcome) takes ONE process-wide eval slot of that class (I1) —
+ *    the rest of each class's semaphore is Tony's. Its own key, so a run holding its model slot while
+ *    its tool's guard waits can never deadlock;
+ *  - a research subagent runs on its PARENT run's model slot (I2: one eval budget per model, turns and
+ *    subagents together): the parent is blocked on the tool call, so the subagent's stream replaces the
+ *    parent's rather than adding one. Several subagents of one attempt take turns (a per-attempt mutex),
+ *    so an attempt never runs more model streams than the slots its runs hold. */
+export function evalThrottle(pool: EvalPool): NonNullable<import('./context').EvalScope['throttle']> {
+  const attemptSubagents = createEvalPool()
   return async (kind, signal) => {
-    if (kind === 'judge') {
-      const { judgeSlotStats } = await import('../agent/judge/limiter')
-      return pool.acquire('judge', evalShareOf(judgeSlotStats().max), signal)
-    }
-    const key = x.defaultModel ?? 'default'
-    return pool.acquire(`subagent:${key}`, evalShareOf(x.limits[key]), signal)
+    if (kind === 'subagent') return attemptSubagents.acquire('subagent', 1, signal)
+    return pool.acquire(`judge:${kind}`, EVAL_JUDGE_SLOTS, signal)
   }
 }
+
+/** I1: an eval run's slots of each judge class (process-wide). */
+export const EVAL_JUDGE_SLOTS = 1
 
 // ── One attempt ──────────────────────────────────────────────────────────────────────────────
 
@@ -395,7 +400,7 @@ export async function runAttempt(c: EvalCaseRow, attempt: number, x: AttemptCont
   const stuck: string[] = []
   const pool = x.opts.pool ?? evalPool
   try {
-    world = await installEvalWorld(x.runId, c.setup, { allowNetwork: x.allowNetwork, throttle: evalThrottle(pool, x) })
+    world = await installEvalWorld(x.runId, c.setup, { allowNetwork: x.allowNetwork, throttle: evalThrottle(pool) })
     const w = world
     const runFn = (r: AgentRun) => runTurn(r, x.opts.runner ?? {})
     let root: Root | null = null

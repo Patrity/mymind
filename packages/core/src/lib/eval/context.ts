@@ -67,10 +67,11 @@ export interface EvalScope {
    *  world (runtime/approvals.ts approvalFor) instead of Tony, a channel or the judge, and records the
    *  card as an `approval.request` capture. `setup.approve`: 'all' | 'none' (default) | tool names. */
   scriptedApproval?(req: { tool: string; title?: string }): boolean
-  /** Fix round 1 (M2): the eval share for model calls an eval run makes OUTSIDE its own turn/segment
-   *  slot — judge + guard + outcome-verifier calls (`judge`) and research subagents (`subagent`). The
-   *  runner holds each class to half its pool (lib/eval/pool.ts). Resolves to the slot's release. */
-  throttle?(kind: 'judge' | 'subagent', signal?: AbortSignal): Promise<() => void>
+  /** Model calls an eval run makes OUTSIDE its own turn/segment slot. Final fix wave: a judge class
+   *  (`guard` / `approval` / `outcome` — judge/limiter.ts) takes the eval's ONE slot of that class (I1);
+   *  a research subagent (`subagent`) runs on its parent run's eval slot — the parent is blocked on it —
+   *  so an attempt's subagents take turns on it (I2: one eval budget per model). Resolves to the release. */
+  throttle?(kind: 'guard' | 'approval' | 'outcome' | 'subagent', signal?: AbortSignal): Promise<() => void>
 }
 
 const als = new AsyncLocalStorage<EvalScope>()

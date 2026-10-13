@@ -270,7 +270,8 @@ export async function verifyOutcome(evidence: OutcomeEvidence, o: { signal?: Abo
   let answeredBy: string | null = null
   let slotted = false
   try {
-    const res = await withJudgeSlot(signal, () => { slotted = true; return withFailoverOver('judge', chain, async (m) => {
+    // Cycle 85 I1: the outcome class (its own semaphore) — a verifier never delays a guard call.
+    const res = await withJudgeSlot('outcome', signal, () => { slotted = true; return withFailoverOver('judge', chain, async (m) => {
       if (signal.aborted) throw signal.reason ?? new Error('aborted')
       let onAbort: (() => void) | undefined
       try {

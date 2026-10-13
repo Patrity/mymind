@@ -60,10 +60,16 @@ export interface JudgeSettings {
   }
   /** Minimum verdict confidence for an auto-approval (default 0.9, 0.5–0.99). */
   confidence: number
-  /** Final fix wave (I5): judge + guard LLM calls running at once in one process (default 4, 1–16);
-   *  the rest queue (judge/limiter.ts). Absent → the default. */
-  maxInFlight?: number
+  /** Cycle 84 final fix wave (I5): judge LLM calls running at once in one process; the rest queue
+   *  (judge/limiter.ts). Cycle 85 final fix wave (I1): one cap per class (each 1–16) — guard (default
+   *  4), approval verdicts (2), outcome verifier (2). A stored bare number is the guard cap. */
+  maxInFlight?: JudgeMaxInFlight
 }
+
+/** Cycle 85 I1: the judge limiter's three classes. */
+export type JudgeClass = 'guard' | 'approval' | 'outcome'
+export type JudgeMaxInFlight = Record<JudgeClass, number>
+export const DEFAULT_JUDGE_MAX_IN_FLIGHT: Readonly<JudgeMaxInFlight> = Object.freeze({ guard: 4, approval: 2, outcome: 2 })
 
 export const JUDGE_CONFIDENCE_LIMITS = { min: 0.5, max: 0.99 } as const
 
@@ -73,7 +79,7 @@ export const DEFAULT_JUDGE_SETTINGS: Readonly<JudgeSettings> = Object.freeze({
   enabled: true,
   smartApprovals: Object.freeze({ workstreams: false, chat: false }),
   confidence: 0.9,
-  maxInFlight: 4
+  maxInFlight: DEFAULT_JUDGE_MAX_IN_FLIGHT
 })
 
 /** Where the approval was raised. Headless runs (jobs/wakes) are never auto-approved (spec §2.3). */

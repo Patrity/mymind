@@ -314,8 +314,9 @@ async function classify(
   let answeredBy: string | null = null
   let slotted = false
   try {
-    // I5: one of judge.maxInFlight slots (shared with the judge); the wait counts toward the 15 s.
-    const raw = await withJudgeSlot(signal, () => { slotted = true; return withFailoverOver('judge', chain, async (m) => {
+    // I5: one of judge.maxInFlight.guard slots (cycle 85 I1: its own class — a 60 s verifier never
+    // queues in front of it); the wait counts toward the 15 s.
+    const raw = await withJudgeSlot('guard', signal, () => { slotted = true; return withFailoverOver('judge', chain, async (m) => {
       // Race the shared deadline: a call that ignores its signal still ends on time.
       const out = await beforeDeadline(call(m, prompt, signal), signal)
       answeredBy = m.label

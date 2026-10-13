@@ -240,9 +240,10 @@ export async function judgeVerdict(input: JudgeInput, deps: JudgeDeps = {}): Pro
   let answeredBy: string | null = null
   let slotted = false
   try {
-    // I5: one of judge.maxInFlight slots (shared with the guard); the wait counts toward the deadline.
+    // I5: one of judge.maxInFlight.approval slots (cycle 85 I1: never shared with the guard); the wait
+    // counts toward the deadline.
     // Each model's call races the shared deadline, so a call that ignores its signal still ends.
-    const res = await withJudgeSlot(signal, () => { slotted = true; return withFailoverOver('judge', chain, async (m) => {
+    const res = await withJudgeSlot('approval', signal, () => { slotted = true; return withFailoverOver('judge', chain, async (m) => {
       if (signal.aborted) throw signal.reason ?? new Error('aborted')
       let onAbort: (() => void) | undefined
       try {
