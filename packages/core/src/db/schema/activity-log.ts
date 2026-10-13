@@ -9,7 +9,7 @@ export const activityLog = pgTable('activity_log', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   traceId: uuid('trace_id').notNull(),
   parentId: uuid('parent_id'),
-  kind: text('kind').notNull(),          // inbound | job | model | attempt | tool
+  kind: text('kind').notNull(),          // inbound | job | model | attempt | tool | eval (cycle 85: one summary row per eval run)
   name: text('name').notNull(),
   status: text('status').notNull(),      // ok | error | warn
   severity: text('severity').notNull(),  // debug | info | warn | error

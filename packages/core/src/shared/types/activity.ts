@@ -1,5 +1,5 @@
 // Shared client/server types for the activity log.
-export const ACTIVITY_KINDS = ['inbound', 'job', 'model', 'attempt', 'tool'] as const
+export const ACTIVITY_KINDS = ['inbound', 'job', 'model', 'attempt', 'tool', 'eval'] as const
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number]
 
 export type ActivitySeverity = 'debug' | 'info' | 'warn' | 'error'

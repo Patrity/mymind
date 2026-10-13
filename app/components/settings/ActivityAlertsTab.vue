@@ -2,7 +2,9 @@
 <script setup lang="ts">
 const config = useObservabilityConfig()
 onMounted(() => config.load())
-const kinds = ['inbound', 'job', 'model', 'attempt', 'tool'] as const
+import { ACTIVITY_KINDS } from '@mymind/core/shared/types/activity'
+
+const kinds = ACTIVITY_KINDS
 const severityItems = [{ label: 'Errors only', value: 'error' }, { label: 'Warnings + errors', value: 'warn' }]
 </script>
 

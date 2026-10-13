@@ -638,5 +638,31 @@ export async function executeEvalRun(runId: string, opts: EvalRunnerOptions = {}
     await cleanupEvalRun(runId).catch(err => console.warn(`[eval] cleanup of run ${runId} failed:`, (err as Error).message))
   }
   const [row] = await useDb().select().from(evalRuns).where(eq(evalRuns.id, runId))
+  if (row) await recordEvalRunActivity(row, Date.now() - started).catch(err => console.warn(`[eval] recording run ${runId}'s activity row failed:`, (err as Error).message))
   return row ?? null
+}
+
+/**
+ * Final fix wave (M5): ONE activity_log row per finished eval run, written OUTSIDE any world — the
+ * in-world model calls never reach activity_log (isolation), so without it a run's tokens would be
+ * invisible to Tony's usage/cost views. A summary only: tokens, duration, pass rate, model, status —
+ * never case content (no prompts, answers or tool arguments).
+ */
+export async function recordEvalRunActivity(run: EvalRunRow, durationMs: number): Promise<void> {
+  const { captureEnabled, recordEvent } = await import('../observability/record')
+  if (!(await captureEnabled('eval'))) return
+  const s = (run.summary ?? null) as EvalRunSummary | null
+  const ok = run.status === 'done'
+  recordEvent({
+    kind: 'eval', name: 'eval:run',
+    status: ok ? 'ok' : 'warn', severity: ok ? 'info' : 'warn',
+    durationMs: s?.durationMs ?? durationMs, tokens: { total: s?.tokens ?? 0 },
+    modelId: run.modelLabel ?? null,
+    meta: {
+      runId: run.id, suiteId: run.suiteId, status: run.status,
+      attempts: s?.attempts ?? 0, failedAttempts: s?.failedAttempts ?? 0,
+      passRate: s?.overall.passRate ?? null, nonHoldoutPassRate: s?.nonHoldout.passRate ?? null, meanScore: s?.overall.meanScore ?? null,
+      ...(run.error ? { stopped: run.error.slice(0, 120) } : {})
+    }
+  })
 }

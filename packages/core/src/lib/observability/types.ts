@@ -45,7 +45,7 @@ export const DEFAULT_CONFIG: ObservabilityConfig = {
   retainInfoDays: 14,
   retainErrorDays: 90,
   maxRows: 500_000,
-  capture: { inbound: true, job: true, model: true, attempt: true, tool: true },
+  capture: { inbound: true, job: true, model: true, attempt: true, tool: true, eval: true },
   alerts: {
     badge: true,
     toast: true,

@@ -740,4 +740,27 @@ describe('final fix wave', () => {
     const chat = await runAttempt(await caseRow(suiteId, 'task-create'), 1, ctx)
     expect(chat.outcome.workstream).toBeUndefined()
   }, 60_000)
+  it('M5: one activity_log summary row per eval run (kind eval, outside any world): tokens, duration, pass rate — no case content', async () => {
+    const { recorder } = await import('@mymind/core/lib/observability/record')
+    const { activityLog } = await import('@mymind/core/db/schema')
+    const suiteId = await testSuite(['task-create', 'memory-save'])
+    const run = await enqueueEvalRun(suiteId, {}, { send: noSend })
+    runIds.push(run.id)
+    await startEvalRun(run.id, { runner, allowNetwork: () => false })
+    await _evalRunSettled(run.id)
+    await recorder.flush()
+    const rows = await db().select().from(activityLog).where(sql`${activityLog.meta}->>'runId' = ${run.id}`)
+    try {
+      expect(rows).toHaveLength(1)
+      const [r] = rows
+      expect(r).toMatchObject({ kind: 'eval', name: 'eval:run', status: 'ok', tokens: { total: expect.any(Number) }, request: null, response: null })
+      expect((r!.tokens as { total: number }).total).toBeGreaterThan(0)
+      expect(r!.durationMs).toBeGreaterThan(0)
+      expect(r!.meta).toMatchObject({ runId: run.id, suiteId, status: 'done', attempts: 2, passRate: expect.any(Number) })
+      // No case content: neither prompt nor answer nor tool argument reaches the row.
+      expect(JSON.stringify(r)).not.toMatch(/passport|Renew|remember/i)
+    } finally {
+      await db().delete(activityLog).where(sql`${activityLog.meta}->>'runId' = ${run.id}`)
+    }
+  }, 60_000)
 })

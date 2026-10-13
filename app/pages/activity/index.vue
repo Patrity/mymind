@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
 import type { ActivityListParams, ActivityDTO } from '@mymind/core/shared/types/activity'
+import { ACTIVITY_KINDS } from '@mymind/core/shared/types/activity'
 
 definePageMeta({ title: 'Activity' })
 const toast = useToast()
@@ -35,7 +36,7 @@ watch(error, (err) => {
   toast.add({ color: 'error', title: 'Failed to load activity', description: e.data?.statusMessage ?? e.message })
 })
 
-const kindItems = [{ label: 'All kinds', value: '__all__' }, ...['inbound', 'job', 'model', 'attempt', 'tool'].map(k => ({ label: k, value: k }))]
+const kindItems = [{ label: 'All kinds', value: '__all__' }, ...ACTIVITY_KINDS.map(k => ({ label: k, value: k }))]
 const statusItems = [{ label: 'All', value: '__all__' }, { label: 'OK', value: 'ok' }, { label: 'Warn', value: 'warn' }, { label: 'Error', value: 'error' }]
 
 function statusColor(s: string): 'success' | 'warning' | 'error' | 'neutral' {
