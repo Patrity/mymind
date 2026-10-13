@@ -27,8 +27,8 @@ import type { SearchResponse } from '../search/types'
 import { currentEvalScope, runInEvalScope, EvalNetworkBlockedError, type CapturedWrite, type EvalScope, type EvalWebPage } from './context'
 import { createFakeGoogle } from './fake-google'
 import { parseEvalSetup, type EvalSetup } from './setup'
-import { createEvalTenant, dropEvalTenant, dropEvalSchema, listEvalTenants, evalRunPrefix, tenantDrift, type EvalTenant } from './tenant'
-import { cleanupWorldOutside, removeEvalContainers, sweepEvalLeftovers, type SweepResult } from './cleanup'
+import { createEvalTenant, dropEvalTenant, listEvalTenants, evalRunPrefix, tenantDrift, type EvalTenant } from './tenant'
+import { cleanupWorldOutside, dropWorldIfFree, removeRunGhostContainers, sweepEvalLeftovers, type SweepResult } from './cleanup'
 import { coreConfig } from '../../config'
 
 export type { CapturedWrite } from './context'
@@ -68,15 +68,23 @@ function hostOfUrl(url: string): string {
   try { return new URL(url).hostname.replace(/^\[|\]$/g, '') } catch { return '' }
 }
 
-/** The host a `net.connect` / `tls.connect` call reaches, or null for a TLS upgrade of an existing
- *  socket (pg's SSL handshake on a connection already checked). */
-function hostOfSocketArgs(args: unknown[]): string | null {
+/** Where a `net.connect` / `tls.connect` / `Socket#connect` call goes — `{ host, port }`, or
+ *  `{ path }` for a unix socket — or null for a TLS upgrade of an existing socket (pg's SSL
+ *  handshake on a connection already checked). Node's internal calls pass a normalized args array. */
+function endpointOfSocketArgs(raw: unknown[], defaultPort?: number): { host: string; port: number | null } | { path: string } | null {
+  const args = Array.isArray(raw[0]) ? (raw[0] as unknown[]) : raw
   const a = args[0]
-  if (typeof a === 'number') return typeof args[1] === 'string' ? args[1] : 'localhost'
-  if (typeof a === 'string') return a // a unix socket path
-  const o = (a ?? {}) as { host?: string; path?: string; socket?: unknown }
+  if (typeof a === 'number' || (typeof a === 'string' && /^\d+$/.test(a))) return { host: typeof args[1] === 'string' ? args[1] : 'localhost', port: Number(a) }
+  if (typeof a === 'string') return { path: a }
+  const o = (a ?? {}) as { host?: string; port?: number | string; path?: string; socket?: unknown }
   if (o.socket) return null
-  return o.path ?? o.host ?? 'localhost'
+  if (o.path) return { path: o.path }
+  const port = o.port !== undefined && o.port !== '' ? Number(o.port) : (defaultPort ?? null)
+  return { host: (o.host ?? 'localhost').replace(/^\[|\]$/g, ''), port }
+}
+
+function portOfUrl(url: string): number {
+  try { const u = new URL(url); return u.port ? Number(u.port) : u.protocol === 'http:' ? 80 : 443 } catch { return 443 }
 }
 
 function blocked(scope: EvalScope, url: string): EvalNetworkBlockedError {
@@ -87,7 +95,7 @@ function blocked(scope: EvalScope, url: string): EvalNetworkBlockedError {
 /** Allowed outbound URL: the world allows it, and its host is then allowed at the socket level too. */
 function allowUrl(scope: EvalScope, url: string): boolean {
   if (!scope.allowNetwork(url)) return false
-  scope.permitHost(hostOfUrl(url))
+  scope.permitHost(hostOfUrl(url), portOfUrl(url))
   return true
 }
 
@@ -130,14 +138,39 @@ export function installNetworkGuard(): void {
       })
     }
   }
-  const socketCheck = (kind: string) => (scope: EvalScope, args: unknown[]) => {
-    const host = hostOfSocketArgs(args)
-    if (host !== null && !scope.allowHost(host)) throw blocked(scope, `${kind}://${host}`)
+  const socketCheck = (kind: string, defaultPort?: number) => (scope: EvalScope, args: unknown[]) => {
+    const ep = endpointOfSocketArgs(args, defaultPort)
+    if (ep === null) return
+    if ('path' in ep) { if (!scope.allowSocket(ep.path, null)) throw blocked(scope, `unix://${ep.path}`); return }
+    if (!scope.allowSocket(ep.host, ep.port)) throw blocked(scope, `${kind}://${ep.host}${ep.port !== null ? `:${ep.port}` : ''}`)
   }
   wrap(net, 'connect', socketCheck('tcp'))
   wrap(net, 'createConnection', socketCheck('tcp'))
-  wrap(tls, 'connect', socketCheck('tls'))
-  const dnsNames = ['lookup', 'resolve', 'resolve4', 'resolve6', 'resolveAny', 'resolveCname', 'resolveMx', 'resolveTxt', 'resolveSrv', 'resolveNs']
+  wrap(tls, 'connect', socketCheck('tls', 443))
+  // Fix round 2 (N4): the raw path — `new net.Socket().connect(port, host)` (pg's own) and every
+  // socket Node opens internally.
+  wrap(net.Socket.prototype, 'connect', socketCheck('tcp'))
+  const dnsNames = ['lookup', 'lookupService', 'reverse', 'resolve', 'resolve4', 'resolve6', 'resolveAny', 'resolveCaa', 'resolveCname', 'resolveMx', 'resolveNaptr', 'resolveNs', 'resolvePtr', 'resolveSoa', 'resolveSrv', 'resolveTxt']
+  // Fix round 2 (N4): `new dns.Resolver()` / `new dns.promises.Resolver()` instances too.
+  for (const proto of [dns.Resolver.prototype, dns.promises.Resolver.prototype]) {
+    for (const name of dnsNames) {
+      const original = (proto as unknown as Record<string, Fn>)[name]
+      if (typeof original !== 'function') continue
+      const promised = proto === dns.promises.Resolver.prototype
+      ;(proto as unknown as Record<string, unknown>)[name] = function evalGuardedResolver(this: unknown, ...args: unknown[]) {
+        const scope = currentEvalScope()
+        const host = String(args[0] ?? '')
+        if (scope && !scope.allowHost(host)) {
+          const err = blocked(scope, `dns://${host}`)
+          if (promised) return Promise.reject(err)
+          const cb = args.findLast(x => typeof x === 'function') as ((e: Error) => void) | undefined
+          if (cb) { process.nextTick(() => cb(err)); return undefined }
+          throw err
+        }
+        return original.apply(this, args)
+      }
+    }
+  }
   for (const name of dnsNames) {
     const original = (dns as unknown as Record<string, Fn>)[name]
     if (typeof original !== 'function') continue
@@ -289,6 +322,22 @@ export interface EvalWorld {
   dispose(): Promise<void>
 }
 
+/** The database's endpoint from DATABASE_URL: `{ host, port }`, or the unix socket pg opens for a
+ *  `?host=/dir` URL (`<dir>/.s.PGSQL.<port>`). Null when none is configured (unit tests). */
+export function databaseEndpoint(): { host: string; port: number } | { path: string } | null {
+  try {
+    const u = new URL(coreConfig().databaseUrl as string)
+    const port = u.port ? Number(u.port) : 5432
+    const sockDir = u.searchParams.get('host')
+    if (sockDir?.startsWith('/')) return { path: `${sockDir.replace(/\/$/, '')}/.s.PGSQL.${port}` }
+    const host = (sockDir || u.hostname).toLowerCase().replace(/^\[|\]$/g, '')
+    if (host.startsWith('/')) return { path: `${host.replace(/\/$/, '')}/.s.PGSQL.${port}` }
+    return { host: host || 'localhost', port }
+  } catch {
+    return null
+  }
+}
+
 export function evalAccount(setup: EvalSetup, schema: string): Connection {
   return {
     id: `eval-google-${schema.slice(-8)}`, accountId: 'eval', userId: 'eval', googleSub: 'eval', provider: 'google',
@@ -311,9 +360,14 @@ export function buildEvalWorld(args: { runId: string; schema: string; pool: Pool
   }
   const account = evalAccount(setup, schema)
   // Socket / DNS allow-list: the database (the tenant pool connects from inside the world).
+  // DNS: host names. Sockets: host:port pairs (fix round 2, N4 — the DB host only on the DB port).
   const hosts = new Set<string>()
-  try { const u = new URL(coreConfig().databaseUrl as string); hosts.add(u.hostname.toLowerCase().replace(/^\[|\]$/g, '')) } catch { /* no DB configured (unit tests) */ }
-  try { const h = new URL(coreConfig().databaseUrl as string).searchParams.get('host'); if (h) hosts.add(h.toLowerCase()) } catch { /* idem */ }
+  const sockets = new Set<string>()
+  const db = databaseEndpoint()
+  if (db) {
+    if ('path' in db) sockets.add(`unix:${db.path}`)
+    else { hosts.add(db.host); sockets.add(`${db.host}:${db.port}`) }
+  }
   const google = createFakeGoogle(setup, account.email, capture, options.now)
   const scope: EvalScope = {
     runId, worldId: schema, pool, busNs: schema, active: true,
@@ -328,7 +382,8 @@ export function buildEvalWorld(args: { runId: string; schema: string; pool: Pool
     imessage: fakeImessage(capture),
     allowNetwork: options.allowNetwork ?? (() => false),
     allowHost: host => hosts.has(host.toLowerCase()),
-    permitHost: (host) => { if (host) hosts.add(host.toLowerCase()) },
+    allowSocket: (host, port) => port === null ? sockets.has(`unix:${host}`) : sockets.has(`${host.toLowerCase()}:${port}`),
+    permitHost: (host, port) => { if (host) { hosts.add(host.toLowerCase()); sockets.add(`${host.toLowerCase()}:${port}`) } },
     onBlockedNetwork: (url) => { blockedNetwork.push(url) }
   }
   let disposed: Promise<void> | null = null
@@ -349,6 +404,8 @@ export function buildEvalWorld(args: { runId: string; schema: string; pool: Pool
     run: fn => runInEvalScope(scope, async () => fn()),
     dispose: () => disposed ??= (async () => {
       scope.active = false
+      // Fix round 2 (N6): the world's watch timers stop before its containers / schema go.
+      try { (await import('../sandbox/runtime')).stopEvalWorkspaceRuntime(scope) } catch (err) { console.warn('[eval] stopping the world runtime failed:', (err as Error).message) }
       await args.dispose?.()
     })()
   }
@@ -408,14 +465,15 @@ export async function cleanupEvalRun(runId: string): Promise<{ dropped: number }
   const live = [...(liveWorlds.get(runId) ?? [])]
   for (const w of live) await w.dispose()
   const prefix = evalRunPrefix(runId)
-  const leftover = (await listEvalTenants()).filter(n => n.startsWith(prefix))
-  for (const schema of leftover) {
-    await cleanupWorldOutside(schema)
-    await dropEvalSchema(schema)
+  let dropped = live.length
+  // Orphans of the run (a crashed process's) — only under their lock: a world of this run live in
+  // ANOTHER process holds its lock and is left alone (fix round 2, N2a / N3).
+  for (const schema of (await listEvalTenants()).filter(n => n.startsWith(prefix))) {
+    if ((await dropWorldIfFree(schema)).dropped) dropped++
   }
-  // Containers of the run whose world schema was already gone (a crash between the two).
-  try { await removeEvalContainers({ runId }) } catch (err) { console.warn(`[eval] container cleanup of run ${runId} failed:`, (err as Error).message) }
-  return { dropped: live.length + leftover.length }
+  // Containers of the run whose world schema is already gone (a crash between the two).
+  try { await removeRunGhostContainers(runId) } catch (err) { console.warn(`[eval] container cleanup of run ${runId} failed:`, (err as Error).message) }
+  return { dropped }
 }
 
 /** The tenant schemas of worlds live in this process. */

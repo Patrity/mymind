@@ -14,6 +14,7 @@ import dns from 'node:dns'
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 
 const spawned: { file: string; args: string[] }[] = []
+let stdoutNext = ''
 vi.mock('node:child_process', async (orig) => {
   const real = await orig<typeof import('node:child_process')>()
   const fakeChild = () => {
@@ -21,7 +22,9 @@ vi.mock('node:child_process', async (orig) => {
     c.stdout = new EventEmitter(); c.stderr = new EventEmitter()
     c.stdin = Object.assign(new EventEmitter(), { end: () => {} })
     c.kill = () => {}; c.pid = 0
-    setTimeout(() => c.emit('close', 0), 1)
+    const out = stdoutNext
+    stdoutNext = ''
+    setTimeout(() => { if (out) c.stdout.emit('data', Buffer.from(out)); c.emit('close', 0) }, 1)
     return c
   }
   return {
@@ -35,7 +38,8 @@ vi.mock('../agent/jobs/timezone', () => ({ getDefaultTimezone: vi.fn(async () =>
 type Fn = (...a: unknown[]) => unknown
 const saved = {
   fetch: globalThis.fetch, httpsRequest: https.request, netConnect: net.connect, netCreate: net.createConnection,
-  tlsConnect: tls.connect, lookup: dns.lookup, resolve4: dns.resolve4, pLookup: dns.promises.lookup
+  tlsConnect: tls.connect, lookup: dns.lookup, resolve4: dns.resolve4, pLookup: dns.promises.lookup,
+  sockConnect: net.Socket.prototype.connect, resolverResolve4: dns.Resolver.prototype.resolve4, pResolverResolve4: dns.promises.Resolver.prototype.resolve4
 }
 const reached: string[] = []
 const spy = (name: string, ret?: unknown) => vi.fn((...a: unknown[]) => { reached.push(`${name}:${String((a[0] as { host?: string })?.host ?? a[0])}`); return ret })
@@ -48,13 +52,16 @@ set(tls, 'connect', spy('tls.connect', new EventEmitter()))
 set(dns, 'lookup', vi.fn((h: string, ...rest: unknown[]) => { reached.push(`dns.lookup:${h}`); (rest.at(-1) as Fn)(null, '203.0.113.9', 4) }))
 set(dns, 'resolve4', vi.fn((h: string, cb: Fn) => { reached.push(`dns.resolve4:${h}`); cb(null, ['203.0.113.9']) }))
 set(dns.promises, 'lookup', vi.fn(async (h: string) => { reached.push(`dns.promises.lookup:${h}`); return { address: '203.0.113.9', family: 4 } }))
+set(net.Socket.prototype, 'connect', function (this: unknown, ...a: unknown[]) { reached.push(`socket.connect:${JSON.stringify(a.filter(x => typeof x !== 'function'))}`); return this })
+set(dns.Resolver.prototype, 'resolve4', vi.fn((h: string, cb: Fn) => { reached.push(`resolver.resolve4:${h}`); cb(null, ['203.0.113.9']) }))
+set(dns.promises.Resolver.prototype, 'resolve4', vi.fn(async (h: string) => { reached.push(`presolver.resolve4:${h}`); return ['203.0.113.9'] }))
 
 const { buildEvalWorld, installNetworkGuard } = await import('./world')
 const { parseEvalSetup } = await import('./setup')
 const { EvalNetworkBlockedError, processCache, runInEvalScope } = await import('./context')
 const { execTool } = await import('../agent/tools/exec')
 const { runConstrained, ExecDisabledError } = await import('../exec/run')
-const { createDockerCli, createArgs, LABEL_EVAL_RUN, LABEL_EVAL_WORLD } = await import('../sandbox/docker')
+const { createDockerCli, createArgs, evalContainerPrefix, LABEL_EVAL_RUN, LABEL_EVAL_WORLD } = await import('../sandbox/docker')
 const { sandboxManager } = await import('../sandbox/manager')
 const { workspaceRuntime } = await import('../sandbox/runtime')
 const { sandboxSecretEnv } = await import('../sandbox/secrets')
@@ -67,6 +74,7 @@ afterAll(() => {
   globalThis.fetch = saved.fetch
   set(https, 'request', saved.httpsRequest); set(net, 'connect', saved.netConnect); set(net, 'createConnection', saved.netCreate)
   set(tls, 'connect', saved.tlsConnect); set(dns, 'lookup', saved.lookup); set(dns, 'resolve4', saved.resolve4); set(dns.promises, 'lookup', saved.pLookup)
+  set(net.Socket.prototype, 'connect', saved.sockConnect); set(dns.Resolver.prototype, 'resolve4', saved.resolverResolve4); set(dns.promises.Resolver.prototype, 'resolve4', saved.pResolverResolve4)
 })
 afterEach(() => { spawned.length = 0; reached.length = 0 })
 
@@ -93,33 +101,93 @@ describe('C1: no host process from a world', () => {
   })
 })
 
-describe('C1: the docker CLI only makes offline, eval-labelled containers from a world', () => {
-  const spec = { name: 'mymind-ws-x', image: 'img', workspaceId: '11111111-1111-1111-1111-111111111111', hostDir: '/tmp/x' }
+describe('C1 / N1: the docker CLI only touches the world\'s own offline containers', () => {
+  const prefix = evalContainerPrefix(SCHEMA)
+  const spec = { name: `${prefix}ws-11111111-1111-1111-1111-111111111111`, image: 'img', workspaceId: '11111111-1111-1111-1111-111111111111', hostDir: '/tmp/x' }
   const labels = { [LABEL_EVAL_RUN]: RUN, [LABEL_EVAL_WORLD]: SCHEMA }
+  const TONY = 'mymind-ws-22222222-2222-2222-2222-222222222222' // shaped like a real workspace container
 
-  it('refuses a networked container, a missing label, network commands and secret passthrough — before spawning', async () => {
+  it('refuses a networked container, a missing label, a foreign name, network commands and secret passthrough — before spawning', async () => {
     const w = world()
     const cli = createDockerCli()
     await expect(w.run(() => cli(createArgs({ ...spec, labels })))).rejects.toThrow(/--network none/)               // default network
     await expect(w.run(() => cli(createArgs({ ...spec, network: 'none' })))).rejects.toThrow(/eval labels/)
     await expect(w.run(() => cli(createArgs({ ...spec, network: 'none', labels: { ...labels, [LABEL_EVAL_RUN]: 'other' } })))).rejects.toThrow(/eval labels/)
-    await expect(w.run(() => cli(['network', 'connect', 'bridge', 'mymind-ws-x']))).rejects.toThrow(/no network commands/)
-    await expect(w.run(() => cli(['exec', '-i', '--env', 'GITHUB_TOKEN', 'mymind-ws-x', 'env']))).rejects.toThrow(/secret env/)
-    await expect(w.run(() => cli(['exec', 'mymind-ws-x', 'env'], { env: { GITHUB_TOKEN: 'x' } }))).rejects.toThrow(/secrets are never/)
+    await expect(w.run(() => cli(createArgs({ ...spec, name: TONY, network: 'none', labels })))).rejects.toThrow(/must start with/)
+    await expect(w.run(() => cli(['network', 'connect', 'bridge', spec.name]))).rejects.toThrow(/not allowed/)
+    await expect(w.run(() => cli(['exec', '-i', '--env', 'GITHUB_TOKEN', spec.name, 'env']))).rejects.toThrow(/secret env/)
+    await expect(w.run(() => cli(['exec', spec.name, 'env'], { env: { GITHUB_TOKEN: 'x' } }))).rejects.toThrow(/secrets are never/)
     expect(spawned).toEqual([])
   })
 
-  it('lets an offline, eval-labelled container through (and real work outside a world is untouched)', async () => {
+  it('N1: every container-targeting subcommand at a non-world target is refused — incl. rm -f of a real-looking name', async () => {
+    const w = world()
+    const cli = createDockerCli()
+    const refused = [
+      ['rm', '-f', TONY],
+      ['kill', TONY],
+      ['stop', '-t', '3', TONY],
+      ['start', TONY],
+      ['exec', '-i', '--user', '10001:10001', TONY, '/bin/sh', '-c', 'id'],
+      ['exec', '--privileged', spec.name, 'id'],
+      ['container', 'inspect', '--format', '{{.Id}}', TONY],
+      ['container', 'rm', '-f', TONY],
+      ['cp', `${TONY}:/workspace/x`, '/tmp/x'],
+      ['cp', '/etc/passwd', `${spec.name}:/workspace/x`],
+      ['logs', TONY],
+      ['rm', '-f', spec.name, TONY],                                   // one foreign target is enough
+      ['rm', '-f', 'a'.repeat(64)],                                    // an id the world never created
+      ['rm', '-f'],                                                    // no target at all
+      ['volume', 'rm', 'x'], ['system', 'prune', '-af'], ['build', '.'], ['pull', 'alpine']
+    ]
+    for (const args of refused) await expect(w.run(() => cli(args)), args.join(' ')).rejects.toThrow(/refused in an eval world/)
+    expect(spawned).toEqual([])
+  })
+
+  it('lets the world\'s own containers through (by prefix, and by an id it created or listed under its label)', async () => {
     const w = world()
     const cli = createDockerCli()
     await w.run(() => cli(createArgs({ ...spec, network: 'none', labels })))
+    await w.run(() => cli(['rm', '-f', spec.name]))
+    await w.run(() => cli(['exec', '-i', '--user', '10001:10001', '--workdir', '/workspace', '--env', 'HOME=/home/agent', spec.name, '/bin/sh', '-c', 'id']))
+    await w.run(() => cli(['container', 'inspect', '--format', '{{.Id}}', spec.name]))
+    await w.run(() => cli(['ps', '-aq', '--filter', 'label=mymind.workspace']))
+    await w.run(() => cli(['version']))
+    expect(spawned).toHaveLength(6)
+    spawned.length = 0
+    await cli(['rm', '-f', TONY]) // outside any world: untouched
     expect(spawned).toHaveLength(1)
-    await cli(createArgs(spec)) // Tony's own networked container, outside any world
-    expect(spawned).toHaveLength(2)
+  })
+
+  it('ids: one returned by an in-world create / own-label ps is allowed; another world\'s is not', async () => {
+    const w = world()
+    const other = buildEvalWorld({ runId: RUN, schema: 'eval_000000000000400080000000000000aa_00000002', pool: deadPool, setup: parseEvalSetup({}) })
+    const id = 'c'.repeat(64)
+    stdoutNext = `${id}\n`
+    const cli = createDockerCli()
+    await w.run(() => cli(createArgs({ ...spec, network: 'none', labels })))
+    await w.run(() => cli(['start', id]))
+    await expect(other.run(() => cli(['start', id]))).rejects.toThrow(/not this world's container/)
+    const listed = 'd'.repeat(64)
+    stdoutNext = `${listed}\n`
+    await w.run(() => cli(['ps', '-aq', '--no-trunc', '--filter', 'label=mymind.workspace', '--filter', `label=mymind.eval.world=${SCHEMA}`]))
+    await w.run(() => cli(['rm', '-f', listed]))
+    stdoutNext = `${'e'.repeat(64)}\n`
+    await w.run(() => cli(['ps', '-aq', '--filter', 'label=mymind.workspace'])) // not filtered by the world: not adopted
+    await expect(w.run(() => cli(['rm', '-f', 'e'.repeat(64)]))).rejects.toThrow(/not this world's container/)
   })
 })
 
 describe('C1: the workspace sandbox in a world', () => {
+  it('N6: dispose stops the world runtime\'s watch timers (and forgets it)', async () => {
+    const w = world()
+    const rt = await w.run(() => workspaceRuntime())
+    const stop = vi.spyOn(rt.watches, 'stop')
+    await w.dispose()
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(await w.run(() => workspaceRuntime())).not.toBe(rt)
+  })
+
   it('sandboxManager() / workspaceRuntime() are the world\'s own: offline, eval-labelled, own dir', async () => {
     const w = world()
     const m = await w.run(() => sandboxManager())
@@ -156,7 +224,7 @@ describe('M4: sockets, DNS and http options', () => {
     expect(viaCb4).toBeInstanceOf(EvalNetworkBlockedError)
     await expect(w.run(() => dns.promises.lookup('example.org'))).rejects.toBeInstanceOf(EvalNetworkBlockedError)
     expect(reached).toEqual([])
-    expect(w.blockedNetwork).toEqual(['tcp://example.org', 'tcp://example.org', 'tls://example.org', 'dns://example.org', 'dns://example.org', 'dns://example.org'])
+    expect(w.blockedNetwork).toEqual(['tcp://example.org:80', 'tcp://example.org:443', 'tls://example.org:443', 'dns://example.org', 'dns://example.org', 'dns://example.org'])
     // Outside a world they reach the host as before.
     dns.lookup('example.org', () => {})
     expect(reached).toEqual(['dns.lookup:example.org'])
@@ -182,6 +250,41 @@ describe('M4: sockets, DNS and http options', () => {
     await w.run(() => fetch('https://model.example/v1/chat'))
     await w.run(() => dns.promises.lookup('model.example'))
     expect(reached).toEqual(['fetch:https://model.example/v1/chat', 'dns.promises.lookup:model.example'])
+  })
+})
+
+describe('N4: raw sockets, resolvers, and the DB host only on its port', () => {
+  it('new net.Socket().connect(port, ip) is refused in a world (pg\'s own path)', async () => {
+    const w = world()
+    await expect(w.run(() => new net.Socket().connect(6379, '127.0.0.1'))).rejects.toBeInstanceOf(EvalNetworkBlockedError)
+    await expect(w.run(() => new net.Socket().connect({ host: '10.0.0.5', port: 22 }))).rejects.toBeInstanceOf(EvalNetworkBlockedError)
+    await expect(w.run(() => new net.Socket().connect('/var/run/docker.sock'))).rejects.toBeInstanceOf(EvalNetworkBlockedError)
+    expect(reached).toEqual([])
+    expect(w.blockedNetwork).toEqual(['tcp://127.0.0.1:6379', 'tcp://10.0.0.5:22', 'unix:///var/run/docker.sock'])
+    new net.Socket().connect(6379, '127.0.0.1') // outside a world: as before
+    expect(reached).toHaveLength(1)
+  })
+
+  it('dns.Resolver / dns.promises.Resolver instances are guarded', async () => {
+    const w = world()
+    const viaCb = await w.run(() => new Promise<Error | null>(r => new dns.Resolver().resolve4('example.org', e => r(e))))
+    expect(viaCb).toBeInstanceOf(EvalNetworkBlockedError)
+    await expect(w.run(() => new dns.promises.Resolver().resolve4('example.org'))).rejects.toBeInstanceOf(EvalNetworkBlockedError)
+    expect(reached).toEqual([])
+  })
+
+  it('the DB host is allowed only on the DB port; an allowed URL only on its own port', async () => {
+    vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: 'postgres://u:p@db.internal:5433/mymind' }))
+    try {
+      const w = world(u => u.startsWith('https://model.example/'))
+      await w.run(() => new net.Socket().connect(5433, 'db.internal'))
+      await expect(w.run(() => new net.Socket().connect(22, 'db.internal'))).rejects.toBeInstanceOf(EvalNetworkBlockedError)
+      await expect(w.run(() => net.connect({ host: 'db.internal', port: 6379 }))).rejects.toBeInstanceOf(EvalNetworkBlockedError)
+      await w.run(() => fetch('https://model.example/v1/chat'))
+      await w.run(() => new net.Socket().connect(443, 'model.example'))
+      await expect(w.run(() => new net.Socket().connect(22, 'model.example'))).rejects.toBeInstanceOf(EvalNetworkBlockedError)
+      expect(reached).toEqual(['socket.connect:[5433,"db.internal"]', 'fetch:https://model.example/v1/chat', 'socket.connect:[443,"model.example"]'])
+    } finally { vi.unstubAllGlobals() }
   })
 })
 

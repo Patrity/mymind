@@ -12,7 +12,7 @@ import { currentEvalScope } from '../eval/context'
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { agentRuns, workspaces, workspaceShells, workspaceWatches, workstreams } from '../../db/schema'
-import { sandboxManager, setSandboxRuntimeHooks, type SandboxManager } from './manager'
+import { sandboxManager, setEvalSandboxHooks, setSandboxRuntimeHooks, type SandboxManager } from './manager'
 import { dbWorkspaceStore, ensureHomeWorkspace, ensureWorkstreamWorkspace } from './store'
 import { createShellRegistry, type ShellRegistry } from './shells'
 import { createWatchRuntime, type WatchRuntime, type WorkspaceWatchRow } from './watches'
@@ -104,10 +104,23 @@ export function workspaceRuntime(): WorkspaceRuntime {
   const scope = currentEvalScope()
   if (scope) {
     let rt = evalRuntimes.get(scope)
-    if (!rt) evalRuntimes.set(scope, rt = createWorkspaceRuntime(sandboxManager()))
+    if (!rt) {
+      evalRuntimes.set(scope, rt = createWorkspaceRuntime(sandboxManager()))
+      // Fix round 2 (N6): the world's manager calls the world's own shells / watches.
+      setEvalSandboxHooks(scope, runtimeHooks(rt))
+    }
     return rt
   }
   return shared ??= createWorkspaceRuntime(sandboxManager())
+}
+
+/** Fix round 2 (N6): an eval world is disposed — stop its runtime's watch timers (they would keep
+ *  polling a removed container and pin the scope). Idempotent. */
+export function stopEvalWorkspaceRuntime(scope: object): void {
+  const rt = evalRuntimes.get(scope)
+  if (!rt) return
+  evalRuntimes.delete(scope)
+  rt.watches.stop()
 }
 
 /** Test seam: swap the runtime (unit tests use fakes). */

@@ -108,6 +108,7 @@ describe('boot sweep (I2)', () => {
     const make = async (runId: string, ageMs: number) => {
       const t = await createEvalTenant(runId)
       await t.pool.end()
+      await t.lock.release() // as a crashed process's session would
       mySchemas.push(t.schema)
       await stamp(t.schema, at(ageMs))
       return t.schema
@@ -138,13 +139,32 @@ describe('boot sweep (I2)', () => {
     for (const keep of [s.absentYoung, s.runningYoung, s.keptByProcess]) expect(left.has(keep)).toBe(true)
     for (const gone of dropped) expect(left.has(gone)).toBe(false)
     expect([...containers.keys()].sort()).toEqual(['c-absentYoung', 'c-keptByProcess', 'c-runningYoung', 'c-tony'])
-    expect(removedDirs.map(d => d.split('/').at(-1)).sort()).toEqual([s.absentStale, s.finishedYoung, s.runningOld, 'eval_00000000000000000000000000000000_deadbeef'].sort())
+    const mine = new Set([...Object.values(s), 'eval_00000000000000000000000000000000_deadbeef'])
+    expect([...new Set(removedDirs.map(d => d.split('/').at(-1)!).filter(n => mine.has(n)))].sort()).toEqual([s.absentStale, s.finishedYoung, s.runningOld, 'eval_00000000000000000000000000000000_deadbeef'].sort())
     containers.clear()
+  })
+
+  it('N3: a sweep-eligible world still held by a live process keeps its containers and dir', async () => {
+    const w = await installEvalWorld(randomUUID(), {})
+    try {
+      await db().execute(sql.raw(`comment on schema "${w.schema}" is 'created=${new Date(Date.now() - 3 * 3600_000).toISOString()}'`))
+      containers.set('c-live', { [LABEL_EVAL_RUN]: w.runId, [LABEL_EVAL_WORLD]: w.schema })
+      dirListing = [w.schema]
+      removedDirs.length = 0
+      const r = await sweepEvalLeftovers()
+      expect(r.schemas).not.toContain(w.schema)
+      expect(containers.has('c-live')).toBe(true)
+      expect(removedDirs.filter(d => d.includes(w.schema))).toEqual([])
+    } finally {
+      containers.clear()
+      await w.dispose()
+    }
   })
 
   it('without the creation stamp a tenant counts as stale', async () => {
     const t = await createEvalTenant(randomUUID())
     await t.pool.end()
+    await t.lock.release()
     mySchemas.push(t.schema)
     await db().execute(sql.raw(`comment on schema "${t.schema}" is null`))
     const r = await sweepEvalLeftovers()

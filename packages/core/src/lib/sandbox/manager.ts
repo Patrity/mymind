@@ -24,7 +24,7 @@ import { chown, mkdir, rmdir, statfs } from 'node:fs/promises'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import {
-  LABEL_EVAL_RUN, LABEL_EVAL_WORLD, LABEL_FLAGS, LABEL_TAINTED, LABEL_TEST, LABEL_WORKSPACE, SANDBOX_UID, SandboxStoppedError, SandboxUnavailableError,
+  LABEL_EVAL_RUN, LABEL_EVAL_WORLD, LABEL_FLAGS, evalContainerPrefix, LABEL_TAINTED, LABEL_TEST, LABEL_WORKSPACE, SANDBOX_UID, SandboxStoppedError, SandboxUnavailableError,
   assertSecretName, createArgs, createDockerCli, dockerAvailable, ensureNetwork, execArgs, flagsHash, killExecArgs,
   limitsProbeArgs, limitsProblems, parseExecStatus, taintedRunArgs, verifyNetworkIsolation,
   type DockerResult, type DockerRunner, type ExecStatus
@@ -218,6 +218,9 @@ export interface SandboxManagerOptions {
   /** Cycle 85: an eval world's manager — every container `--network none` (no firewall preflight
    *  needed), and a command with secrets is refused (fail closed). */
   offline?: boolean
+  /** Fix round 2 (N1): every container name starts with this (an eval world's own prefix) instead of
+   *  `mymind-`. */
+  namePrefix?: string
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -286,6 +289,9 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const s: SandboxSettings = { ...sandboxSettings(), ...opts.settings }
   const labels = opts.labels ?? {}
   const offline = opts.offline === true
+  const namePrefix = opts.namePrefix ?? 'mymind-'
+  /** The workspace container's name: `mymind-ws-<id>`, or under an eval world's prefix (N1). */
+  const cname = (id: string) => namePrefix === 'mymind-' ? containerName(id) : `${namePrefix}ws-${id}`
   const log = opts.log ?? console
   const now = opts.now ?? Date.now
   const uid = 'uid' in opts ? opts.uid : process.getuid?.()
@@ -367,7 +373,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
    */
   async function verifyLimits(): Promise<void> {
     if (limitsFailed && now() - limitsFailed.at < PREFLIGHT_TTL_MS) throw new SandboxUnavailableError(limitsFailed.message)
-    const name = `mymind-wsprobe-${randomBytes(4).toString('hex')}`
+    const name = `${namePrefix}wsprobe-${randomBytes(4).toString('hex')}`
     const dir = path.join(s.workspacesDir, '.limits-probe')
     await mkdir(dir, { recursive: true, mode: 0o711 })
     const fail = (why: string) => {
@@ -423,7 +429,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   async function runningNetworked(): Promise<string[]> {
     const ids = (await listLabelled()).filter((c) => {
       const wid = c.Config.Labels?.[LABEL_WORKSPACE] ?? ''
-      return inScope(c) && c.State.Running && c.Config.Labels?.[LABEL_TAINTED] === undefined && UUID.test(wid) && c.Name === `/${containerName(wid)}`
+      return inScope(c) && c.State.Running && c.Config.Labels?.[LABEL_TAINTED] === undefined && UUID.test(wid) && c.Name === `/${cname(wid)}`
     }).map(c => c.Config.Labels![LABEL_WORKSPACE]!)
     const out: string[] = []
     for (const id of ids) if (!await isHome(id)) out.push(id)
@@ -453,7 +459,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   async function evictUnlocked(id: string): Promise<boolean> {
     if ((inFlight.get(id) ?? 0) > 0) return false
     try { if (await hasLiveShell(id)) return false } catch { return false }
-    const c = await inspect(containerName(id))
+    const c = await inspect(cname(id))
     if (c?.State.Running) {
       await docker(['stop', '-t', '3', c.Id], { timeoutMs: 30_000 })
       if ((await inspect(c.Id))?.State.Running) {
@@ -525,7 +531,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   function containerSpec(id: string) {
-    return { name: containerName(id), image: s.image, workspaceId: id, hostDir: hostDir(id), labels, dns: offline ? [] : s.dns, ...(offline ? { network: 'none' } : {}) }
+    return { name: cname(id), image: s.image, workspaceId: id, hostDir: hostDir(id), labels, dns: offline ? [] : s.dns, ...(offline ? { network: 'none' } : {}) }
   }
 
   async function inspect(nameOrId: string): Promise<Inspected | null> {
@@ -550,7 +556,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     // Re-read under the lock: a taint that just landed must never be raced by a networked start.
     if (row.tainted) throw new WorkspaceTaintedError(`workspace ${id} is tainted`)
     await preflight(true)
-    const name = containerName(id)
+    const name = cname(id)
     const wantFlags = flagsHash(containerSpec(id))
     const current = await inspect(name)
     const fresh = (c: Inspected) => !(imageId && c.Image !== imageId) && c.Config.Labels?.[LABEL_FLAGS] === wantFlags
@@ -625,7 +631,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
         await store.setTainted(id, true)
         log.warn(`[sandbox] workspace ${id} is now tainted: no network and no secrets until re-enabled`)
       }
-      const c = await inspect(containerName(id))
+      const c = await inspect(cname(id))
       if (c?.State.Running) {
         const k = await docker(['kill', c.Id], { timeoutMs: 30_000 })
         if (k.code !== 0 && (await inspect(c.Id))?.State.Running) throw new SandboxUnavailableError(`could not stop the networked sandbox of ${id} before a tainted command: ${k.stderr.trim()}`)
@@ -758,7 +764,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
 
   async function execOneOffInSlot(id: string, command: string, timeoutSec: number, signal: AbortSignal | undefined, io: { input?: string; capBytes?: number }): Promise<DockerResult & { abortedHere: boolean }> {
     const execId = newExecId()
-    const name = `mymind-wst-${id.slice(0, 8)}-${execId}`
+    const name = `${namePrefix}wst-${id.slice(0, 8)}-${execId}`
     let aborted = false
     let returned = false
     // An abort keeps killing the one-off until the attached `docker run` returns — i.e. until the
@@ -880,7 +886,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   async function stopUnlocked(id: string, reason: string): Promise<void> {
-    const c = await inspect(containerName(id))
+    const c = await inspect(cname(id))
     if (c?.State.Running) await docker(['stop', '-t', '3', c.Id], { timeoutMs: 30_000 })
     await store.setContainer(id, c?.Id ?? null, 'stopped')
     try { await onStopped(id, reason) } catch (err) { log.warn(`[sandbox] onStopped(${id}) failed:`, (err as Error).message) }
@@ -921,7 +927,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   async function peek(id: string, command: string): Promise<SandboxExecResult | null> {
     const row = await store.get(id)
     if (!row || row.state !== 'running' || row.tainted || row.deletedAt) return null
-    const r = await docker(['exec', '--user', `${SANDBOX_UID}:${SANDBOX_UID}`, '--workdir', '/workspace', containerName(id), '/bin/sh', '-c', command], { timeoutMs: 30_000, capBytes: s.outputCapBytes })
+    const r = await docker(['exec', '--user', `${SANDBOX_UID}:${SANDBOX_UID}`, '--workdir', '/workspace', cname(id), '/bin/sh', '-c', command], { timeoutMs: 30_000, capBytes: s.outputCapBytes })
     if (r.code !== 0 && /is not running|No such container/i.test(r.stderr)) return null
     return result(r, false, false)
   }
@@ -929,7 +935,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   /** Remove the container (NOT the files) — workspace deletion. */
   async function removeContainer(id: string): Promise<void> {
     await locked(id, async () => {
-      await docker(['rm', '-f', containerName(id)], { timeoutMs: 30_000 })
+      await docker(['rm', '-f', cname(id)], { timeoutMs: 30_000 })
       await store.setContainer(id, null, 'stopped')
     })
   }
@@ -937,7 +943,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   /** Remove container + files + row (the 30-day sweep). Files are deleted INSIDE a container. */
   async function destroyWorkspace(id: string): Promise<void> {
     await locked(id, async () => {
-      await docker(['rm', '-f', containerName(id)], { timeoutMs: 30_000 })
+      await docker(['rm', '-f', cname(id)], { timeoutMs: 30_000 })
       const dir = hostDir(id)
       await preflight(false)
       const r = await docker(['run', '--rm', '--network', 'none', '--user', `${SANDBOX_UID}:${SANDBOX_UID}`, '--cap-drop', 'ALL',
@@ -954,7 +960,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     const row = await liveRow(id)
     let r: DockerResult
     if (row.tainted || o.oneOff) r = await execOneOff(id, MEASURE_COMMAND, MEASURE_TIMEOUT_SEC + 10)
-    else r = await docker(['exec', '--user', `${SANDBOX_UID}:${SANDBOX_UID}`, containerName(id), '/bin/sh', '-c', MEASURE_COMMAND], { timeoutMs: (MEASURE_TIMEOUT_SEC + 20) * 1000 })
+    else r = await docker(['exec', '--user', `${SANDBOX_UID}:${SANDBOX_UID}`, cname(id), '/bin/sh', '-c', MEASURE_COMMAND], { timeoutMs: (MEASURE_TIMEOUT_SEC + 20) * 1000 })
     const used = r.code === 0 ? parseDu(r.stdout) : null
     if (used) {
       await store.setUsage(id, used.bytes, used.inodes)
@@ -1031,7 +1037,8 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   async function listLabelled(): Promise<Inspected[]> {
-    const ls = await docker(['ps', '-aq', '--no-trunc', '--filter', `label=${LABEL_WORKSPACE}`], { timeoutMs: 30_000 })
+    // Scoped by this manager's own labels too (an eval world lists only its own containers — N1).
+    const ls = await docker(['ps', '-aq', '--no-trunc', '--filter', `label=${LABEL_WORKSPACE}`, ...Object.entries(labels).flatMap(([k, v]) => ['--filter', `label=${k}=${v}`])], { timeoutMs: 30_000 })
     if (ls.code !== 0) throw new SandboxUnavailableError(`docker ps failed: ${ls.stderr.trim()}`)
     const ids = ls.stdout.split('\n').map(x => x.trim()).filter(Boolean)
     if (!ids.length) return []
@@ -1117,11 +1124,11 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     const keep = new Map<string, Inspected>()
     for (const c of all) {
       const wid = c.Config.Labels?.[LABEL_WORKSPACE] ?? ''
-      if (!inScope(c)) { if (wid && c.Name === `/${containerName(wid)}`) keep.set(wid, c); continue }
+      if (!inScope(c)) { if (wid && c.Name === `/${cname(wid)}`) keep.set(wid, c); continue }
       const row = UUID.test(wid) ? await store.get(wid) : null
       const orphan = !row || row.deletedAt !== null || row.tainted
         || c.Config.Labels?.[LABEL_TAINTED] !== undefined
-        || c.Name !== `/${containerName(wid)}`
+        || c.Name !== `/${cname(wid)}`
         || (currentImage !== null && c.Image !== currentImage)
         || c.Config.Labels?.[LABEL_FLAGS] !== flagsHash(containerSpec(wid))
       if (orphan) {
@@ -1196,6 +1203,10 @@ export type SandboxManager = ReturnType<typeof createSandboxManager>
 
 let shared: SandboxManager | null = null
 const evalManagers = new WeakMap<EvalScope, SandboxManager>()
+/** Fix round 2 (N6): each eval world's manager calls ITS runtime's hooks (its shells / watches),
+ *  never Tony's global ones. runtime.ts registers them per scope. */
+const evalHooks = new WeakMap<object, SandboxRuntimeHooks>()
+export function setEvalSandboxHooks(scope: object, hooks: SandboxRuntimeHooks): void { evalHooks.set(scope, hooks) }
 
 /** The worker's manager (lazily created from its env) — or, inside an eval world, that world's own
  *  offline, eval-labelled manager (cycle 85): Tony's manager is never reachable from a world. */
@@ -1220,8 +1231,16 @@ export function evalSandboxLabels(scope: Pick<EvalScope, 'runId' | 'worldId'>): 
 
 /** An eval world's manager: offline, labelled with the run + world, its own dir and slots. */
 export function createEvalSandboxManager(scope: Pick<EvalScope, 'runId' | 'worldId'>, opts: SandboxManagerOptions = {}): SandboxManager {
+  const h = () => evalHooks.get(scope) ?? {}
   return createSandboxManager({
+    isBusy: id => h().isBusy?.(id) ?? false,
+    hasLiveShell: id => h().hasLiveShell?.(id) ?? false,
+    onStopped: (id, reason) => h().onStopped?.(id, reason),
+    refresh: id => h().refresh?.(id),
+    onOverQuota: (id, usage) => h().onOverQuota?.(id, usage),
+    onTainted: id => h().onTainted?.(id),
     ...opts,
+    namePrefix: evalContainerPrefix(scope.worldId),
     offline: true,
     labels: evalSandboxLabels(scope),
     settings: { ...opts.settings, workspacesDir: evalWorkspacesDir(scope.worldId, opts.settings?.workspacesDir) }

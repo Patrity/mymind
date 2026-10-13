@@ -54,10 +54,13 @@ export interface EvalScope {
   imessage: BlueBubblesClient
   /** Whether an outbound request to `url` may leave the process (default: none may). */
   allowNetwork(url: string): boolean
-  /** Socket / DNS level (fix round 1, M4): the database host, or a host of an allowed URL. */
+  /** DNS level (fix round 1, M4): the database host, or a host of an allowed URL. */
   allowHost(host: string): boolean
-  /** Records a host an allowed URL reached (its sockets and lookups then pass). */
-  permitHost(host: string): void
+  /** Socket level (fix round 2, N4): the database host on the DB port (or its unix socket), or a
+   *  host on the port of an allowed URL. `port` null = a unix socket path in `host`. */
+  allowSocket(host: string, port: number | null): boolean
+  /** Records the host:port an allowed URL reached (its sockets and lookups then pass). */
+  permitHost(host: string, port: number): void
   /** A blocked outbound request (the guard threw). */
   onBlockedNetwork(url: string): void
 }

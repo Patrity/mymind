@@ -76,6 +76,96 @@ function ident(name: string): string {
 export interface EvalTenant {
   schema: string
   pool: pg.Pool
+  /** Fix round 2 (N2a): held for the world's whole life — nothing else drops a held schema. */
+  lock: TenantLock
+}
+
+/** Thrown when a world's schema is gone: its pool refuses to run anything (N2b). */
+export class EvalTenantGoneError extends Error {
+  constructor(public schema: string) {
+    super(`eval: the tenant schema ${schema} no longer exists — refusing to run (writes would fall through to public)`)
+    this.name = 'EvalTenantGoneError'
+  }
+}
+
+/**
+ * Fix round 2 (N2b): the tenant pool fails CLOSED when its schema is missing. Postgres silently
+ * skips a missing schema in search_path, so without this a dropped tenant would resolve every
+ * unqualified table to Tony's public one. Every checkout — `pool.query` checks out through
+ * `connect` too — first verifies the schema exists on that very connection. (search_path keeps
+ * `public` for the extension types / operators: vector, ltree, pg_trgm, pgcrypto live there.) A
+ * cooperating drop (sweep, cleanupEvalRun) is already excluded by the advisory lock (N2a).
+ */
+export class TenantPool extends pg.Pool {
+  constructor(config: pg.PoolConfig, private readonly tenantSchema: string) { super(config) }
+
+  override connect(): Promise<pg.PoolClient>
+  override connect(cb: (err: Error | undefined, client: pg.PoolClient | undefined, done: (release?: unknown) => void) => void): void
+  override connect(cb?: (err: Error | undefined, client: pg.PoolClient | undefined, done: (release?: unknown) => void) => void): Promise<pg.PoolClient> | void {
+    const checked = (async () => {
+      const client = await super.connect()
+      try {
+        const r = await client.query<{ ok: boolean }>('select to_regnamespace($1) is not null as ok', [this.tenantSchema])
+        if (!r.rows[0]?.ok) throw new EvalTenantGoneError(this.tenantSchema)
+      } catch (err) {
+        client.release(true)
+        throw err
+      }
+      return client
+    })()
+    if (!cb) return checked
+    checked.then(c => cb(undefined, c, (release?: unknown) => c.release(release as boolean | Error | undefined)), (e: Error) => cb(e, undefined, () => {}))
+  }
+}
+
+/** A session advisory lock on a dedicated connection (not the routed pool). */
+export interface TenantLock { release(): Promise<void> }
+
+const lockSql = 'select pg_advisory_lock(hashtext($1))'
+const tryLockSql = 'select pg_try_advisory_lock(hashtext($1)) as ok'
+const unlockSql = 'select pg_advisory_unlock(hashtext($1))'
+
+function lockClient(): pg.Client {
+  const c = new pg.Client({ connectionString: coreConfig().databaseUrl })
+  c.on('error', err => console.error('[eval] tenant lock connection error:', err.message))
+  return c
+}
+
+/** Takes (waits for) the world's lock — held until release(). */
+export function holdTenantLock(schema: string): Promise<TenantLock> {
+  assertSchema(schema)
+  return outsideEvalScope(async () => {
+    const c = lockClient()
+    await c.connect()
+    try { await c.query(lockSql, [schema]) } catch (err) { await c.end().catch(() => {}); throw err }
+    let released = false
+    return {
+      release: async () => {
+        if (released) return
+        released = true
+        await c.query(unlockSql, [schema]).catch(() => {})
+        await c.end().catch(() => {})
+      }
+    }
+  })
+}
+
+/** Runs `fn` only if the schema's lock is free (pg_try_advisory_lock), holding it meanwhile.
+ *  Returns false — and runs nothing — when a live world holds it (N2a / N3). */
+export function withTenantLock(schema: string, fn: () => Promise<void>): Promise<boolean> {
+  assertSchema(schema)
+  return outsideEvalScope(async () => {
+    const c = lockClient()
+    await c.connect()
+    try {
+      const r = await c.query<{ ok: boolean }>(tryLockSql, [schema])
+      if (!r.rows[0]?.ok) return false
+      try { await fn() } finally { await c.query(unlockSql, [schema]).catch(() => {}) }
+      return true
+    } finally {
+      await c.end().catch(() => {})
+    }
+  })
 }
 
 /** DDL always runs on Tony's real pool (it creates the tenant), never inside a world. */
@@ -125,13 +215,14 @@ export async function createEvalTenant(runId: string): Promise<EvalTenant> {
       }
     })
   })
-  const pool = new pg.Pool({
+  const lock = await holdTenantLock(schema)
+  const pool = new TenantPool({
     connectionString: coreConfig().databaseUrl,
     max: 4,
     options: `-c search_path=${schema},public`
-  })
+  }, schema)
   pool.on('error', err => console.error(`[eval] tenant ${schema} idle client error:`, err.message))
-  return { schema, pool }
+  return { schema, pool, lock }
 }
 
 /** `FOREIGN KEY (x) REFERENCES [public.]t(id) …` → `… REFERENCES "<schema>".t(id) …` (an `eval_*`
@@ -141,11 +232,17 @@ export function retargetForeignKey(def: string, schema: string): string {
     isUnshadowedTable(table) ? `REFERENCES public.${q}${table}${q}(` : `REFERENCES "${schema}".${q}${table}${q}(`)
 }
 
-/** Ends the world's pool and drops its schema. Idempotent. */
+/** Ends the world's pool, releases its lock and drops its schema (under the lock). Idempotent. */
 export async function dropEvalTenant(t: EvalTenant): Promise<void> {
   const schema = assertSchema(t.schema)
   await t.pool.end().catch(() => {})
-  await outsideEvalScope(() => adminDb().execute(sql.raw(`drop schema if exists ${ident(schema)} cascade`)))
+  await t.lock.release()
+  await withTenantLock(schema, () => dropSchemaNow(schema))
+}
+
+/** The DROP itself — callers hold the schema's lock (withTenantLock). */
+export async function dropSchemaNow(schema: string): Promise<void> {
+  await outsideEvalScope(() => adminDb().execute(sql.raw(`drop schema if exists ${ident(assertSchema(schema))} cascade`)))
 }
 
 /** Every eval tenant schema in the database (all runs), e.g. to sweep after a crash. */
@@ -160,10 +257,9 @@ export async function listEvalTenants(): Promise<string[]> {
 export async function dropEvalRunTenants(runId: string): Promise<number> {
   const prefix = evalRunPrefix(runId)
   const mine = (await listEvalTenants()).filter(n => n.startsWith(prefix))
-  for (const n of mine) {
-    await outsideEvalScope(() => adminDb().execute(sql.raw(`drop schema if exists ${ident(assertSchema(n))} cascade`)))
-  }
-  return mine.length
+  let dropped = 0
+  for (const n of mine) if (await withTenantLock(n, () => dropSchemaNow(n))) dropped++
+  return dropped
 }
 
 /** Fix round 1 (M1): public tables the world does not shadow (a migration applied after the world
@@ -179,7 +275,8 @@ export async function tenantDrift(schema: string): Promise<string[]> {
 
 /** Storage-key columns: files a world may have uploaded (images, attachments, agent files, voice). */
 const STORAGE_KEY_COLUMNS: readonly [string, string][] = [
-  ['images', 'storage_key'], ['clip_attachments', 'storage_key'], ['agent_files', 'storage_key'], ['voice_presets', 'ref_storage_key']
+  ['images', 'storage_key'], ['clip_attachments', 'storage_key'], ['agent_files', 'storage_key'], ['voice_presets', 'ref_storage_key'],
+  ['voice_presets', 'calibrated_ref_key'] // fix round 2 (N5)
 ]
 
 /** Storage keys referenced in the world's tenant but by NO public row — the uploads the world made
@@ -215,7 +312,13 @@ export async function evalTenantInfo(): Promise<EvalTenantInfo[]> {
   })
 }
 
-/** Drops one tenant schema by name (the sweep). */
-export async function dropEvalSchema(schema: string): Promise<void> {
-  await outsideEvalScope(() => adminDb().execute(sql.raw(`drop schema if exists ${ident(assertSchema(schema))} cascade`)))
+/** Drops one tenant schema by name, only when no live world holds it. True when dropped. */
+export function dropEvalSchema(schema: string): Promise<boolean> {
+  return withTenantLock(schema, () => dropSchemaNow(schema))
+}
+
+/** Whether a schema exists (fresh read). */
+export async function schemaExists(schema: string): Promise<boolean> {
+  const r = await outsideEvalScope(() => adminDb().execute(sql`select to_regnamespace(${schema}) is not null as ok`))
+  return (r.rows[0] as { ok: boolean } | undefined)?.ok === true
 }

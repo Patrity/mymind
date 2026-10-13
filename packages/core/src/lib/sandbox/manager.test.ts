@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { DockerResult, DockerRunner } from './docker'
 import { SANDBOX_BRIDGE, chainRules, jumpRules, ruleLine } from './network'
-import { createEvalSandboxManager, createSandboxManager, sandboxSettings, setSandboxRuntimeHooks, SandboxUnavailableError, type SandboxManagerOptions } from './manager'
+import { createEvalSandboxManager, createSandboxManager, sandboxSettings, setEvalSandboxHooks, setSandboxRuntimeHooks, SandboxUnavailableError, type SandboxManagerOptions } from './manager'
 import type { WorkspaceRow, WorkspaceStore } from './store'
 
 const WS = '22222222-2222-2222-2222-222222222222'
@@ -1010,5 +1010,26 @@ describe('eval sandbox manager (cycle 85)', () => {
     const r = await prod.reconcile()
     expect(r.removed).toEqual([]) // no row in Tony's store — an orphan, were it in his scope
     expect([...d.containers.values()].filter(c => c.State.Running)).toHaveLength(1)
+  })
+})
+
+describe('eval sandbox manager hooks (cycle 85 fix round 2, N6)', () => {
+  it('calls the world\'s own runtime hooks, never the global (Tony\'s) ones', async () => {
+    const scope = { runId: '00000000-0000-4000-8000-0000000000cc', worldId: 'eval_000000000000400080000000000000cc_12345678' }
+    const mine = { onTainted: vi.fn(), isBusy: vi.fn(() => false) }
+    const tonys = { onTainted: vi.fn(), isBusy: vi.fn(() => false) }
+    setSandboxRuntimeHooks(tonys)
+    setEvalSandboxHooks(scope, mine)
+    try {
+      const d = fakeDocker()
+      const m = createEvalSandboxManager(scope, { docker: d.run, store: memStore(), uid: 1000, platform: 'darwin', log: { info: () => {}, warn: () => {}, error: () => {} }, settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] } })
+      await m.markTainted(WS)
+      expect(mine.onTainted).toHaveBeenCalledWith(WS)
+      expect(tonys.onTainted).not.toHaveBeenCalled()
+      // …and its container is named under the world's prefix (N1).
+      await createEvalSandboxManager(scope, { docker: d.run, store: memStore(), uid: 1000, platform: 'darwin', log: { info: () => {}, warn: () => {}, error: () => {} }, settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] } }).ensureContainer(WS)
+      const create = d.calls.find(c => c[0] === 'create')!
+      expect(create[create.indexOf('--name') + 1]).toBe(`mymind-eval-${scope.worldId}-ws-${WS}`)
+    } finally { setSandboxRuntimeHooks({ onTainted: undefined, isBusy: undefined }) }
   })
 })

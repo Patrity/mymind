@@ -33,7 +33,7 @@ const { eq, inArray, sql } = await import('drizzle-orm')
 const { useDb, RoutingPool } = await import('@mymind/core/db')
 const { tasks, channelDeliveries, activityLog } = await import('@mymind/core/db/schema')
 const { installEvalWorld, cleanupEvalRun } = await import('@mymind/core/lib/eval/world')
-const { shadowableTables, listEvalTenants, evalRunPrefix, createEvalTenant, EVAL_REFERENCE_TABLES, EVAL_SETTINGS_KEYS } = await import('@mymind/core/lib/eval/tenant')
+const { shadowableTables, listEvalTenants, evalRunPrefix, createEvalTenant, dropEvalSchema, dropEvalRunTenants, EVAL_REFERENCE_TABLES, EVAL_SETTINGS_KEYS } = await import('@mymind/core/lib/eval/tenant')
 const { setBusNs } = await import('@mymind/core/lib/bus/ns')
 const { createTask, getTask, listTasks } = await import('@mymind/core/services/tasks')
 const { createMemory, getMemory, listMemories, searchMemories } = await import('@mymind/core/services/memory')
@@ -46,6 +46,7 @@ const { toolByName } = await import('@mymind/core/lib/agent/tools')
 const { insertDeliveries, deliveriesTick } = await import('@mymind/core/lib/channels/outbox')
 const { recordEvent, recorder } = await import('@mymind/core/lib/observability/record')
 const { subscribeChanges } = await import('@mymind/core/utils/live-bus')
+const { sweepEvalLeftovers } = await import('@mymind/core/lib/eval/cleanup')
 const { getDecryptedSecrets, getSandboxOptedSecrets } = await import('@mymind/core/lib/exec/secrets')
 const { sandboxSecretEnv } = await import('@mymind/core/lib/sandbox/secrets')
 const { getHome } = await import('../server/services/home')
@@ -299,6 +300,41 @@ describe('eval tenant: fix round 1 (M5, M1, Concern 5)', () => {
   })
 })
 
+describe('eval tenant: fix round 2 (N2)', () => {
+  it('N2b: a live world whose schema is dropped from another connection fails closed — nothing lands in public', async () => {
+    const w = await installEvalWorld(randomUUID(), {})
+    try {
+      await w.run(() => createTask({ title: `${TAG} before the drop` })) // warms the pool's connections
+      // A non-cooperating drop (bypassing the advisory lock), from a plain connection.
+      const c = new pg.Client({ connectionString: process.env.DATABASE_URL })
+      await c.connect()
+      try { await c.query(`drop schema "${w.schema}" cascade`) } finally { await c.end() }
+      const why = async (p: Promise<unknown>) => { try { await p; return 'no error' } catch (e) { const err = e as Error & { cause?: Error }; return `${err.message} ${err.cause?.message ?? ''}` } }
+      expect(await why(w.run(() => createTask({ title: `${TAG} after the drop` })))).toEqual(expect.stringContaining('no longer exists'))
+      expect(await why(w.run(() => db().transaction(async (tx) => { await tx.insert(tasks).values({ title: `${TAG} tx after the drop`, columnId: randomUUID() } as never) })))).toEqual(expect.stringContaining('no longer exists'))
+      const leaked = await db().select({ id: tasks.id }).from(tasks).where(sql`${tasks.title} like ${`${TAG} %after the drop`}`)
+      expect(leaked).toEqual([])
+    } finally { await w.dispose() }
+  })
+
+  it('N2a: a live world\'s schema is never dropped by dropEvalSchema / the sweep / cleanupEvalRun from elsewhere', async () => {
+    const run = randomUUID()
+    const w = await installEvalWorld(run, {})
+    try {
+      // Make it sweep-eligible on every count: stale, and no run row.
+      await db().execute(sql.raw(`comment on schema "${w.schema}" is 'created=${new Date(Date.now() - 3 * 3600_000).toISOString()}'`))
+      expect(await dropEvalSchema(w.schema)).toBe(false)
+      const r = await sweepEvalLeftovers({ keep: new Set() }) // as another process's boot sweep (keeps nothing)
+      expect(r.schemas).not.toContain(w.schema)
+      // cleanupEvalRun in ANOTHER process: no live world of the run there, only the locked tenant.
+      expect(await dropEvalRunTenants(run)).toBe(0)
+      expect(await listEvalTenants()).toContain(w.schema)
+      expect(await w.run(() => createTask({ title: `${TAG} still mine` }))).toMatchObject({ title: `${TAG} still mine` })
+    } finally { await w.dispose() }
+    expect(await listEvalTenants()).not.toContain(w.schema)
+  })
+})
+
 describe('eval tenant: cleanup', () => {
   it('dispose drops the schema; cleanupEvalRun drops live worlds and orphans; a dropped world writes nowhere', async () => {
     const run2 = randomUUID()
@@ -307,6 +343,7 @@ describe('eval tenant: cleanup', () => {
     // An orphan: a tenant created by a process that crashed before disposing it (never registered here).
     const orphan = await createEvalTenant(run2)
     await orphan.pool.end()
+    await orphan.lock.release() // its process died: the session lock went with it
     await a.run(() => createTask({ title: `${TAG} doomed` }))
     const mine = async () => (await listEvalTenants()).filter(n => n.startsWith(evalRunPrefix(run2)))
     expect(await mine()).toHaveLength(3)

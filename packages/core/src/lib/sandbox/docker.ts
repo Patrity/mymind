@@ -316,25 +316,94 @@ export class TailBuffer {
   }
 }
 
+/** Cycle 85 fix round 2 (N1): every container an eval world creates is named under this prefix. */
+export function evalContainerPrefix(worldId: string): string {
+  return `mymind-eval-${worldId}-`
+}
+
+/** Container ids an eval world created (or listed under its own world label) — the only bare ids it
+ *  may target. Per scope; gone with it. */
+const worldIds = new WeakMap<object, Set<string>>()
+function idsOf(scope: object): Set<string> {
+  let s = worldIds.get(scope)
+  if (!s) worldIds.set(scope, s = new Set())
+  return s
+}
+
+/** Subcommands that address an existing container (their positional args are container refs). */
+const TARGETING = new Set(['exec', 'start', 'stop', 'rm', 'kill', 'restart', 'inspect', 'logs', 'cp', 'attach', 'wait', 'pause', 'unpause', 'update', 'rename', 'commit', 'export', 'top', 'port', 'diff', 'stats'])
+/** Flags of those subcommands that take a value (the value is not a target). */
+const VALUE_FLAGS = new Set(['--user', '-u', '--workdir', '-w', '--env', '-e', '--env-file', '--detach-keys', '--time', '-t', '--signal', '-s', '--format', '--since', '--until', '--tail', '-n'])
+/** exec: boolean flags (anything else before the container is refused). */
+const EXEC_BOOL = new Set(['-i', '--interactive', '-d', '--detach'])
+
 /**
- * Cycle 85 (fail closed): inside an eval world the docker CLI may only make OFFLINE containers of
- * that world — `create`/`run` must say `--network none` and carry the world's eval labels; no
- * `network …` command; no secret passthrough (`--env NAME` without a value, or CLI env). Checked at
- * the lowest level, below the manager, so no caller can start a networked container from a world.
+ * Cycle 85 (fail closed): inside an eval world the docker CLI may only touch that world's own,
+ * OFFLINE containers. Checked at the lowest level, below the manager, so no caller can reach a
+ * networked container (or Tony's) from a world:
+ *   - `create` / `run` must say `--network none`, carry the world's eval labels and (when named)
+ *     a world-prefixed name; nothing with `--privileged`;
+ *   - a container-targeting subcommand (exec, start, stop, rm, kill, inspect, cp, logs, …) must name
+ *     ONLY world-prefixed containers or ids the world itself created / listed under its label
+ *     (fix round 2, N1);
+ *   - `ps` / `version` / `info` / `image inspect` are read-only; every other subcommand (network,
+ *     volume, system, build, pull, login, …) is refused;
+ *   - no secret passthrough (`--env NAME` without a value, or a CLI env).
  */
 export function assertEvalDockerArgs(args: string[], scope: Pick<EvalScope, 'runId' | 'worldId'>, env?: Record<string, string>): void {
   const refuse = (why: string) => { throw new SandboxUnavailableError(`eval: docker ${args[0] ?? ''} refused in an eval world (${why})`) }
   if (env && Object.keys(env).length) refuse('secrets are never passed to an eval sandbox')
-  const sub = args[0]
-  if (sub === 'network') refuse('no network commands')
-  const hasPair = (flag: string, value: string) => args.some((x, i) => x === flag && args[i + 1] === value)
-  const passthroughEnv = args.some((x, i) => x === '--env' && !(args[i + 1] ?? '').includes('='))
+  const prefix = evalContainerPrefix(scope.worldId)
+  const own = idsOf(scope)
+  const allowedTarget = (t: string) => t.startsWith(prefix) || own.has(t)
+  let sub = args[0] ?? ''
+  let rest = args.slice(1)
+  if (sub === 'container') { sub = rest[0] ?? ''; rest = rest.slice(1); if (sub === 'ls' || sub === 'list') sub = 'ps' }
+  if (args.includes('--privileged')) refuse('no privileged containers')
+  const passthroughEnv = rest.some((x, i) => (x === '--env' || x === '-e') && !(rest[i + 1] ?? '').includes('='))
+  if (passthroughEnv) refuse('no secret env passthrough')
+  const hasPair = (flag: string, value: string) => rest.some((x, i) => x === flag && rest[i + 1] === value)
   if (sub === 'create' || sub === 'run') {
     if (!hasPair('--network', 'none')) refuse('an eval sandbox is always --network none')
-    if (args.some((x, i) => x === '--network' && args[i + 1] !== 'none')) refuse('an eval sandbox is always --network none')
+    if (rest.some((x, i) => (x === '--network' || x === '--net') && rest[i + 1] !== 'none') || rest.some(x => /^--net(work)?=/.test(x) && x !== '--network=none')) refuse('an eval sandbox is always --network none')
     if (!hasPair('--label', `${LABEL_EVAL_RUN}=${scope.runId}`) || !hasPair('--label', `${LABEL_EVAL_WORLD}=${scope.worldId}`)) refuse('missing the eval labels')
+    const ni = rest.indexOf('--name')
+    if (ni !== -1 && !(rest[ni + 1] ?? '').startsWith(prefix)) refuse(`a container name must start with ${prefix}`)
+    return
   }
-  if ((sub === 'create' || sub === 'run' || sub === 'exec') && passthroughEnv) refuse('no secret env passthrough')
+  if (sub === 'ps' || sub === 'version' || sub === 'info') return
+  if (sub === 'image' && rest[0] === 'inspect') return
+  if (!TARGETING.has(sub)) refuse('not allowed in an eval world')
+  const targets: string[] = []
+  if (sub === 'exec') {
+    let i = 0
+    for (; i < rest.length; i++) {
+      const x = rest[i]!
+      if (VALUE_FLAGS.has(x)) { i++; continue }
+      if (x.startsWith('-')) { if (!EXEC_BOOL.has(x) && !/^--(user|workdir|env)=/.test(x)) refuse(`unexpected exec flag ${x}`); continue }
+      break
+    }
+    if (rest[i] !== undefined) targets.push(rest[i]!)
+  } else {
+    for (let i = 0; i < rest.length; i++) {
+      const x = rest[i]!
+      if (VALUE_FLAGS.has(x)) { i++; continue }
+      if (x.startsWith('-')) continue
+      targets.push(sub === 'cp' ? x.split(':')[0]! : x)
+    }
+  }
+  if (!targets.length) refuse('no container named')
+  for (const t of targets) if (!allowedTarget(t)) refuse(`${t} is not this world's container`)
+}
+
+/** After a successful in-world call: remember the ids the world created (`create` prints it) or
+ *  listed under its own world label (`ps --filter label=mymind.eval.world=<world>`). */
+function noteEvalIds(args: string[], scope: Pick<EvalScope, 'worldId'>, stdout: string): void {
+  const sub = args[0] === 'container' ? args[1] : args[0]
+  if (sub === 'create') { const id = stdout.trim(); if (/^[0-9a-f]{12,64}$/.test(id)) idsOf(scope).add(id); return }
+  if ((sub === 'ps' || sub === 'ls') && args.some((x, i) => x === '--filter' && args[i + 1] === `label=${LABEL_EVAL_WORLD}=${scope.worldId}`)) {
+    for (const line of stdout.split('\n')) { const id = line.trim().split(/\s+/)[0]; if (id && /^[0-9a-f]{12,64}$/.test(id)) idsOf(scope).add(id) }
+  }
 }
 
 export function createDockerCli(bin = 'docker', baseEnv: NodeJS.ProcessEnv = process.env): DockerRunner {
@@ -361,6 +430,7 @@ export function createDockerCli(bin = 'docker', baseEnv: NodeJS.ProcessEnv = pro
     const done = (code: number | null, spawnErr?: Error) => {
       if (timer) clearTimeout(timer)
       opts.signal?.removeEventListener('abort', onAbort)
+      if (scope && code === 0) noteEvalIds(args, scope, out.toString())
       resolve({
         code,
         stdout: out.toString(),

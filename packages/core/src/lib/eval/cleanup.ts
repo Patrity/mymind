@@ -13,7 +13,7 @@ import { storage } from '../../utils/storage'
 import { createDockerCli, dockerAvailable, LABEL_EVAL_RUN, LABEL_EVAL_WORLD, type DockerRunner } from '../sandbox/docker'
 import { evalWorkspacesDir, sandboxSettings } from '../sandbox/manager'
 import { outsideEvalScope } from './context'
-import { dropEvalSchema, evalTenantInfo, tenantOnlyStorageKeys } from './tenant'
+import { dropSchemaNow, evalTenantInfo, schemaExists, tenantOnlyStorageKeys, withTenantLock } from './tenant'
 
 /** Seams (tests). */
 export const evalCleanupDeps = {
@@ -90,9 +90,36 @@ export const SWEEP_ABSENT_GRACE_MS = 15 * 60_000
 export interface SweepResult { schemas: string[]; containers: string[]; dirs: string[] }
 
 /**
+ * Fix round 2 (N2a / N3): a world's leftovers (containers, workspace dir, uploads) and its schema,
+ * removed only while holding its advisory lock — false (nothing touched) when a live world, in any
+ * process, holds it.
+ */
+export async function dropWorldIfFree(schema: string): Promise<{ dropped: boolean; containers: string[] }> {
+  let containers: string[] = []
+  const dropped = await withTenantLock(schema, async () => {
+    try { containers = await removeEvalContainers({ worldId: schema }) } catch (err) { evalCleanupDeps.log.warn(`[eval] containers of ${schema}: ${(err as Error).message}`) }
+    try { await removeEvalWorkspaceDir(schema) } catch (err) { evalCleanupDeps.log.warn(`[eval] dir of ${schema}: ${(err as Error).message}`) }
+    await deleteEvalUploads(schema) // reads the schema: before the drop
+    await dropSchemaNow(schema)
+  })
+  return { dropped, containers }
+}
+
+/** Containers / dirs labelled with a world whose schema no longer exists anywhere (a crash between
+ *  a schema drop and its container removal). A live world's schema exists before its first
+ *  container or dir, so these are never a live world's. Existence is read AFTER the listing. */
+async function ghostContainers(): Promise<string[]> {
+  const listed = await listEvalContainers()
+  const out: string[] = []
+  for (const c of listed) if (!c.world || !await schemaExists(c.world)) out.push(c.id)
+  return out
+}
+
+/**
  * Worker boot (I2): drop tenant schemas whose run is finished, whose run row is absent (after a
- * grace), or that are older than 2 h — never a live run's young world, never one this process
- * holds (`keep`). Then remove eval containers and workspace dirs whose world no longer exists.
+ * grace), or that are older than 2 h — never one a live world holds (its advisory lock: fix round
+ * 2, N2a), never one this process holds (`keep`). A dropped world's containers and dir go with it,
+ * under the same lock (N3); otherwise only ghosts (their schema is gone) are removed.
  */
 export async function sweepEvalLeftovers(o: { now?: number; keep?: Set<string>; maxAgeMs?: number; absentGraceMs?: number } = {}): Promise<SweepResult> {
   return outsideEvalScope(async () => {
@@ -106,35 +133,42 @@ export async function sweepEvalLeftovers(o: { now?: number; keep?: Set<string>; 
       for (const r of await useDb().select({ id: evalRuns.id, status: evalRuns.status }).from(evalRuns).where(inArray(evalRuns.id, runIds))) runs.set(r.id, r.status)
     }
     const dropped: string[] = []
-    const surviving = new Set<string>()
+    const containers: string[] = []
     for (const t of infos) {
       const age = t.createdAt ? now - t.createdAt.getTime() : Infinity
       const status = runs.get(t.runId)
       const finished = status !== undefined && status !== 'running' && status !== 'queued'
       const drop = !o.keep?.has(t.schema) && (age > maxAge || finished || (status === undefined && age > grace))
-      if (!drop) { surviving.add(t.schema); continue }
+      if (!drop) continue
       try {
-        await deleteEvalUploads(t.schema)
-        await dropEvalSchema(t.schema)
-        dropped.push(t.schema)
+        const r = await dropWorldIfFree(t.schema)
+        if (r.dropped) { dropped.push(t.schema); containers.push(...r.containers) }
       } catch (err) {
-        surviving.add(t.schema)
         evalCleanupDeps.log.warn(`[eval] sweep could not drop ${t.schema}: ${(err as Error).message}`)
       }
     }
-    let containers: string[] = []
     try {
-      containers = await removeContainers((await listEvalContainers()).filter(c => !surviving.has(c.world)).map(c => c.id))
+      containers.push(...await removeContainers(await ghostContainers()))
     } catch (err) { evalCleanupDeps.log.warn(`[eval] sweep could not list sandbox containers: ${(err as Error).message}`) }
-    const dirs: string[] = []
+    const dirs: string[] = dropped.slice()
     const base = path.join(evalCleanupDeps.workspacesBase(), '.eval')
     for (const name of await evalCleanupDeps.listDir(base)) {
-      if (surviving.has(name) || !/^eval_[0-9a-f]{32}_[0-9a-f]{8}$/.test(name)) continue
+      if (dirs.includes(name) || !/^eval_[0-9a-f]{32}_[0-9a-f]{8}$/.test(name) || await schemaExists(name)) continue
       try { await evalCleanupDeps.rmDir(path.join(base, name)); dirs.push(name) } catch (err) {
         evalCleanupDeps.log.warn(`[eval] sweep could not remove ${name}: ${(err as Error).message}`)
       }
     }
     if (dropped.length || containers.length || dirs.length) evalCleanupDeps.log.info(`[eval] boot sweep: ${dropped.length} tenant(s), ${containers.length} container(s), ${dirs.length} dir(s) removed`)
     return { schemas: dropped, containers, dirs }
+  })
+}
+
+/** Ghost containers of one run (cleanupEvalRun's backstop): its worlds' containers whose schema is
+ *  gone — never a live world's in another process (N3). */
+export function removeRunGhostContainers(runId: string): Promise<string[]> {
+  return outsideEvalScope(async () => {
+    const out: string[] = []
+    for (const c of await listEvalContainers({ runId })) if (!c.world || !await schemaExists(c.world)) out.push(c.id)
+    return removeContainers(out)
   })
 }
