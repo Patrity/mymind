@@ -45,6 +45,10 @@ beforeAll(() => {
     create function ${S}.f1(x int) returns int language sql as 'select x';
     create procedure ${S}.p1() language sql as 'select 1';
     create aggregate ${S}.agg1(int) (sfunc = int4pl, stype = int);
+    -- Extension members of every kind the reset selects: a domain, an enum, a table, a function.
+    create domain ${S}.ext_dom as int; alter extension hstore add domain ${S}.ext_dom;
+    create type ${S}.ext_enum as enum ('x'); alter extension hstore add type ${S}.ext_enum;
+    create table ${S}.ext_tab (id int); alter extension hstore add table ${S}.ext_tab;
     set role ${R};
     create table ${S}.theirs (id int);
     create function ${S}.their_fn() returns int language sql as 'select 2';
@@ -67,19 +71,19 @@ describe('reset-target-db.sql (scratch schema on the dev DB)', () => {
     expect(r.out).toContain('reset-target-db: done')
 
     expect(q(`select nspname from pg_namespace where nspname = '${L}'`)).toEqual([])
-    // Relations left: only the other role's table.
-    expect(q(`select relname from pg_class where relnamespace = '${S}'::regnamespace and relkind in ('r','p','v','m','S','f') order by 1`)).toEqual(['theirs'])
+    // Relations left: the extension's member table and the other role's table.
+    expect(q(`select relname from pg_class where relnamespace = '${S}'::regnamespace and relkind in ('r','p','v','m','S','f') order by 1`)).toEqual(['ext_tab', 'theirs'])
     // Routines left: the extension's members + the other role's function — none of ours.
     expect(q(`select proname from pg_proc where pronamespace = '${S}'::regnamespace and proname in ('f1','p1','agg1','their_fn') order by 1`)).toEqual(['their_fn'])
     expect(Number(q(`select count(*) from pg_proc p join pg_depend d on d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e' where p.pronamespace = '${S}'::regnamespace`)[0])).toBe(extFns)
     // Types left: the extension's (hstore and its array), and the other role's table row type — not ours.
-    expect(q(`select typname from pg_type where typnamespace = '${S}'::regnamespace and typname in ('mood','posint','pair','hstore') order by 1`)).toEqual(['hstore'])
+    expect(q(`select typname from pg_type where typnamespace = '${S}'::regnamespace and typname in ('mood','posint','pair','hstore','ext_dom','ext_enum') order by 1`)).toEqual(['ext_dom', 'ext_enum', 'hstore'])
     expect(q(`select extname from pg_extension where extnamespace = '${S}'::regnamespace`)).toEqual(['hstore'])
   })
 
   it('is idempotent: a second run on an emptied schema succeeds and changes nothing', () => {
     const r = psql(['-q', '-v', `schema=${S}`, '-v', `ledger=${L}`, '-f', resolve('deploy/macmini/reset-target-db.sql')])
     expect(r.code, r.err).toBe(0)
-    expect(q(`select relname from pg_class where relnamespace = '${S}'::regnamespace and relkind in ('r','p','v','m','S','f')`)).toEqual(['theirs'])
+    expect(q(`select relname from pg_class where relnamespace = '${S}'::regnamespace and relkind in ('r','p','v','m','S','f') order by 1`)).toEqual(['ext_tab', 'theirs'])
   })
 })

@@ -9,8 +9,9 @@ begin;
 
 drop schema if exists :"ledger" cascade;
 
--- Relations: views and matviews first, then tables, foreign tables, and sequences that no column owns
--- (an owned/identity sequence goes with its table). Indexes, toast etc. go with their tables.
+-- Relations: views and matviews first, then tables and foreign tables, then sequences. A serial or
+-- identity sequence is dropped with its table (same owner, by definition), so its own later
+-- `drop sequence if exists` is a no-op. Indexes, toast etc. go with their tables.
 select format('drop %s if exists %I.%I cascade',
          case c.relkind when 'v' then 'view' when 'm' then 'materialized view' when 'S' then 'sequence'
                         when 'f' then 'foreign table' else 'table' end,
@@ -20,8 +21,6 @@ where n.nspname = :'schema'
   and c.relkind in ('v', 'm', 'r', 'p', 'f', 'S')
   and pg_get_userbyid(c.relowner) = current_user
   and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'e')
-  and not (c.relkind = 'S' and exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid
-                                       and d.refclassid = 'pg_class'::regclass and d.deptype in ('a', 'i')))
   and not (c.relkind in ('r', 'p') and c.relispartition)
 order by case c.relkind when 'v' then 0 when 'm' then 1 when 'S' then 3 else 2 end, c.relname
 \gexec
