@@ -14,10 +14,11 @@ import { useDb } from '@mymind/core/db'
 import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { documents, workspaceShells, workspaces } from '@mymind/core/db/schema'
 import { createSandboxManager, type SandboxManager } from '@mymind/core/lib/sandbox/manager'
-import { dbWorkspaceStore } from '@mymind/core/lib/sandbox/store'
+import { dbWorkspaceStore, markWorkspaceTrusted } from '@mymind/core/lib/sandbox/store'
+import { buildAiTools } from '@mymind/core/lib/agent/ai-tools'
 import { createWorkspaceRuntime, setWorkspaceRuntime, runtimeHooks, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
 import { workspaceTools } from '@mymind/core/lib/agent/tools/workspace'
-import type { ToolContext } from '@mymind/core/lib/agent/types'
+import type { AgentTool, ToolContext } from '@mymind/core/lib/agent/types'
 import type { WorkspaceWatchRow } from '@mymind/core/lib/sandbox/watches'
 
 const RUN = `wst-${process.pid}-${Date.now().toString(36)}`
@@ -384,6 +385,51 @@ describe('workspace tools (host runtime)', () => {
       tainted = false
       current = prev
       await new Promise(r => server.close(r))
+    }
+  }, 120_000)
+
+  it('mark trusted: clears the flag (activity recorded once), and a later read no longer taints the run', async () => {
+    const id = await newWorkspace()
+    const prev = current
+    current = id
+    try {
+      await call('write_file', { path: 'note.txt', content: 'from mail' })
+      tainted = true
+      await call('bash', { command: 'true' }) // a tainted run's command marks the workspace
+      tainted = false
+      expect((await dbWorkspaceStore.get(id))!.tainted).toBe(true)
+      // Through buildAiTools (as a real run): a read from the tainted workspace taints the run.
+      type Exec = (i: unknown, o: unknown) => Promise<unknown>
+      const seenRun = async () => {
+        const seen: boolean[] = []
+        const probe: AgentTool = { name: 'probe', description: 'd', kind: 'read', toolset: 'workspace', schema: {}, handler: async (_a, c) => { seen.push(c.isTainted!()); return { result: {}, summary: 'p' } } }
+        const set = buildAiTools([tool('read_file'), probe], { signal: new AbortController().signal, onEvent: () => {} })
+        const r = await (set.read_file!.execute as Exec)({ path: 'note.txt' }, { toolCallId: 'r' }) as Record<string, unknown>
+        await (set.probe!.execute as Exec)({}, { toolCallId: 'p' })
+        return { r, taintedAfter: seen[0] }
+      }
+      const before = await seenRun()
+      expect(before.r.workspaceTainted).toBe(true)
+      expect(before.taintedAfter).toBe(true)
+
+      const events: Array<{ name: string; meta: Record<string, unknown> }> = []
+      const row = await markWorkspaceTrusted(id, { record: e => { events.push(e) } })
+      expect(row).toMatchObject({ id, tainted: false, taintedAt: null })
+      expect(await dbWorkspaceStore.get(id)).toMatchObject({ tainted: false, taintedAt: null })
+      expect(events).toEqual([{ kind: 'tool', name: 'workspace:trusted', severity: 'info', meta: expect.objectContaining({ workspaceId: id }) }])
+      // Idempotent: already trusted → the row, no second activity row.
+      expect(await markWorkspaceTrusted(id, { record: e => { events.push(e) } })).toMatchObject({ id, tainted: false })
+      expect(events).toHaveLength(1)
+
+      const after = await seenRun()
+      expect(after.r).not.toHaveProperty('workspaceTainted')
+      expect(after.r.content).toBe('     1\tfrom mail')
+      expect(after.taintedAfter).toBe(false)
+      // An unknown id is null (the route's 404).
+      expect(await markWorkspaceTrusted('00000000-0000-4000-8000-0000000000ff')).toBeNull()
+    } finally {
+      tainted = false
+      current = prev
     }
   }, 120_000)
 })

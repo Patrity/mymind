@@ -432,6 +432,15 @@ describe('follow-up N1: `workspace` is derived live from the row\'s flag', () =>
     expect(seen3[0]!.initial).toEqual(['mail'])
     expect(modes).toEqual(['tainted', 'clean', 'tainted'])
   }, 60_000)
+  it('mark trusted clears only the WORKSPACE flag — a workstream\'s own sticky taint stays', async () => {
+    const { markWorkspaceTrusted } = await import('@mymind/core/lib/sandbox/store')
+    const ws = await newWorkstream('trust-sticky')
+    const space = await until(async () => (await useDb().select().from(workspaces).where(eq(workspaces.workstreamId, ws.id)))[0])
+    await useDb().update(workspaces).set({ tainted: true, taintedAt: new Date() }).where(eq(workspaces.id, space.id))
+    await addWorkstreamTaint(ws.id, ['mail'])
+    expect(await markWorkspaceTrusted(space.id, { record: () => {} })).toMatchObject({ tainted: false })
+    expect(await getWorkstream(ws.id)).toMatchObject({ tainted: true, taintSources: ['mail'] })
+  }, 60_000)
 })
 
 describe('follow-up N2/I5: a guard timeout is run-only (`unverified`)', () => {

@@ -4,7 +4,7 @@
 // output is a `workspace-view` command the agent worker runs inside the sandbox (lib/sandbox/view.ts).
 // Reads take a session or an API token (the auth middleware) — but an API-token read never STARTS a
 // stopped sandbox (final review M5: 409 "sandbox stopped — open it in the app"), and the raw
-// download is session-only. Writes (kill, re-enable, the secret toggle) are session-only
+// download is session-only. Writes (kill, mark trusted, the secret toggle) are session-only
 // (requireSession). None of this is on /api/mcp.
 import { z } from 'zod'
 import type { H3Event } from 'h3'

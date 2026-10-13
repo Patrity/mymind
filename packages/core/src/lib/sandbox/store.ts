@@ -112,3 +112,26 @@ export async function ensureWorkstreamWorkspace(workstreamId: string): Promise<W
   return row
 }
 
+
+/** Cycle 86 (option C): Tony marks a TAINTED workspace trusted — web session only (the route's
+ *  requireSession; never the agent, an API token or /api/mcp). Clears `tainted` / `tainted_at`, so
+ *  runs that read from it are no longer treated as having read untrusted content (their outbound
+ *  tools stop needing approval on its account), and records a `workspace:trusted` activity row.
+ *  A workstream's OWN sticky taint (workstreams.tainted) is untouched. Idempotent: an untainted
+ *  workspace is returned as is, with no activity row. Null: no such live workspace. */
+export async function markWorkspaceTrusted(
+  id: string,
+  deps: { record?: (e: { kind: 'tool'; name: string; severity: 'info'; meta: Record<string, unknown> }) => void } = {}
+): Promise<WorkspaceRow | null> {
+  const [cleared] = await useDb().update(workspaces).set({ tainted: false, taintedAt: null })
+    .where(and(eq(workspaces.id, id), eq(workspaces.tainted, true), isNull(workspaces.deletedAt)))
+    .returning()
+  if (!cleared) {
+    const [row] = await useDb().select().from(workspaces).where(and(eq(workspaces.id, id), isNull(workspaces.deletedAt))).limit(1)
+    return row ?? null
+  }
+  publish(id)
+  const record = deps.record ?? ((e) => { void import('../observability/record').then(m => m.recordEvent(e)).catch(() => { /* best-effort */ }) })
+  record({ kind: 'tool', name: 'workspace:trusted', severity: 'info', meta: { workspaceId: id, kind: cleared.kind, ...(cleared.workstreamId ? { workstreamId: cleared.workstreamId } : {}) } })
+  return cleared
+}

@@ -82,5 +82,14 @@ export function useWorkspaceActions() {
       $fetch<{ shellId: string; state: string; alreadyEnded: boolean }>(`/api/workspaces/${p.workspaceId}/shells/${p.shellId}/kill`, { method: 'POST' }),
     onSuccess: (_r, p) => { void qc.invalidateQueries({ queryKey: ['workspace', p.workspaceId] }) }
   })
-  return { kill }
+  // Cycle 86 (option C): session-only — clears the workspace's taint flag (server/api/workspaces/[id]/trust.post.ts).
+  const trust = useMutation({
+    mutationFn: (workspaceId: string) => $fetch<WorkspaceDTO>(`/api/workspaces/${workspaceId}/trust`, { method: 'POST' }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['workspace'] })
+      // The workstream page reads it as ['workstream', id, 'workspace'].
+      void qc.invalidateQueries({ predicate: q => q.queryKey[0] === 'workstream' && q.queryKey[2] === 'workspace' })
+    }
+  })
+  return { kill, trust }
 }
