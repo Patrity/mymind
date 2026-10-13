@@ -71,6 +71,8 @@ describe('matchActions', () => {
     expect(matchActions([A, A, B], [call('a'), call('b'), call('a'), call('b')]).score).toBe(1)
     // An expected action with no matching call is skipped; the ones after it still align.
     expect(matchActions([A, { tool: 'x' }, B], [call('a'), call('b')]).score).toBeCloseTo(2 / 3)
+    // Greedy earliest-match would spend A on the last call and lose B and C.
+    expect(matchActions([A, B, C], [call('b'), call('c'), call('a')]).score).toBeCloseTo(2 / 3)
     // Two expected `a` need two calls: one call satisfies one action.
     expect(matchActions([A, A], [call('a')]).score).toBe(0.5)
   })
