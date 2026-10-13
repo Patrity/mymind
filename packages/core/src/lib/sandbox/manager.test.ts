@@ -125,6 +125,32 @@ describe('taint is bookkeeping only (cycle 86 option C)', () => {
   })
 })
 
+describe('final review C1: production refuses the host runtime off macOS', () => {
+  const base = { HOME: os.homedir(), USER: 'bridget', PATH: '/usr/bin:/bin' }
+
+  it('in production on linux every non-eval command (internal included) is refused with a clear error, before any dir is made', async () => {
+    const { m } = mgr({ platform: 'linux', env: { ...base, NODE_ENV: 'production' } })
+    await expect(m.exec(WS, 'echo pwned')).rejects.toThrow(SandboxUnavailableError)
+    await expect(m.exec(WS, 'echo pwned')).rejects.toThrow(/workspace unavailable on this host/)
+    await expect(m.exec(WS, 'true', { internal: true })).rejects.toThrow(/workspace unavailable on this host/)
+    await expect(readFile(m.hostDir(WS))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await m.health()).toMatchObject({ ok: false, reason: expect.stringMatching(/workspace unavailable on this host/) })
+  })
+
+  it('MYMIND_HOST_RUNTIME_ALLOWED=1 lifts it; darwin and non-production are never refused', async () => {
+    for (const o of [
+      { platform: 'linux' as const, env: { ...base, NODE_ENV: 'production', MYMIND_HOST_RUNTIME_ALLOWED: '1' } },
+      { platform: 'darwin' as const, env: { ...base, NODE_ENV: 'production' } },
+      { platform: 'linux' as const, env: { ...base, NODE_ENV: 'development' } }
+    ]) {
+      const { m } = mgr(o)
+      expect((await m.exec(WS, 'echo ok')).stdout).toBe('ok\n')
+    }
+    const { m } = mgr({ platform: 'linux', env: { ...base, NODE_ENV: 'production', MYMIND_HOST_RUNTIME_ALLOWED: 'true' } })
+    await expect(m.exec(WS, 'true')).rejects.toThrow(/workspace unavailable on this host/)
+  })
+})
+
 describe('eval worlds: always confined', () => {
   it.runIf(darwin)('a clean run: confined to the world dir, offline, no secrets allowed', async () => {
     const { createEvalSandboxManager } = await import('./manager')

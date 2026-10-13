@@ -160,6 +160,16 @@ async function defaultFsStats(dir: string): Promise<{ freeBytes: number }> {
   }
 }
 
+/** The platform backstop (cycle 86 final review C1): the host runtime runs Bridget's commands as the
+ *  worker's own user with no confinement and no approval — fine on her Mac mini, a root shell on a
+ *  Linux box (LXC 114 holds Docker, the old DB and every secret). In production a non-eval workspace
+ *  command is refused unless the host is macOS or `MYMIND_HOST_RUNTIME_ALLOWED=1` says this host was
+ *  deliberately handed to her. null: allowed. Eval worlds have their own (stricter) darwin gate. */
+export function hostRuntimeRefusal(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | null {
+  if (env.NODE_ENV !== 'production' || platform === 'darwin' || env.MYMIND_HOST_RUNTIME_ALLOWED === '1') return null
+  return `workspace unavailable on this host: the workspace runtime runs commands unconfined on the worker's host, which in production must be the Mac mini (this is ${platform}; set MYMIND_HOST_RUNTIME_ALLOWED=1 to allow it deliberately)`
+}
+
 export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const store = opts.store ?? dbWorkspaceStore
   const s: SandboxSettings = { ...sandboxSettings(), ...opts.settings }
@@ -168,6 +178,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const now = opts.now ?? Date.now
   const platform = opts.platform ?? process.platform
   const fsStats = opts.fsStats ?? defaultFsStats
+  const hostRefusal = hostRuntimeRefusal(platform, opts.env ?? process.env)
   const isBusy = (id: string) => (opts.isBusy ?? runtimeHooks.isBusy)?.(id) ?? false
   const onStopped = (id: string, reason: string) => (opts.onStopped ?? runtimeHooks.onStopped)?.(id, reason)
   const refreshShells = (id: string) => (opts.refresh ?? runtimeHooks.refresh)?.(id)
@@ -244,6 +255,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   async function exec(id: string, command: string, o: ExecOptions = {}): Promise<SandboxExecResult> {
+    if (!evalWorld && hostRefusal) throw new SandboxUnavailableError(hostRefusal)
     const internal = o.internal === true
     if (!internal) assertDiskOk()
     const timeoutSec = timeoutOf(o.timeoutSec)
@@ -402,6 +414,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
    *  manager (the only one that confines — option C), sandbox-exec works. Never throws. */
   async function health(): Promise<SandboxHealth> {
     const checkedAt = new Date(now()).toISOString()
+    if (!evalWorld && hostRefusal) return { ok: false, reason: hostRefusal, checkedAt }
     if (lowDisk) return { ok: false, reason: `the Mac is low on disk (${(lowDisk.freeBytes / 1024 ** 3).toFixed(1)} GB free) — new workspace work is paused until space is freed`, checkedAt }
     try {
       await mkdir(s.workspacesDir, { recursive: true, mode: 0o700 })
