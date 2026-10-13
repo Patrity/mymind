@@ -2,7 +2,7 @@
 title: Judge (approval verdicts, Smart Approvals, output guard, sticky taint)
 status: shipped
 cycle: 84
-updated: 2026-10-12
+updated: 2026-10-13
 mymind_id: 656db4aa-3cae-47cc-9153-c9abf559e040
 mymind_hash: 8303a149e1e10170e91466f7d82d7cc8fd22c4f38f0e99e78686f48a4d4a11df
 ---
@@ -32,7 +32,6 @@ judge says**.
 
 | Tool / class | Floor | Why |
 |---|---|---|
-| `exec` (host) | **Always ≥ `high`**; `critical` if `isCatastrophic` | Base reason `EXEC_BASE_REASON` = *"runs as root on the MyMind host"*. A regex can't reliably tell a harmless command from a dangerous one, so install/network/opaque-command/write-outside-workspace patterns only **add reasons** — they never lower the floor below `high`, and they never raise it above what the catastrophic check already set except by adding more reasons. Saved allowlist patterns keep their own pre-judge fast path in `exec.autoApprove` — skipped entirely in a tainted run (no allowlist in a tainted run). |
 | `gmail_send` | `review` only when **every** recipient is **verified** mailed before; otherwise `high` | Verified = an exact, case-insensitive address match in the To/Cc/Bcc headers of a message the account actually sent (`sentMessagesTo`) — a search hit alone never counts. `high` when: no lookup is wired; `recipients()` throws; any `mailedBefore` check throws (429/5xx/anything); the draft has 0 readable recipients; the draft has more than `MAX_CHECKED_RECIPIENTS` (10) recipients (not even checked); or any recipient was never mailed. Lookups run at most `RECIPIENT_LOOKUP_CONCURRENCY` (4) at a time, positive hits cached 6 h. The rule records which draft revision it checked (`boundMessageId`); `bindGmailRuleToPin` then requires that to equal the card's nonce pin (`pinnedSendMessageId`, a `NoncePinStore.peek`) — a missing or mismatched pin (the draft changed after the check) also floors `high`. This is the **strict** gmail verification: quoted display names and RFC comments are stripped before the address list is built, `'` is not a delimiter, and the angle-address wins over a bare one, so `"ann@x.com" <bob@evil.com>` never vouches for `ann@x.com`. |
 | `calendar_guest_event` | `cancel` → `high`; `update` → `high`; `create` with ≥ 1 attendee → `high`; `create` with 0 attendees → `review` | Google emails every guest on cancel/update/invite. |
 | `calendar_write_event` (`op: 'delete'`) | `high` | deletes a calendar event |
@@ -40,7 +39,7 @@ judge says**.
 | Outbound tools — `web_fetch`, `web_search`, `research_web`, jobs/wakes, any `tool.outbound === true` | `review`, unless a URL argument targets a raw IP (→ `high`), a paste/file-drop/request-capture host (`PASTE_HOSTS`, → `high`), or carries > `MAX_QUERY_CHARS` (200) of query (→ `high`); a `web_search` query itself over 200 chars also → `high` | These are the exfiltration channels: a URL is how text leaves the machine. |
 | Any other tool | `review` | Unknown tool → `review`, never an exception. |
 
-Order of checks in `ruleVerdict`: `exec` → `gmail_send` → `calendar_*` tools → jobs/wakes or any
+Order of checks in `ruleVerdict`: `gmail_send` → `calendar_*` tools → jobs/wakes or any
 `outbound` tool → everything else `review`.
 
 ## The LLM verdict
@@ -103,7 +102,7 @@ queue gives "judge timed out waiting for a slot" (an error verdict → review) o
 waiting for a slot" (fail-closed, run only — see the output guard below). This exists because judge
 and guard calls share the inference server with the pooled workstream segments (cycle 83) but were
 previously unpooled: under six-child fan-out, guard calls queued behind each other past their 15 s
-deadline and a fail-closed guard took workspaces offline on routine load.
+deadline and a a fail-closed guard flagged routine fetches.
 
 ## The exact auto-approve predicate
 
@@ -134,7 +133,8 @@ words because the spec amended them mid-cycle:
   only the judge in the way. Once a run has read mail/calendar, had content flagged, or used a
   tainted workspace, **every** approval in it waits for Tony — not just the outbound ones.
 - **A `high` (or `critical`/`deny`) rule floor never auto-approves**, whatever the LLM recommends.
-  Host `exec` is always ≥ `high`, so Smart Approvals **never** runs a host command.
+  (Cycle 86 retired host `exec` and its `execRule` — there is no command-approval tier any more, so
+  nothing in this list is a shell command.)
 
 The predicate is evaluated **twice** per call: once with an ideal verdict and floor `low`
 (`eligible`, used to decide whether the judge even needs to ask the LLM before Tony is needed), and
@@ -169,9 +169,14 @@ Smart Approvals today reopens, on chat, the exact laundering gap this cycle clos
 
 ## Which tools can ever auto-run
 
+**Never-auto list (as of cycle 86):** `decide_review` (`humanOnly`), `calendar_guest_event` (every
+real call floors `high`), every outbound tool in a tainted run, and everything on a headless or
+non-chat/non-segment surface. Host `exec` was the fifth entry and is gone: it was retired in cycle 86
+with the `admin` toolset ([agent-exec.md](agent-exec.md)), and Bridget's workspace commands
+([workspace.md](workspace.md)) take no approval at all, so the judge never sees a shell command.
+
 | Tool / class | Reaches an approval card when | Auto-run possible? |
 |---|---|---|
-| `exec` (host) | always, unless an allowlist pattern matches (skipped in a tainted run) | **Never.** Floor is always `high` or `critical` (R1). |
 | `decide_review` | always | **Never** — `AgentTool.humanOnly: true`, the only tool whose contract is "Tony confirms every call." |
 | `calendar_guest_event` | always | **Effectively never.** `cancel`/`update`/`create-with-guests` all floor `high`; `create` with no attendees is refused by the handler before it reaches approval. |
 | `gmail_send` | always | **Yes**, when: the surface's Smart Approvals switch is on; the run is **untainted** (sticky, inherited — see below); 1–10 recipients, every one verified in sent mail; the card's pin still matches the checked draft revision; the verdict is `approve`, risk `low`/`medium`, confidence ≥ the settings threshold. |
@@ -183,8 +188,7 @@ Smart Approvals today reopens, on chat, the exact laundering gap this cycle clos
 | iMessage- or voice-originated runs | as chat | Only when chat Smart Approvals is on (default off). The iMessage prompt waits up to 15 s for the verdict before texting. |
 | MCP | dangerous tools are excluded from the MCP surface entirely (`!t.dangerous && !MCP_EXCLUDED_TOOLSETS`) | n/a — never reaches an approval at all |
 
-**By design, Smart Approvals rarely fires.** Host `exec` never auto-runs, tainted runs never
-auto-run anything, and the only two tools that realistically can (`gmail_send`, `calendar_rsvp`) need
+**By design, Smart Approvals rarely fires.** Tainted runs never auto-run anything, and the only two tools that realistically can (`gmail_send`, `calendar_rsvp`) need
 an id Tony typed himself in that same clean run (a `gmail_draft`/`gmail_search`/`calendar_list_events`
 read taints the run that read it). The card + verdict on every approval, and the output guard, are
 the main value of this cycle — not a flood of silently-approved calls.
@@ -306,13 +310,16 @@ the run. Disabling the judge is **not** a quiet off switch.
 - **Run taint**: a **real** flag (an LLM injection verdict, or a flag-alone heuristic) adds the
   `flagged` taint source. A **fail-closed** flag (timeout, slot-wait expired, error, judge off,
   Stop-cancelled) adds the run-only **`unverified`** source instead (follow-up to the final fix
-  wave). Either one gates outbound tools and drops `exec`'s allowlist fast path for the rest of that
-  run.
-- **Workspace effect.** A real flag on a workspace source taints the **workspace** (cycle 82: network
-  off until Tony re-enables). A run tainted **only** by `unverified` runs its workspace commands
-  `--network none` with no secrets and stops the workspace's live background shells/watches (follow-up 2, NB4; `bash_output`/`kill_shell` always hit the real container), but **never** marks the workspace tainted — so a guard outage or
-  fan-out contention can't quietly take workspaces offline. Any other run taint (`mail`, real
-  `flagged`) keeps the cycle-82 rule: the run's workspace commands taint the workspace.
+  wave). Either one gates outbound tools and for the rest of that run (there is no `exec` allowlist
+  fast path any more — cycle 86).
+- **Workspace effect.** A real flag on a workspace source marks the **workspace** tainted (persistent
+  bookkeeping, `manager.markTainted`); a result read from a tainted workspace carries
+  `workspaceTainted`, which taints the **reading run**. **Cycle 86 (option C): nothing else follows.**
+  The workspace's commands, background shells and watches keep running exactly as before — there is
+  no offline mode, no network kill and no "Re-enable network" any more. A run tainted only by
+  `unverified` (fail-closed guard) is just a tainted run: outbound tools gate, the model is warned,
+  and the workspace is not even marked. Tony clears a workspace's flag with **Mark trusted**
+  (see [workspace.md](workspace.md#workspace-taint-as-a-taint-source)).
 
 **Corpus results and latency** (final shape: 35 injection / 31 benign fixtures; real dev model Qwen
 3.8 Flash Next via LiteLLM `192.168.2.85:4000`): recall **35/35**, false positives **1/31**
@@ -335,8 +342,8 @@ pre-existing cycle-81 hole this cycle also closes) and, worse, let Smart Approva
 **`workstreams.taint_sources`** (migration 0083, `text[] not null default '{}'`) holds the union of the
 **persisted** sources that have ever tainted the workstream — only `'mail'`, **real-verdict**
 `'flagged'` and `'child'` (`PERSISTED_TAINT_SOURCES`); it only grows, it is never cleared. `'workspace'` is **never
-persisted** (it is derived from the workspace's own flag at every segment start, so "Re-enable
-network" works), and `'unverified'` (fail-closed guard) is run-only — not persisted, not inherited. `storedTaintSources(row)` reads it (a legacy row with `tainted = true` and no sources reads
+persisted** (it is derived from the workspace's own flag at every segment start, so "Mark trusted"
+on the workspace takes effect on the next segment), and `'unverified'` (fail-closed guard) is run-only — not persisted, not inherited. `storedTaintSources(row)` reads it (a legacy row with `tainted = true` and no sources reads
 as `mail`, the cycle-83 meaning of the bare boolean).
 
 **Seeding every segment.** `beginSegment` computes the workstream's `initialTaint` =
@@ -396,7 +403,7 @@ verifier gets: the goal; the model's own summary; the workstream's tool-call log
 (this bus namespace + conversation, newest-first, deduped on `(runId, toolCallId)`, capped to the
 **last 60 calls** plus a true total, each call's args ≤ 200 chars / result digest ≤ 300 chars /
 guard-flag source); workspace changes (`git diff --stat` plus up to 8 KB of the most-changed files'
-diffs, run **read-only** and **offline** in the sandbox — no `git init`/`add`/`commit`, so the
+diffs, run **read-only** in the workspace on the host (git's fsmonitor, hooks path, external diff and textconv are switched off, since the repo is model-written) — no `git init`/`add`/`commit`, so the
 agent's own diff baseline is untouched, and the workspace is never marked tainted by the check
 itself); and, for a coordinator, every child's state/goal/summary/failureReason/own verification (up
 to 50, plus a true total). **Fencing**: everything except a *top-level* goal is wrapped in a random
@@ -483,9 +490,8 @@ apart — see [`eval.md`](eval.md#11-known-limits).)
   subagent's digest without leaving instructions visible in its own final report text is not caught —
   the subagent is read-only, holds only its brief, and its aggregated report is the only thing the LLM
   tier actually classifies.
-- **With the judge off, a guard flag (or a guard timeout) never takes a workspace offline anymore** —
-  only the run is tainted. Before this cycle, a fail-closed flag tainted the workspace too; the I5
-  ruling traded that for not taking workspaces offline under routine load or a guard outage.
+- **With the judge off, a guard flag (or a guard timeout) never marks a workspace tainted** —
+  only the run is tainted. Before cycle 84's I5 ruling a fail-closed flag tainted the workspace too.
 - **A microtask race on the web card path remains**: a Stop landing in the narrow window between the
   bus channel resolving an approval and `ai-tools.ts`'s signal re-check can still record
   `approved`/`tony` with nothing actually run (it fails closed — the tool never executes — but the

@@ -1,13 +1,24 @@
 ---
 title: Agent Exec — Credentialed Native-Root Exec (Cycle B3.2; always-armed since cycle 42)
-status: shipped
-cycle: 42 (toolset: cycle 82)
-updated: 2026-10-11
+status: retired  # cycle 86 — historical record only
+cycle: 42 (toolset: cycle 82; retired: cycle 86)
+updated: 2026-10-13
 mymind_id: 7cd33c6b-16d2-44be-988d-05fab734e28e
 mymind_hash: 871a7ce7b60dedfff25c3889f8ba024150070101dff3c064c45ce85203382a69
 ---
 
 # Agent Exec — Credentialed Native-Root Exec
+
+> **RETIRED in cycle 86 (Mac mini host).** Host `exec` and the on-demand `admin` toolset no longer
+> exist: `execTool` is not in `bridgetProfile`, `ToolsetId` has no `'admin'`, `lib/exec/run.ts`
+> (`runConstrained`, `buildExecEnv`, the root-only mode check) is deleted, and so are the exec
+> approvals settings routes (`/api/settings/exec-approvals`), the allowlist UI and the judge's `execRule`.
+> MyMind now runs natively as the `bridget` user on the Mac mini, and Bridget's commands run through
+> the `workspace` toolset as plain host processes with no approval and no confinement — see
+> **[workspace.md](workspace.md)**. What survives from this page: the encrypted `exec_secrets` store
+> (`lib/exec/secrets.ts`, Settings → Secrets), whose per-secret "Bridget's shell" switch is now how a
+> secret reaches her shell. Everything below describes cycles 30-82 as they were and is kept as history
+> only; do not treat it as how the system works today.
 
 Cycles B2 and B3.1 added the approval gate harness and moved the app to a native systemd process (root in LXC 114). B3.2 reworks the exec runner for that reality: exec runs **natively as root in the LXC** (no `setpriv`, no `agent` uid drop, no `/workspace` jail), always injects the user's service tokens, and applies an allowlist-first gate with a catastrophic hard-block. The LXC container is the security boundary.
 

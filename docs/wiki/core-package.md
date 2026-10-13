@@ -1,8 +1,8 @@
 ---
 title: "@mymind/core (shared server package)"
 status: shipped
-cycle: 80 (bus, env mapper, worker: cycle 81; sandbox: cycle 82)
-updated: 2026-10-11
+cycle: 80 (bus, env mapper, worker: cycle 81; sandbox: cycle 82; host runtime in lib/sandbox: cycle 86)
+updated: 2026-10-13
 mymind_id: 4c23fd31-c5f1-4648-868a-b584ffa5f308
 mymind_hash: dd4c583a9b4b5b2fed24e03fcce095a978b40496a8f0f58d8a0467bfcb640f6a
 ---
@@ -17,8 +17,10 @@ lives in `packages/core/src` as a **source-only pnpm workspace package**: `expor
 ## What's in it
 
 `db/` (schema, `useDb()` pool, types), `lib/` (agent, ai, auth, channels, chunking, documents, exec,
-google, imagegen, images, memory, observability, projects, review, sandbox (cycle 82 — the per-workspace
-Docker sandbox, see [workspace.md](workspace.md)), search, tasks, triage, voice — the
+google, imagegen, images, memory, observability, projects, review, sandbox (cycle 82 built it as a per-workspace
+Docker sandbox; **since cycle 86 it hosts the host runtime**: workspace dirs and plain host processes on
+Bridget's Mac, `host/{spawn,env,profile,copy}.ts`, eval worlds under `sandbox-exec` — see
+[workspace.md](workspace.md); `docker.ts`, `network.ts` and `quota.ts` are deleted), search, tasks, triage, voice — the
 parts the worker reaches), `services/` (the 21 services those import), `utils/` (live-bus, net,
 storage), `shared/` (types/utils used by core; app-only `shared/` files stay at the root).
 What's in core is the import closure of `lib/{agent,google,channels,ai,auth}` + `db`, computed by
@@ -42,7 +44,6 @@ import { initCore, coreConfig } from '@mymind/core/config'
 | `triageThresholds`, `triageAppendSimilarityFloor` | `services/triage` |
 | `busNs` (env-backed, cycle 81) | `lib/bus/ns.ts` — the bus namespace (`MYMIND_BUS_NS`, default `default`) |
 | `dev` (host fact, cycle 81) | dev-only stubs (`lib/observability/email.ts`) |
-| `sandboxRequireFirewall`, `sandboxRequireLimits` (env-backed, cycle 82) | `lib/sandbox/manager.ts` — fail-closed firewall/limits preflight gates (`SANDBOX_REQUIRE_FIREWALL`/`SANDBOX_REQUIRE_LIMITS`; unset ⇒ true on Linux, false elsewhere) |
 
 **One env mapper (cycle 81): `packages/core/src/config-env.ts`.** The web and the worker build
 `CoreConfig` through the same module, so they cannot drift.
@@ -53,8 +54,8 @@ import { initCore, coreConfig } from '@mymind/core/config'
   `applyRuntimeEnv`, a faithful copy of Nitro's `applyEnv` that `test/core-config.test.ts` runs
   against Nitro's own implementation. So `NUXT_DATABASE_URL` wins in both processes, and a plain
   `DATABASE_URL` does not override in either.
-- **Env-backed** fields (`ENV_BACKED_FIELDS = ['busNs', 'sandboxRequireFirewall', 'sandboxRequireLimits']`,
-  read from `MYMIND_BUS_NS`/`SANDBOX_REQUIRE_FIREWALL`/`SANDBOX_REQUIRE_LIMITS`)
+- **Env-backed** fields (`ENV_BACKED_FIELDS = ['busNs']`,
+  read from `MYMIND_BUS_NS`; the cycle-82 `sandboxRequireFirewall`/`sandboxRequireLimits` fields were removed in cycle 86)
   are read from the *runtime* env by both processes and are never baked at build time. A value in
   `.env.native` therefore reaches the web too. The web and the worker **must agree** on it.
 
@@ -70,7 +71,7 @@ import { initCore, coreConfig } from '@mymind/core/config'
 - `coreConfig()` before `initCore` throws `core not initialised — call initCore() first`; a second
   `initCore` with a different object throws.
 - **Still read from `process.env` directly** (not yet in `CoreConfig`; step 2 decides):
-  `lib/ai/registry/crypto.ts`, `lib/search/store.ts`, `lib/exec/run.ts`,
+  `lib/ai/registry/crypto.ts`, `lib/search/store.ts`, `lib/sandbox/manager.ts` (`sandboxSettings()`: `SANDBOX_WORKSPACES_DIR`, `SANDBOX_EVAL_SCRATCH_DIR`, `NODE_ENV`, and `MYMIND_HOST_RUNTIME_ALLOWED` for the production platform guard) and `lib/sandbox/host/env.ts` (`WORKSPACE_PATH`),
   `lib/agent/runtime/runs.ts`, `lib/agent/jobs/{schedule,timezone}.ts`,
   `lib/channels/bluebubbles/{channel,client}.ts`, `lib/observability/email.ts`
   (also uses Nitro's build-time `import.meta.dev`).

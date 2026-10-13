@@ -2,10 +2,14 @@
 title: Search + Command Palette
 status: shipped
 cycle: 8 (extended 13, 20, 31, 32, 33)
-updated: 2026-06-19
+updated: 2026-10-13
 ---
 
 # Search + Command Palette
+
+> This page is the in-app corpus search (⌘K). The agent's **web** search (`web_search`) is a different
+> system: since cycle 86 it is **Brave only** (SearXNG retired), behind a per-process rate limiter with
+> a 60 s queue wait and a 45 s total retry deadline — see [web-research.md](web-research.md).
 
 A global ⌘K command palette that searches every surface, ranks results across
 types by true relevance, and shows the matching passage per hit.

@@ -3,7 +3,7 @@
 > Audience: an agent or operator deploying MyMind to the homelab (Proxmox + Docker), internet-exposed.
 > Source of truth for **how the app works** is `docs/wiki/`; this doc is **how to run it**. If anything here disagrees with the code, the code + the newest `docs/handovers/` win — update this doc.
 
-> **Cycle 86: prod moves to the Mac mini** (launchd, user `bridget` @ `192.168.2.35`, DB on `192.168.2.80`); LXC 114 becomes the CI build box. See **§23** and the `prod-deploy` skill. §§17–22 describe the LXC 114 runtime (`DEPLOY_TARGET=lxc`), kept until cutover + 7 days.
+> **Cycle 86: prod moves to the Mac mini** (launchd, user `bridget` @ `192.168.2.35`, DB on `192.168.2.80`); LXC 114 becomes the CI build box. Status: **built, awaiting cutover** (see the [handover](handovers/2026-10-13-macmini-host.md)). See **§23** and the `prod-deploy` skill. §§17–21 describe the LXC 114 runtime (`DEPLOY_TARGET=lxc`), kept until cutover + 7 days; §14 (host `exec`) and §22 (the Docker sandbox) are **retired** and kept as history only.
 
 ## 0. What you're deploying
 
@@ -281,45 +281,14 @@ Search is **Brave Search API only** (cycle 86; the bundled SearXNG service is re
 the rate limit (`search.brave.qps`, default 1 req/s, burst 3) are set in-app at **`/settings → Search`** —
 no env vars. See `docs/wiki/web-research.md`.
 
-## 14. Agent exec tool (B3.2 — native-root model)
+## 14. Agent exec tool (retired in cycle 86)
 
-The agent `exec` tool lets the AI run shell commands inside LXC 114, gated by an allowlist-first approval step. Full reference: `docs/wiki/agent-exec.md`.
-
-**Privilege model — native root in the LXC.**
-As of B3.2, exec runs natively as root — no `setpriv`, no uid drop, no `agent` user. `runConstrained` spawns `/bin/sh -c <command>` directly. The LXC container is the security boundary. The B2 `setpriv`/uid-10001/`/workspace`-jail model is retired.
-
-**Default cwd — `/opt/mymind/workspace`.**
-`deploy/provision-native.sh` creates `/opt/mymind/workspace` (idempotent). This is the default working directory for exec children and persists across app restarts and CD deploys (`provision-native.sh` does not remove it). There is no cwd jail — absolute paths pass through as-is.
-
-**Credential injection — encrypted DB store.**
-Secrets (API tokens, service credentials) are stored encrypted in the `settings` table under key `exec_secrets` (same encryption key as the AI config registry — `CONFIG_ENC_KEY` / `BETTER_AUTH_SECRET` via HKDF). Manage secrets at **`/settings → Secrets`**. The child environment is constructed from scratch (PATH, HOME, LANG) and the decrypted secrets are merged in — app secrets (`DATABASE_URL`, `BETTER_AUTH_SECRET`, etc.) are never in the child env.
-
-**The two gates — both must be on.**
-1. **`powerful` profile** — the default Bridget conversation cannot reach exec. Switch by sending `{ type: 'profile', profile: 'powerful' }` over the WebSocket.
-2. **`agent-exec-enabled` cookie** — toggled from the "Exec enabled" button on the `/agent` page. Off by default. **Background/unattended/cron runs carry no cookie and cannot exec.** There is no env var to enable exec for unattended runs — this is intentional.
-
-**Allowlist-first gate + catastrophic hard-block.**
-- Catastrophic commands (`rm -rf /`, `mkfs*`, `dd of=/dev/*`, fork bomb, `shutdown`/`reboot`) are **refused unconditionally** before anything is spawned.
-- LAN/private curl/wget targets (`10/8`, `172.16/12`, `192.168/16`, loopback) are always allowed silently.
-- Commands matching a saved allowlist pattern run silently. Everything else pauses for approval via the UI.
-- Manage allowlist patterns at **`/settings → Agent Tools`**.
-
-**Audit + secret redaction.**
-Every exec call is logged to `activity_log` (visible at `/activity`). Secret values that appear in command strings or output are replaced with `[REDACTED]` before logging or returning to the model. The result payload includes `secretsInjected: [names]` (not values) for the audit trail.
-
-**Fails closed.**
-If the process is not root (`uid !== 0`) and `EXEC_UNCONFINED=1` is not set (or `NODE_ENV=production`), `selectExecMode` returns `disabled` and `ExecDisabledError` is thrown — exec never runs.
-
-**Relevant env vars** (optional overrides):
-| Var | Default | Notes |
-|---|---|---|
-| `EXEC_WORKSPACE_DIR` | `/opt/mymind/workspace` | default cwd for exec children |
-| `EXEC_TIMEOUT_MS` | `60000` | per-command wall-clock timeout (ms) |
-| `APPROVAL_TIMEOUT_MS` | `120000` | how long an approval prompt waits before auto-deny (ms) |
-
-`EXEC_UNCONFINED` is a **dev-only** escape hatch (non-root dev machines, `NODE_ENV !== 'production'`). Never set it on the server — on prod the process is root and `native-root` mode is selected automatically.
-
-`EXEC_AGENT_UID`, `EXEC_AGENT_GID` — **retired** in B3.2. No uid drop occurs; remove from any custom env files.
+Host `exec`, its approval allowlist, `EXEC_WORKSPACE_DIR`/`EXEC_TIMEOUT_MS`/`EXEC_UNCONFINED` and the
+`/opt/mymind/workspace` directory are **gone**: Bridget's commands run through the `workspace` toolset as
+plain host processes on the Mac mini (no approval, no confinement; see `docs/wiki/workspace.md`).
+Nothing here needs configuring. The encrypted `exec_secrets` store (Settings → Secrets) survives: its
+per-secret **Bridget's shell** switch controls which secrets reach her shell. History:
+`docs/wiki/agent-exec.md` (retired).
 
 ## 15. Not yet built (deploy-relevant backlog)
 - No API-token management UI (insert rows manually, §5).
@@ -545,7 +514,7 @@ of old texts one by one. Texts older than that are simply never answered — tel
    handle(s), pick the default handle, and Save. Enable Email with the **Send to** address. Presence
    defaults to 10 min.
 4. **Test connection** → confirm the green **Private API on** badge. Amber (Private API off) still
-   sends texts via AppleScript, but there are no tapbacks, typing, or exec approvals.
+   sends texts via AppleScript, but there are no tapbacks, typing indicators, or tapback approvals.
 5. Copy the **Webhook URL** from Settings → Channels (it is built from the origin you are browsing;
    swap in the LAN origin if you prefer it). In the BlueBubbles server app: **Settings → API &
    Webhooks → Add**, paste it, and tick **New Messages** and **Message Updates**.
@@ -744,85 +713,138 @@ code ignores the new tables and columns.
   Rolling forward again: a normal deploy of cycle ≥ 81. `provision-native.sh` re-enables the unit,
   and CD's activate and restart start it.
 
-## 22. Sandboxed workspace (`mymind-sandbox`, cycle 82)
+## 22. Sandboxed workspace (`mymind-sandbox`, cycle 82 — retired in cycle 86)
 
-Since cycle 82 the worker runs each workstream's (and chat's shared `home`) files/shell/`watch` work
-inside an unprivileged Docker sandbox, one container per workspace. Full reference:
-[`docs/wiki/workspace.md`](wiki/workspace.md).
+Cycle 82 ran each workspace in an unprivileged Docker container on LXC 114 (image `mymind-sandbox`,
+the `mymind-sandbox` network, `MYMIND-SANDBOX-FWD`/`-IN` iptables chains, `mymind-sandbox-net.service`,
+`/opt/mymind/.workspaces`, a Sandbox health CD step). **Cycle 86 deleted all of it**: `deploy/sandbox/`
+no longer exists, `provision-native.sh` no longer builds or checks any of it, and CD has no Sandbox
+health step. Workspaces are now directories on the Mac mini (`~/mymind/workspaces`); see
+`docs/wiki/workspace.md` and §23.
 
-**The image.** `deploy/sandbox/Dockerfile` (Debian + git/python3/node22+pnpm/ripgrep/build-essential,
-user `agent` uid 10001, ~959 MB on amd64). `deploy/sandbox/build-image.sh` tags it by a **sha256 content hash
-of `deploy/sandbox/`** (not the git sha — CD's tar excludes `.git`): `mymind-sandbox:<hash>` +
-`mymind-sandbox:current` (the worker's `SANDBOX_IMAGE`, default `:current`) + `mymind-sandbox:previous`
-(one level of rollback, kept automatically). After a successful build it prunes every other
-`mymind-sandbox:*` tag no container uses, plus BuildKit cache older than 24h. **Provisioning only
-builds the image when `/` has ≥ 6 GB free** — below that it skips the build, warns loudly (banner +
-GitHub `::warning::`), and the previous image (if any) keeps working.
-
-**The network + firewall.** `deploy/sandbox/install-network.sh install` (idempotent, run by
-provisioning):
-- creates the `mymind-sandbox` Docker network (bridge `br-mymind-sbx`, subnet `172.31.82.0/24`,
-  `icc=false`, IPv6 off);
-- installs two iptables chains — `MYMIND-SANDBOX-FWD` (jumped from `DOCKER-USER`: rejects every
-  RFC1918/link-local/CGNAT/loopback/multicast/reserved destination, `RETURN`s everything else to the
-  internet) and `MYMIND-SANDBOX-IN` (jumped from `INPUT`: rejects new connections to this host — the
-  docker gateway, the LXC's LAN IP, published Postgres port) — applied in one atomic
-  `iptables-restore --noflush`, never flush-then-refill;
-- installs a systemd oneshot **`mymind-sandbox-net.service`** that re-applies the rules at every boot
-  and docker restart, from its own copy at **`/usr/local/lib/mymind/install-network.sh`** (never the
-  CD-managed `/opt/mymind` tree — a reboot mid-deploy must not leave the firewall unapplied);
-- creates **`/opt/mymind/.workspaces`** (mode 0711) — every workspace's files live under
-  `<id>/`, bind-mounted read-write at `/workspace` inside its own container and nowhere else.
-
-The worker **refuses to start a sandbox on Linux** unless the live rules match this plan exactly
-(`SANDBOX_REQUIRE_FIREWALL`, default on for Linux) — a missing/mismatched firewall never silently
-degrades to "no isolation", it degrades to "no sandbox at all". Same fail-closed shape for the
-memory/pids cgroup **limits** (`SANDBOX_REQUIRE_LIMITS`): an unprivileged LXC whose controllers
-aren't delegated to Docker lets `--memory`/`--pids-limit` succeed with a silent warning and no
-effect, so the worker probes a throwaway container's real cgroup files at boot and refuses the
-sandbox rather than trust the flag.
-
-**Disk.** The build needs ≥ 6 GB free; once running, a 5 s watchdog stops **every** sandbox container
-(and refuses all workspace commands) if `/opt/mymind` drops under **4 GB free or ~200k free
-inodes**, resuming only once both recover to **≥ 5 GB / ~250k inodes** (hysteresis). `df -h
-/opt/mymind/.workspaces` and `df -i` before a deploy that might grow the image.
-
-**CD.** `deploy.yml`'s tree-wipe allow-list and tar excludes preserve `.workspaces` across every
-deploy, exactly like `.worker`/`.worker-prev`. After the worker restarts, a `continue-on-error`
-**Sandbox health** step (`timeout-minutes: 2`) polls `worker_heartbeat.status->'sandbox'` for ~100 s and turns a
-`false` into a GitHub **`::warning::`** naming the reason — a broken sandbox never fails the deploy
-(the web and chat/workstreams work fine without it; only `workspace`/`admin` tool calls are refused).
-
-**Post-deploy warning — what to do with it.** Open the deploy run's Annotations. If the `Sandbox
-health` step (or `provision-native.sh`'s own banner) warned:
-```bash
-# On the box (see the prod-deploy skill for the lxc SSH helper):
-docker image inspect mymind-sandbox:current            # does the image exist?
-iptables -S DOCKER-USER; iptables -S MYMIND-SANDBOX-FWD # are the rules there?
-docker info --format '{{.FirewallBackend}}'             # nft vs legacy mismatch?
-df -h /opt/mymind/.workspaces; df -i /opt/mymind/.workspaces
-# Re-run what failed:
-bash /opt/mymind/deploy/sandbox/install-network.sh install
-bash /opt/mymind/deploy/sandbox/build-image.sh
-```
-See `docs/wiki/workspace.md#diagnosing-sandbox-unavailable` for the full reason → cause → fix table,
-and the `prod-deploy` skill's **Sandbox ops** section for read-only commands to check all of this
-without printing secrets.
+**Leftovers on LXC 114.** Nothing deploys the old sandbox any more, but nothing removes it either. It
+is harmless while LXC 114 is the rollback target (it only matters to the pre-cutover worker). At
+**retirement** (cutover + 7 days, see the handover), remove it by hand: `systemctl disable --now
+mymind-sandbox-net` and delete the unit and `/usr/local/lib/mymind`; delete the two iptables chains and
+their `DOCKER-USER`/`INPUT` jumps; `docker network rm mymind-sandbox`; remove the `mymind-sandbox:*`
+images and any `mymind.workspace`-labelled containers; `rm -rf /opt/mymind/.workspaces`.
 
 ## 23. Mac mini host (cycle 86)
 
-Prod runs natively on the Mac mini as user `bridget`: launchd agents `com.mymind.web` (`:3000`, heap
-1.5 GB) and `com.mymind.worker` (heap 2 GB), both via `~/mymind/bin/run.sh`, which sources
-`~/mymind/env/mymind.env`. Releases are symlink-swapped under `~/mymind/releases` by
-`deploy/macmini/release.sh`; logs in `~/Library/Logs/mymind/` (rotated by run.sh). The DB is the central
-Postgres at `192.168.2.80` (db/role `bridget`).
+Prod runs natively on the Mac mini (`bridget.local`, `192.168.2.35`, Apple M1 8 GB, macOS 15, user
+`bridget`) with the DB on the homelab's central Postgres. LXC 114 stays as the **CI build box**.
+Reference: the `prod-deploy` skill (ops), the spec
+(`docs/superpowers/specs/2026-10-13-macmini-host-design.md`, with its option-C amendment) and the
+handover (`docs/handovers/2026-10-13-macmini-host.md`).
 
-CD (`.github/workflows/deploy.yml`, `DEPLOY_TARGET=macmini`): LXC 114 builds (`deploy/macmini/build-artifacts.sh`,
-darwin-arm64 natives via `pnpm-workspace.yaml` `supportedArchitectures`), the runner streams both releases
-to the mini (`release.sh stage`), cancels evals + migrates `.80` from LXC 114 (`.env.macmini`), activates +
-`launchctl kickstart -k`s the web, gates `/api/health` on the LAN IP, then the worker, gated on a fresh
-heartbeat — each gate rolls its service back on failure.
+```
+Pangolin (public) ──> mini :3000   web     launchd com.mymind.web    (node .output/server/index.mjs)
+                      mini         worker  launchd com.mymind.worker (dist/worker.mjs, AGENT_RUNTIME_EXCLUSIVE=1)
+                      mini         BlueBubbles (untouched)           ← iMessage is now local
+both ──> Postgres 192.168.2.80:5432 (db bridget, role bridget)       LiteLLM 192.168.2.85 / rig 192.168.2.25
+LXC 114 (self-hosted runner on Proxmox) ── builds ── tar over ssh ──> mini
+```
+
+### launchd
+
+Two LaunchAgents in `~/Library/LaunchAgents/` (the mini autologs in as `bridget`, so they start at
+boot): `com.mymind.web` and `com.mymind.worker`. Templates are `deploy/macmini/com.mymind.{web,worker}.plist`
+(`__HOME__` is substituted by `provision-macmini.sh`, then `plutil -lint`ed). Both run
+`/bin/bash ~/mymind/bin/run.sh <web|worker>` with `RunAtLoad`, `KeepAlive`, `ThrottleInterval 10`,
+`ProcessType Interactive`, and `ExitTimeOut` **20 s (web)** / **90 s (worker, so it can drain)**.
+`run.sh` sources `~/mymind/env/mymind.env`, puts Homebrew on `PATH`, sets `NODE_ENV=production`,
+`ulimit -n 10240` (launchd's default soft limit is 256), loads the release's `release.env` (the git sha
+`/api/health` reports), runs from the **physical** release dir, writes
+`~/Library/Logs/mymind/{web,worker}.log` (**size-rotated by the wrapper**, 50 MB x 5; no newsyslog and no
+sudo), and `exec`s `node --max-old-space-size=1536` (web) or `=2048` (worker, which also gets
+`AGENT_RUNTIME_EXCLUSIVE=1` and `MYMIND_EVALS_DIR=<release>/evals`). Only MyMind's own processes are
+capped; Bridget's commands are not. The `*.launchd.log` files catch wrapper failures only.
+
+### Release dirs and rollback
+
+`deploy/macmini/release.sh` (installed at `~/mymind/bin/release.sh`) manages
+`~/mymind/releases/{web,worker}-<sha>` and **symlink pointers**, each swapped with one `rename(2)`:
+
+| Kind | current | previous | next |
+|---|---|---|---|
+| web | `~/mymind/app` | `.app-prev` | `.app-next` |
+| worker | `~/mymind/.worker` | `.worker-prev` | `.worker-next` |
+
+Commands: `stage <kind> <id>` (untar from stdin, then check the entry file, that every linux native
+package has its `darwin-arm64` twin, that every darwin `*.node` actually `dlopen`s, and that the
+worker's externals load with the mini's node; a bad release fails here, before any migration or restart),
+`activate`, `rollback`, `restart` (waits for a **new** launchd pid; applies a pending plist change by
+bootout, wait, install, bootstrap with retry on "Bootstrap failed: 5"), `health worker [s]`, `undo
+<kind> <release>` (rollback + restart, only while current is exactly that release) and `status`.
+Releases no pointer references are pruned on stage and activate. A running process keeps its old
+release dir until restarted. Layout elsewhere under `~/mymind/`: `env/` (0700), `data/uploads`,
+`workspaces`, `evals-scratch`, `deploy/`, `bin/`.
+
+### CD: LXC 114 builds, the mini runs
+
+`.github/workflows/deploy.yml`, deploy job, on `[self-hosted, proxmox]`. Two repo variables steer it:
+
+- **`DEPLOY_TARGET`** (`lxc` | `macmini`; unset = `lxc`). A manual run's `target` input is
+  `auto | lxc | macmini` (default `auto` = the variable). Every runtime step carries
+  `if: env.DEPLOY_TARGET == '<target>'`.
+- **`MYMIND_CUTOVER_DONE`** (`true` once prod runs on the mini). The first `[lxc]` step,
+  *Refuse after cutover*, **fails** when `DEPLOY_TARGET` is `macmini` or `MYMIND_CUTOVER_DONE` is `true`,
+  so a stray default run can never start LXC 114's retired units (a second worker re-running Tony's
+  jobs and iMessages against the old database). Going back to LXC is deliberate: set
+  `DEPLOY_TARGET=lxc` **and delete** `MYMIND_CUTOVER_DONE` first.
+
+The `macmini` path: sync the checkout into LXC 114's **separate build dir `/opt/mymind-build`** (never
+`/opt/mymind`, whose `.output` and `.worker` are the rollback target) → `provision-native.sh
+--build-only` (fails if `mymind`/`mymind-worker` are still active in LXC 114) → `deploy/macmini/build-artifacts.sh`
+(darwin-arm64 natives via `pnpm-workspace.yaml` `supportedArchitectures`; outputs `.macmini-out/{web,worker}`)
+→ provision the mini (`provision-macmini.sh`, idempotent) → `release.sh stage` both releases over
+`tar | ssh` (the mini's rsync is Apple's openrsync) → cancel running evals and `pnpm db:migrate` from
+LXC 114 against `.80` using `/opt/mymind-build/.env.macmini` → activate + restart the web and gate on
+`/api/health` over the LAN IP **reporting the new git sha** → activate + restart the worker and gate on a
+heartbeat from the **new** pid (started after the restart, < 30 s old) → a final
+`if: (failure() || cancelled())` step runs `release.sh undo` for worker then web (only releases this run
+activated). The `macmini` path never restarts LXC 114's units.
+
+### Central DB
+
+`192.168.2.80:5432`, database `bridget`, role `bridget` (owner; PG 17.6; `vector`, `pgcrypto`,
+`pg_trgm`, `ltree` pre-installed by the homelab). The URL lives only in `~/mymind/env/mymind.env`
+(`DATABASE_URL` **and** `NUXT_DATABASE_URL`, mode 0600) and in `/opt/mymind-build/.env.macmini` on LXC
+114 (same two keys, for CD's migrate and `pnpm eval --cancel-all`). Never write the password in docs,
+commits or CI logs. **Backups of `.80` are the homelab's responsibility** (Tony confirms); the mini
+backs up nothing for the DB.
+
+### Production platform guard
+
+The host runtime runs Bridget's commands unconfined as the worker's user. In production the manager
+refuses every non-eval workspace command unless the platform is `darwin` or
+`MYMIND_HOST_RUNTIME_ALLOWED=1` is set. **Do not set the override on LXC 114.** It exists so a
+deliberately handed-over Linux host can opt in. Merging to `master` while CD still targets `lxc` would
+otherwise put an unconfined root shell on the box that holds Docker and the old database; this guard
+(plus the *Refuse after cutover* step) is why that ordering mistake is survivable.
+
+### One-time setup (Tony)
+
+1. **Runner SSH key.** On the Proxmox host: `ssh-keygen -t ed25519 -N "" -C mymind-cd -f /root/.ssh/mymind_macmini`;
+   append the `.pub` to `/Users/bridget/.ssh/authorized_keys` on the mini; `ssh-keyscan -t ed25519
+   192.168.2.35 >> /root/.ssh/known_hosts` (CD uses `StrictHostKeyChecking=yes`); verify with
+   `ssh -i /root/.ssh/mymind_macmini -o BatchMode=yes bridget@192.168.2.35 hostname`.
+2. **`~/mymind/env/mymind.env`** on the mini (0600 in a 0700 dir; `KEY=value` lines **sourced by bash**,
+   so quote values with spaces, `$`, `#` or quotes). Keys: see `.env.example` (Mac mini section) and
+   the skill. Copy `BETTER_AUTH_SECRET` (and `CONFIG_ENC_KEY` if set) from LXC 114 **unchanged**: provider
+   keys in the DB are encrypted with a key derived from them. Every runtimeConfig key needs its `NUXT_`
+   twin.
+3. **`gh auth login` as Patrity** on the mini (as `bridget`), full access (accepted risk on a
+   dedicated box). Her `git`/`ssh` logins live in her macOS account.
+4. `/opt/mymind-build/.env.macmini` in LXC 114 (see Central DB).
+
+### Cutover and rollback
+
+The runbook (window of **30 to 60 minutes**: stop LXC units, `pg_dump`, `pg_restore` into `.80` with
+a table-by-table count compare, copy uploads, flip `DEPLOY_TARGET`, merge, CD, Pangolin) is in the
+handover. **Rollback** within the 7-day window needs no workflow run: re-enable and start `mymind` and
+`mymind-worker` in LXC 114 (they still run the cycle-85 code from `/opt/mymind`, against the old
+database, which keeps all its data), stop the mini's agents (`launchctl bootout`) and point Pangolin
+back at LXC 114. Note that rows written on `.80` after cutover are not in the old database.
 
 Files: `deploy/macmini/{provision-macmini.sh,release.sh,run.sh,build-artifacts.sh,com.mymind.web.plist,com.mymind.worker.plist}`.
-Ops, one-time setup (runner SSH key, env files) and gotchas: the `prod-deploy` skill. Cutover runbook:
-`docs/superpowers/specs/2026-10-13-macmini-host-design.md` §6.

@@ -2,7 +2,7 @@
 title: "Mac mini host — MyMind runs natively on the agent Mac (bridget user), central Postgres, native workspace with sandbox-exec for tainted runs, Brave-only search (cycle 86, harness step 7)"
 cycle: 86
 date: 2026-10-13
-status: spec
+status: built  # see handover 2026-10-13-macmini-host.md
 supersedes: null
 builds_on: 2026-10-13-eval-design.md
 ---

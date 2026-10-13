@@ -31,8 +31,10 @@ The **living** reference for how each shipped system works **today** — one pag
 | Voice agent (VAD, WebSocket orchestrator, STT/TTS, Three.js visualizer) | [voice-agent.md](voice-agent.md) | shipped |
 | Agent runtime (server-owned turns, run queue, main thread, steering, `wake()`, headless gate; the agent worker + Postgres bus) | [agent-runtime.md](agent-runtime.md) | shipped (cycle 73); cycle-74/75 changes built; worker + bus built (cycle 81) |
 | Workstreams (long-running budgeted background work: segments, ask_tony, paused, approvals, cap 3) | [workstreams.md](workstreams.md) | shipped (cycle 81) |
-| Sandboxed workspace (per-workspace Docker sandbox, `workspace` toolset, taint-aware network, secrets opt-in, Files/Shells UI) | [workspace.md](workspace.md) | shipped (cycle 82) |
+| Workspace on Bridget's own Mac (host runtime: native `bridget` user, no agent confinement, `workspace` toolset, low-disk alarm, workspace taint + Mark trusted, eval worlds under `sandbox-exec`, Files/Shells UI) | [workspace.md](workspace.md) | built (cycle 86, awaiting cutover; cycle 82 Docker sandbox replaced) |
 | Judge (approval rule tier + LLM verdicts, Smart Approvals, output guard with injection taint, sticky workstream taint, outcome judge) | [judge.md](judge.md) | shipped (cycle 84; outcome judge cycle 85) |
+| Web research (`web_search` Brave-only behind a token-bucket limiter, `web_fetch`, SSRF guard; SearXNG retired in cycle 86) | [web-research.md](web-research.md) | shipped (cycle 29; Brave-only cycle 86) |
+| Agent exec (credentialed host `exec`, approval allowlist) | [agent-exec.md](agent-exec.md) | **retired** (cycle 86; history only, see workspace.md) |
 | Eval substrate (suites/cases/runs/results, isolated eval worlds, fake world, scoring, `/evals` dashboard, `pnpm eval`) | [eval.md](eval.md) | shipped (cycle 85) |
 | `@mymind/core` (shared server package; env mapper; bus modules) | [core-package.md](core-package.md) | shipped (cycle 80); bus + env mapper (cycle 81) |
 | Agent jobs (markdown-configured cron/every/at/event schedules, heartbeat, reminders, `/jobs`) | [agent-jobs.md](agent-jobs.md) | built (cycle 74; `deliver` targets cycle 75) |
