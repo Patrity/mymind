@@ -1,11 +1,19 @@
 import { describe, it, expect, vi } from 'vitest'
 import { TokenBucket, type LimiterClock } from '@mymind/core/lib/search/limiter'
-import { braveProvider, parseRetryAfter, MAX_429_RETRIES } from '@mymind/core/lib/search/providers/brave'
+import { braveProvider, parseRetryAfter } from '@mymind/core/lib/search/providers/brave'
 import { normalizeSearchConfig } from '@mymind/core/lib/search/store'
 
 /** Virtual clock: sleep advances time instantly, so we assert on the schedule, not wall time. */
-function fakeClock(): LimiterClock & { t: number } {
-  const c = { t: 0, now: () => c.t, sleep: async (ms: number) => { c.t += ms } }
+function fakeClock(): LimiterClock & { t: number, maxSleeping: number } {
+  const c = {
+    t: 0, now: () => c.t, sleeping: 0, maxSleeping: 0,
+    sleep: async (ms: number) => {
+      if (!(ms > 0)) throw new Error(`non-positive sleep ${ms} (would spin)`)
+      c.sleeping++; c.maxSleeping = Math.max(c.maxSleeping, c.sleeping)
+      await Promise.resolve()
+      c.t += ms; c.sleeping--
+    },
+  }
   return c
 }
 
@@ -35,6 +43,7 @@ describe('TokenBucket', () => {
     await Promise.all([0, 1, 2, 3].map(i => b.acquire().then(() => order.push(i))))
     expect(order).toEqual([0, 1, 2, 3])
     expect(clock.t).toBe(3000)
+    expect(clock.maxSleeping).toBe(1) // one waiter at a time, no thundering herd
   })
 
   it('honours a higher rate set at runtime', async () => {
@@ -92,7 +101,7 @@ describe('braveProvider 429 retry', () => {
     const d = deps()
     const fetchFn = vi.fn(async () => resp(429))
     await expect(braveProvider('k', { fetchFn, ...d }).search('q')).rejects.toThrow('Brave Search error: 429')
-    expect(fetchFn).toHaveBeenCalledTimes(MAX_429_RETRIES + 1)
+    expect(fetchFn).toHaveBeenCalledTimes(4)
   })
 
   it('does not retry other errors', async () => {
