@@ -23,28 +23,4 @@ services:
       retries: 10
 
 volumes:
-      - mymind-pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d   # creates pgcrypto/pg_trgm/ltree/vector on first boot
-    ports:
-      - "127.0.0.1:5432:5432"   # native app reaches Postgres on loopback (LXC-internal only)
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mymind -d mymind"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  searxng:
-    image: searxng/searxng:latest
-    container_name: mymind-searxng
-    restart: unless-stopped
-    environment:
-      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env}
-    volumes:
-      - ./searxng:/etc/searxng:rw
-    # LAN-published so other homelab services can share it; the native app reaches it at
-    # http://127.0.0.1:8088. Keep LAN-only — do NOT expose to the internet.
-    ports:
-      - "${SEARXNG_PORT:-8088}:8080"
-
-volumes:
   mymind-pgdata:
