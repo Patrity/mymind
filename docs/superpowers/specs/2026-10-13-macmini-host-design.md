@@ -107,3 +107,12 @@ prod ≥ the 2026-10-13 baseline (20/21 → now 22/23 with the new edit cases).
 ## 8. Out of scope
 GPU/local models on the mini, multi-host workers, the optimizer (6b), retiring LXC 114 entirely (after
 the 7-day rollback window, a follow-up).
+
+> **Amendment 2026-10-13 (Task 1 review → Tony decision, option C).** Taint confinement for agent runs is
+> **dropped**: two review rounds showed `sandbox-exec` deny-lists leak through out-of-process services
+> (securityd keychain reads, cfprefsd writes, LaunchServices URL/app opens that carry data past the network
+> deny). A tainted run's shell is unrestricted like a clean one. What remains of taint: it still gates
+> outbound tools (cycle 79b) and feeds the judge (cycle 84); a tainted workspace still taints runs that read
+> it. The `agent.taintConfinement` setting, confined chip and "Re-enable network" flow are removed (D6
+> superseded). `sandbox-exec` is kept **only for eval worlds** (harness isolation), with LaunchServices
+> (`com.apple.coreservices.*`, `com.apple.lsd.*`) denied and realpath-resolved paths.
