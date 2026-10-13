@@ -112,8 +112,9 @@ jobs:
           CUTOVER_DONE: ${{ vars.MYMIND_CUTOVER_DONE }}
         run: |
           # Once prod runs on the mini, the lxc steps below would START the retired units in LXC 114 — a
-          # second worker re-running Tony's jobs and iMessages against the old database. Going back to
-          # LXC is a deliberate rollback: set DEPLOY_TARGET=lxc and delete MYMIND_CUTOVER_DONE first.
+          # second worker re-running Tony's jobs and iMessages against the old database — and NEW code onto
+          # that old database. Never flip back to lxc: the LXC rollback starts the untouched pre-cutover
+          # units by hand with both variables left set (deploy/macmini/CUTOVER.md, "Rollback").
           if [ "$VAR_TARGET" = macmini ] || [ "$CUTOVER_DONE" = true ]; then
             echo "::error title=Cutover done::refusing the lxc runtime (DEPLOY_TARGET=${VAR_TARGET:-unset}, MYMIND_CUTOVER_DONE=${CUTOVER_DONE:-unset})"
             exit 1

@@ -508,7 +508,9 @@ so enabling iMessage after a long gap (or recovering from a long outage) does no
 of old texts one by one. Texts older than that are simply never answered — tell Tony to re-send.
 
 **One-time setup after the deploy:**
-1. **Settings → Bridget → Agent timezone** = `America/Chicago` (cycle 74; prod runs `Etc/UTC`).
+1. **Settings → Bridget → Agent timezone** = `America/Chicago` (cycle 74). Never rely on a host clock's zone:
+   since cycle 86 the mini runs local time (CDT), the `.80` database is UTC, and every Tony-facing time
+   goes through `agent_timezone`.
    Do this before enabling any job.
 2. **Settings → Activity & Alerts:** Resend API key + sender address (email needs both).
 3. **Settings → Channels:** enable iMessage, enter the Server URL + password, add the allowed
