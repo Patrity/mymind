@@ -315,7 +315,7 @@ the `/v1` (Unmute appends it):
 ssh tony@192.168.2.25
 cd ~/unmute
 # In docker-compose.yml, the backend service env:
-#   KYUTAI_LLM_URL=http://<mymind-lan-ip>:3000/api/agent/llm   # homelab prod = http://192.168.2.89:3000/api/agent/llm
+#   KYUTAI_LLM_URL=http://<mymind-lan-ip>:3000/api/agent/llm   # homelab prod = http://192.168.2.35:3000/api/agent/llm (the Mac mini since cycle 86; was LXC 114's .89)
 #   KYUTAI_LLM_MODEL=<any non-empty string; MyMind ignores it and resolves its own reasoning model>
 #   KYUTAI_LLM_API_KEY=<empty or any dummy; the endpoint is keyless, proxy/LAN-restricted>
 # Then restart just the backend:
@@ -489,7 +489,8 @@ dev-only; never set them on the server. `RESEND_FAKE` is inert in a production b
   downloads. Check it from the box:
   `pct exec 114 -- curl -s "http://<mac-lan-ip>:1234/api/v1/server/info?password=<pw>"`.
 - **BlueBubbles → prod:** the Mac must reach the webhook. Use either the LAN URL
-  `http://192.168.2.89:3000/api/channels/bluebubbles/webhook?token=<token>` or the public
+  `http://192.168.2.35:3000/api/channels/bluebubbles/webhook?token=<token>` (the Mac mini; LXC 114's
+  `.89` before cycle 86) or the public
   `https://brain.costanzoclan.com/api/channels/bluebubbles/webhook?token=<token>`. The path is exempt
   from session auth (the token is the credential; a bad token is a 404). The reverse proxy must pass
   it through, including the query string. If the webhook can't get through, the catch-up still

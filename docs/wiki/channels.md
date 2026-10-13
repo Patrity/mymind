@@ -126,7 +126,8 @@ All session-only (`requireSession`; an API token gets 403), except the webhook.
 
 **Network reachability runs both ways.** MyMind must reach BlueBubbles for sends, the catch-up and
 attachment downloads, and BlueBubbles must reach MyMind's webhook. For prod, the webhook URL can be
-the LAN URL `http://192.168.2.89:3000/api/channels/bluebubbles/webhook?token=…` (LXC 114) or the
+the LAN URL `http://192.168.2.35:3000/api/channels/bluebubbles/webhook?token=…` (the Mac mini; LXC
+114's `.89` before cycle 86) or the
 public `https://brain.costanzoclan.com/api/channels/bluebubbles/webhook?token=…`. If the webhook
 cannot get through, the 2-minute catch-up still delivers every message, just late.
 

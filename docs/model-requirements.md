@@ -116,7 +116,7 @@ curl -s http://192.168.2.25:8880/v1/audio/speech \
    `language`, JSON `{text}` back) — unchanged.
 2. **TTS is Breeze's own multipart contract**, not OpenAI JSON. Don't front it with an
    OpenAI-shaped shim; MyMind's client speaks the nine-field form directly.
-3. **Stable base URLs** reachable from the MyMind container (LXC 114, `192.168.2.89`) over the LAN.
+3. **Stable base URLs** reachable from the MyMind host (the Mac mini, `192.168.2.35`, since cycle 86; LXC 114 builds and runs migrations from `192.168.2.89`) over the LAN.
 4. **No fallback.** Breeze is the only TTS engine by design — an outage takes spoken replies down
    until it recovers. Don't stand up a second engine "just in case"; that's the two-engine
    complexity this migration removed.
@@ -135,4 +135,4 @@ AI_TTS_BREEZE_BASE_URL=http://192.168.2.25:8880
 - [ ] `curl` `GET /health` on Breeze returns `200 {"status":"ok"}` (after warmup).
 - [ ] `curl` Breeze `/v1/audio/speech` (multipart) returns a nonzero-length raw PCM stream, and the
       response carries `x-sample-rate`.
-- [ ] Both reachable from `192.168.2.89` (the MyMind container).
+- [ ] Both reachable from `192.168.2.35` (the Mac mini that runs MyMind).
