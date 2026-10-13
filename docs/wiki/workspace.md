@@ -169,7 +169,7 @@ victim whose `docker stop` fails is skipped. If nothing can be evicted the reque
 every workspace lock**, abortable (Stop ends the wait at once), with a deadline of **60 s from the
 request's entry** — then fails with `sandbox capacity busy — N workspaces active`. This exists
 because the per-container limits alone don't bound the *aggregate* on an 8 GB / 2-CPU LXC that also
-runs Postgres, SearXNG and the two app processes.
+runs Postgres and the two app processes.
 
 **Quota.** Soft **5 GB** and **200,000 files** per workspace (`DEFAULT_QUOTA_BYTES`/
 `DEFAULT_QUOTA_INODES`, `packages/core/src/lib/sandbox/quota.ts`). Measured **inside** the sandbox —

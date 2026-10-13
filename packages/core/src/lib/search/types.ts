@@ -19,7 +19,8 @@ export interface SearchProvider {
 }
 
 export interface SearchConfig {
-  provider: 'searxng' | 'brave'
-  searxngUrl: string
+  provider: 'brave'
   braveApiKeyEnc?: string
+  /** Requests per second (setting `search.brave.qps`). */
+  braveQps: number
 }

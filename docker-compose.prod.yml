@@ -1,6 +1,6 @@
-# Production compose for MyMind — db + searxng only.
+# Production compose for MyMind — db only.
 # The APP now runs NATIVELY via systemd (deploy/mymind.service), not as a container.
-#   docker compose -f docker-compose.prod.yml up -d --remove-orphans db searxng
+#   docker compose -f docker-compose.prod.yml up -d --remove-orphans db
 # See docs/DEPLOYMENT.md (Native deploy).
 services:
   db:
@@ -12,6 +12,17 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: mymind
     volumes:
+      - mymind-pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d   # creates pgcrypto/pg_trgm/ltree/vector on first boot
+    ports:
+      - "127.0.0.1:5432:5432"   # native app reaches Postgres on loopback (LXC-internal only)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mymind -d mymind"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
       - mymind-pgdata:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d   # creates pgcrypto/pg_trgm/ltree/vector on first boot
     ports:

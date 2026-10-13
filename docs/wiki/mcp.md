@@ -182,7 +182,7 @@ Each tool carries a `kind` field that controls gating + description copy:
 | `search_tasks(status?, project?, limit?, offset?)` → `{ items, total, hasMore }` (cycle 51) | read | tasks.listTasksSummary + countTasks |
 | `edit_task(id, ...patch)` | create | tasks.updateTask |
 | `quick_capture(text, title?)` | create | documents.createDoc |
-| `web_search(query, count?)` | read | search provider (SearXNG/Brave); untrusted results (cycle 29) |
+| `web_search(query, count?)` | read | Brave search provider (rate-limited); untrusted results (cycle 29) |
 | `web_fetch(url)` | read | fetchAsMarkdown; SSRF-guarded, untrusted content (cycle 29) |
 | `generate_image(prompt, ...)` | create | imagegen/comfy → images.createGeneratedImage (cycle 36) |
 | `edit_image(instruction, source_image_id?, quality?)` | create | Qwen-Image-Edit-2509 instruction editing → images.createGeneratedImage (cycles 37–38; img2img+strength removed) |

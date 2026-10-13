@@ -2,38 +2,29 @@
 <script setup lang="ts">
 const toast = useToast()
 
-const provider = ref<'searxng' | 'brave'>('searxng')
-const searxngUrl = ref('')
 const braveApiKey = ref('')
 const hasBraveKey = ref(false)
+const braveQps = ref(1)
 const saving = ref(false)
 const error = ref('')
 
-const providerItems = [
-  { label: 'SearXNG (self-hosted)', value: 'searxng' },
-  { label: 'Brave Search API', value: 'brave' },
-]
-
 onMounted(async () => {
   const data = await $fetch('/api/settings/search')
-  provider.value = data.provider as 'searxng' | 'brave'
-  searxngUrl.value = data.searxngUrl
   hasBraveKey.value = data.hasBraveKey
+  braveQps.value = data.braveQps
 })
 
 async function save() {
   saving.value = true
   error.value = ''
   try {
-    const body: { provider: string; searxngUrl: string; braveApiKey?: string } = {
-      provider: provider.value,
-      searxngUrl: searxngUrl.value,
-    }
+    const body: { braveQps: number; braveApiKey?: string } = { braveQps: Number(braveQps.value) }
     if (braveApiKey.value.trim()) {
       body.braveApiKey = braveApiKey.value.trim()
     }
     const data = await $fetch('/api/settings/search', { method: 'PUT', body })
     hasBraveKey.value = data.hasBraveKey
+    braveQps.value = data.braveQps
     braveApiKey.value = ''
     toast.add({ title: 'Search config saved', color: 'success' })
   } catch {
@@ -49,34 +40,28 @@ async function save() {
     <div>
       <h2 class="text-base font-semibold text-highlighted">Web Search</h2>
       <p class="text-sm text-muted">
-        Configure the search provider used by Bridget and research tools.
+        Brave Search powers web search for Bridget and research tools.
       </p>
     </div>
 
     <div class="flex flex-col gap-4">
-      <UFormField label="Provider">
-        <USelect
-          v-model="provider"
-          :items="providerItems"
-          value-key="value"
-          class="w-64"
-        />
-      </UFormField>
-
-      <UFormField label="SearXNG URL">
-        <UInput
-          v-model="searxngUrl"
-          placeholder="http://searxng:8080"
-          class="w-full max-w-md"
-        />
-      </UFormField>
-
       <UFormField label="Brave API Key">
         <UInput
           v-model="braveApiKey"
           type="password"
           :placeholder="hasBraveKey ? 'key set — leave blank to keep' : 'not set'"
           class="w-full max-w-md"
+        />
+      </UFormField>
+
+      <UFormField label="Requests per second" description="Rate limit shared by web_search and research_web (burst of 3). Brave's free plan allows 1.">
+        <UInput
+          v-model.number="braveQps"
+          type="number"
+          min="0.1"
+          max="50"
+          step="0.5"
+          class="w-32"
         />
       </UFormField>
     </div>

@@ -543,7 +543,7 @@ The toolbar's full-screen button (Escape to leave) covers the panels with a fixe
 | `create_task` | create | |
 | `edit_task` | destructive | |
 | `quick_capture` | create | Drops note into `/input` |
-| `web_search` | read | SearXNG / Brave; SSRF-guarded (cycle 29). Returns `{results, warning?}` — `warning` set when results are empty AND engines are down (rate-limit/CAPTCHA), so the model reports a backend outage instead of "no results" (cycle 41). SearXNG config (`searxng/settings.yml`): bing/mojeek/qwant enabled + fast engine-suspension recovery (60–300s, defaults were 1h–24h) |
+| `web_search` | read | Brave Search API, rate-limited 1 req/s burst 3 (cycle 86; SearXNG retired). Returns `{results, warning?}` — `warning` is set when no Brave key is configured, so the model reports it instead of "no results". |
 | `web_fetch` | read | Markdown extraction; SSRF-guarded (cycle 29) |
 | `generate_image` | create | ComfyUI + Qwen-Image; saves to gallery (cycle 36) |
 | `edit_image` | create | Qwen-Image-Edit-2509 instruction editing on an existing image; defaults to most-recent generated; result embedded by server (cycles 37–38) |
@@ -618,7 +618,7 @@ Attach **images and files** to a turn (paste / drag-drop / file-picker in the co
 
 ## Deferred (not built this cycle)
 
-- **Cycle B1 (shipped, cycle 29)** — `web_search` + `web_fetch` read-only web research tools on the default toolset; SSRF-guarded; SearXNG bundled (zero-config). See [web-research.md](web-research.md).
+- **Cycle B1 (shipped, cycle 29)** — `web_search` + `web_fetch` read-only web research tools on the default toolset; SSRF-guarded. See [web-research.md](web-research.md).
 - **Cycle B2 (shipped, cycle 30)** — approval-gate harness + constrained `exec` tool (`powerful` profile opt-in, per-command Approve/Deny prompt, persisted allowlist, `setpriv` privilege drop, `/workspace` jail, stripped env). See [agent-exec.md](agent-exec.md).
 - **Cycle B3.1/B3.2 (shipped, cycles 34/35)** — native LXC deploy (systemd) + credentialed self-installing native `exec` (root-in-LXC, always-on encrypted credential injection, allowlist-first gate). See [agent-exec.md](agent-exec.md). B3.3/B4 (artifact/report rendering, SSH to other homelab hosts) remain.
 - Conversation **summarization worker** + **semantic search** (the `summary_embedding` column is reserved; keyword ships now).
@@ -629,4 +629,4 @@ Attach **images and files** to a turn (paste / drag-drop / file-picker in the co
 - **An audio-reactive Persona** (cycle 65): the Persona is **state-driven only** (`idle`/`listening`/`thinking`/`speaking`/`asleep`). `useVoice` still exposes `micAnalyser()`, read by `AgentMicBand` alone. The TTS-playback analyser node stays in the audio signal chain but is **no longer exposed** — its only reader was the retired avatar's jaw envelope.
 - **Subagents inheriting the composer's model override** — `research_web`/`search_brain` always resolve the default reasoning chain. Deliberate cycle-45 scope boundary; explicitly out of scope in cycle 65's spec. See [Subagents](#subagents-cycle-42).
 
-See also: [voice-agent.md](voice-agent.md) (the self-hosted STT/TTS pipeline and the cycle-60 speech pipeline), [ai-providers.md](ai-providers.md) (model registry), [live-reactivity.md](live-reactivity.md), [web-research.md](web-research.md) (`web_search` + `web_fetch` tools, SSRF guard, SearXNG), [agent-exec.md](agent-exec.md) (approval gate + constrained exec, Cycle B2), [workspace.md](workspace.md) (cycle 82: the sandboxed `workspace` toolset + the `admin` toolset `exec` moved into), [workstreams.md](workstreams.md) (cycle 81/82: long-running segmented work with its own workspace).
+See also: [voice-agent.md](voice-agent.md) (the self-hosted STT/TTS pipeline and the cycle-60 speech pipeline), [ai-providers.md](ai-providers.md) (model registry), [live-reactivity.md](live-reactivity.md), [web-research.md](web-research.md) (`web_search` + `web_fetch` tools, SSRF guard, Brave limiter), [agent-exec.md](agent-exec.md) (approval gate + constrained exec, Cycle B2), [workspace.md](workspace.md) (cycle 82: the sandboxed `workspace` toolset + the `admin` toolset `exec` moved into), [workstreams.md](workstreams.md) (cycle 81/82: long-running segmented work with its own workspace).
