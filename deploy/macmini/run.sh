@@ -64,7 +64,7 @@ rotate_log() {
   while IFS= read -r line || [ -n "$line" ]; do
     printf '%s\n' "$line" >&3
     n=$((n + 1))
-    if [ $((n % 100)) -eq 0 ] && [ "$(stat -f %z "$f" 2>/dev/null || stat -c %s "$f")" -gt "$LOG_MAX_BYTES" ]; then
+    if [ $((n % 100)) -eq 0 ] && [ "$(wc -c < "$f" | tr -d ' ')" -gt "$LOG_MAX_BYTES" ]; then
       exec 3>&-
       rm -f "$f.$LOG_KEEP"
       for ((i = LOG_KEEP - 1; i >= 1; i--)); do [ -f "$f.$i" ] && mv "$f.$i" "$f.$((i + 1))"; done

@@ -80,7 +80,8 @@ describe('composePrompt — "About Tony" profile (cycle 76)', () => {
 
 describe('composePrompt SHELL guidance (cycle 86: the workspace is Bridget\'s own Mac)', () => {
   it('describes her own Mac — full machine, LAN + internet, her logins, the workspace as default storage — and no host exec', () => {
-    const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
+    // Pin the host: the wording names the platform from runtime facts, and CI runs on Linux.
+    const p = composePrompt({ host: { hostname: 'bridget.local', platform: 'darwin', user: 'bridget' }, persona: 'p', speak: false, toneLine: 't' })
     const shell = p.slice(p.indexOf('SHELL —'))
     expect(shell).toMatch(/^SHELL — you have your own Mac/)
     expect(shell).toMatch(/`workspace` toolset/)
