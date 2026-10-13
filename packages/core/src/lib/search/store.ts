@@ -58,14 +58,15 @@ export async function saveSearchConfig(input: {
   }
 
   const { braveQps, ...doc } = next // the qps lives in its own settings row
-  const db = useDb()
   const now = new Date()
-  await db.insert(settings)
-    .values({ key: KEY, value: doc, updatedAt: now })
-    .onConflictDoUpdate({ target: settings.key, set: { value: doc, updatedAt: now } })
-  await db.insert(settings)
-    .values({ key: QPS_KEY, value: braveQps, updatedAt: now })
-    .onConflictDoUpdate({ target: settings.key, set: { value: braveQps, updatedAt: now } })
+  await useDb().transaction(async (tx) => {
+    await tx.insert(settings)
+      .values({ key: KEY, value: doc, updatedAt: now })
+      .onConflictDoUpdate({ target: settings.key, set: { value: doc, updatedAt: now } })
+    await tx.insert(settings)
+      .values({ key: QPS_KEY, value: braveQps, updatedAt: now })
+      .onConflictDoUpdate({ target: settings.key, set: { value: braveQps, updatedAt: now } })
+  })
   cache.set(next)
 }
 

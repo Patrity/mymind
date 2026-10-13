@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { TokenBucket, type LimiterClock } from '@mymind/core/lib/search/limiter'
+import { TokenBucket, SearchBusyError, type LimiterClock } from '@mymind/core/lib/search/limiter'
 import { braveProvider, parseRetryAfter } from '@mymind/core/lib/search/providers/brave'
 import { normalizeSearchConfig } from '@mymind/core/lib/search/store'
 
@@ -56,11 +56,59 @@ describe('TokenBucket', () => {
   })
 })
 
+describe('TokenBucket abort + queue bound', () => {
+  it('an aborted waiter never takes a token and frees the queue', async () => {
+    const clock = fakeClock()
+    const b = new TokenBucket(1, 1, clock)
+    await b.acquire()
+    const ac = new AbortController()
+    const aborted = b.acquire(ac.signal)
+    const next = b.acquire()
+    ac.abort()
+    await expect(aborted).rejects.toThrow()
+    await next
+    expect(clock.t).toBe(1000) // `next` got the first refilled token; the aborted waiter consumed none
+    await b.acquire()
+    expect(clock.t).toBe(2000)
+  })
+
+  it('rejects at once for an already-aborted signal', async () => {
+    const b = new TokenBucket(1, 3, fakeClock())
+    const ac = new AbortController(); ac.abort()
+    await expect(b.acquire(ac.signal)).rejects.toThrow()
+    // no token was taken: the full burst is still available
+    const clock = fakeClock(); const b2 = new TokenBucket(1, 3, clock)
+    await expect(b2.acquire(ac.signal)).rejects.toThrow()
+    for (let i = 0; i < 3; i++) await b2.acquire()
+    expect(clock.t).toBe(0)
+  })
+
+  it('fails with SearchBusyError instead of waiting past the max queue wait', async () => {
+    const clock = fakeClock()
+    const b = new TokenBucket(1, 1, clock)
+    await b.acquire()
+    await expect(b.acquire(undefined, 500)).rejects.toBeInstanceOf(SearchBusyError)
+    await expect(b.acquire(undefined, 500)).rejects.toThrow('search busy, try again')
+    expect(clock.t).toBe(0) // failed fast, never slept
+    await b.acquire(undefined, 1500) // within budget still works
+    expect(clock.t).toBe(1000)
+  })
+
+  it('a waiter whose turn would land past the deadline times out behind a slow queue', async () => {
+    const clock = fakeClock()
+    const b = new TokenBucket(0.1, 1, clock) // 10s per token
+    await b.acquire()
+    await b.acquire(undefined, 60_000) // waits 10s
+    await expect(b.acquire(undefined, 5_000)).rejects.toBeInstanceOf(SearchBusyError)
+  })
+})
+
 describe('parseRetryAfter', () => {
   it('parses delta-seconds, HTTP dates, and rejects junk', () => {
     expect(parseRetryAfter('2')).toBe(2000)
     expect(parseRetryAfter('1.5')).toBe(1500)
     expect(parseRetryAfter(new Date(10_000).toUTCString(), 4_000)).toBe(6000)
+    expect(parseRetryAfter(new Date(1_000).toUTCString(), 4_000)).toBe(0) // date in the past
     expect(parseRetryAfter('soon')).toBeNull()
     expect(parseRetryAfter(null)).toBeNull()
   })
@@ -79,7 +127,7 @@ describe('braveProvider 429 retry', () => {
     const r = await braveProvider('k', { fetchFn, ...d }).search('q')
     expect(r.results).toEqual([{ title: 'A', url: 'https://a.com', snippet: 'd' }])
     expect(fetchFn).toHaveBeenCalledTimes(2)
-    expect(d.sleep).toHaveBeenCalledWith(3000)
+    expect(d.sleep).toHaveBeenCalledWith(3000, undefined)
     expect(d.limiter.acquire).toHaveBeenCalledTimes(2)
   })
 
@@ -94,7 +142,7 @@ describe('braveProvider 429 retry', () => {
     const d = deps()
     const fetchFn = vi.fn().mockResolvedValueOnce(resp(429, { 'retry-after': '9999' })).mockResolvedValueOnce(ok)
     await braveProvider('k', { fetchFn, ...d }).search('q')
-    expect(d.sleep).toHaveBeenCalledWith(30_000)
+    expect(d.sleep).toHaveBeenCalledWith(30_000, undefined)
   })
 
   it('gives up after MAX_429_RETRIES and throws', async () => {
@@ -109,6 +157,38 @@ describe('braveProvider 429 retry', () => {
     const fetchFn = vi.fn(async () => resp(500))
     await expect(braveProvider('k', { fetchFn, ...d }).search('q')).rejects.toThrow('Brave Search error: 500')
     expect(fetchFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborted before the call: no token, no fetch', async () => {
+    const ac = new AbortController(); ac.abort()
+    const limiter = new TokenBucket(1, 3, fakeClock())
+    const acquire = vi.spyOn(limiter, 'acquire')
+    const fetchFn = vi.fn()
+    await expect(braveProvider('k', { fetchFn, limiter, sleep: vi.fn() }).search('q', { signal: ac.signal })).rejects.toThrow()
+    expect(fetchFn).not.toHaveBeenCalled()
+    expect(acquire).toHaveBeenCalledWith(ac.signal)
+  })
+
+  it('abort during the Retry-After wait stops at once, with no further fetch', async () => {
+    const ac = new AbortController()
+    const fetchFn = vi.fn(async () => resp(429, { 'retry-after': '20' }))
+    const p = braveProvider('k', { fetchFn, limiter: { acquire: vi.fn(async () => {}) } }).search('q', { signal: ac.signal })
+    const t0 = Date.now()
+    setTimeout(() => ac.abort(), 30)
+    await expect(p).rejects.toThrow()
+    expect(Date.now() - t0).toBeLessThan(2000)
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives up with the 429 once the total deadline would be exceeded', async () => {
+    let t = 0
+    const sleep = vi.fn(async (ms: number) => { t += ms })
+    const fetchFn = vi.fn(async () => resp(429, { 'retry-after': '20' }))
+    await expect(braveProvider('k', { fetchFn, limiter: { acquire: vi.fn(async () => {}) }, sleep, now: () => t, totalDeadlineMs: 45_000 })
+      .search('q')).rejects.toThrow('Brave Search error: 429')
+    // 20s + 20s fit in 45s; a third 20s wait does not
+    expect(sleep).toHaveBeenCalledTimes(2)
+    expect(fetchFn).toHaveBeenCalledTimes(3)
   })
 
   it('returns a warning, with no request, when no key is set', async () => {
