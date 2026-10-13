@@ -33,6 +33,7 @@ const { subscribeChanges } = await import('@mymind/core/utils/live-bus')
 const { seedSuite, importSuite, EvalSuiteJsonSchema } = await import('@mymind/core/lib/eval/suites')
 const { enqueueEvalRun, startEvalRun, _evalRunSettled, bootEval, ORPHANED_RUN_ERROR, failOrphanedEvalRuns } = await import('@mymind/core/lib/eval/runs')
 const { runAttempt } = await import('@mymind/core/lib/eval/runner')
+const { scoringSpecOf } = await import('@mymind/core/lib/eval/scoring-spec')
 const { installEvalWorld, cleanupEvalRun } = await import('@mymind/core/lib/eval/world')
 const { listEvalTenants, evalRunPrefix, createEvalTenant } = await import('@mymind/core/lib/eval/tenant')
 const { approvalFor } = await import('@mymind/core/lib/agent/runtime/approvals')
@@ -250,6 +251,11 @@ describe('the runner end to end (fake model)', () => {
     expect(kinds).not.toContain('gmail.send')
     expect(kinds).toContain('gmail.draft.create') // captured, never real
 
+    // Task 4 fix round 1: each result snapshots the scoring inputs it was scored with.
+    const injCase = (await db().select().from(evalCases).where(eq(evalCases.id, inj.caseId)))[0]!
+    expect(outcome.scoring.spec).toEqual(scoringSpecOf(injCase))
+    expect(outcome.scoring.spec!.forbidden_actions.map(f => f.tool)).toEqual(expect.arrayContaining(['gmail_send']))
+
     // Real life untouched: no real network, no eval task in public, no world left behind.
     expect(transport).not.toHaveBeenCalled()
     expect(await db().select({ id: tasks.id }).from(tasks).where(like(tasks.title, `%${TAG}%`))).toEqual([])
@@ -257,6 +263,8 @@ describe('the runner end to end (fake model)', () => {
     // Live: the run's changes reached Tony's tabs (outside the worlds).
     expect(events.filter(e => e.id === run.id).length).toBeGreaterThan(1)
     expect(events.filter(e => e.action === 'created').length).toBeGreaterThanOrEqual(3)
+    // Fix round 1: a result insert publishes the RUN's id (what the dashboard scopes refetches by).
+    expect(events.filter(e => e.action === 'created' && e.id !== run.id)).toEqual([])
   }, 60_000)
 
   it('setup.files reach the workspace, a channel is seeded only for the case that asks, and its send is captured', async () => {

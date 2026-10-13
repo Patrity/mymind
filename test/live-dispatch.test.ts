@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { dispatchLiveEvent, GRAPH_DEBOUNCE_MS, HOME_DEBOUNCE_MS, REVIEW_DEBOUNCE_MS, WORKSTREAM_LIST_DEBOUNCE_MS } from '../app/utils/live-dispatch'
+import { dispatchLiveEvent, evalQueryTouched, EVAL_DEBOUNCE_MS, GRAPH_DEBOUNCE_MS, HOME_DEBOUNCE_MS, REVIEW_DEBOUNCE_MS, WORKSTREAM_LIST_DEBOUNCE_MS } from '../app/utils/live-dispatch'
 import type { LiveEvent } from '@mymind/core/shared/types/live'
 
 function fakeClient() {
@@ -88,13 +88,6 @@ describe('dispatchLiveEvent', () => {
     const c = fakeClient()
     dispatchLiveEvent(c as never, ev({ resource: 'memoryBackfill', id: 'memory_backfill' }))
     expect(c.calls).toContainEqual([{ queryKey: ['memory-backfill'] }])
-  })
-
-  // Cycle 85: suites, runs and results share the ['eval'] prefix (the /evals pages).
-  it('eval events invalidate the bare ["eval"] prefix', () => {
-    const c = fakeClient()
-    dispatchLiveEvent(c as never, ev({ resource: 'eval', id: 'run-1' }))
-    expect(c.calls).toContainEqual([{ queryKey: ['eval'] }])
   })
 
   // Cycle 76 (Task 7): a pending improvement is a /review card.
@@ -303,5 +296,51 @@ describe('dispatchLiveEvent — workstream list (debounced, cycle 83 final fix w
     expect(lists()).toBe(0)
     vi.advanceTimersByTime(WORKSTREAM_LIST_DEBOUNCE_MS)
     expect(lists()).toBe(1)
+  })
+})
+
+// Cycle 85 fix round 1: eval events are collected and flushed once per EVAL_DEBOUNCE_MS, scoped.
+describe('eval live dispatch (debounced, scoped)', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+  type Call = { queryKey: unknown[]; predicate?: (q: { queryKey: unknown[]; state: { data: unknown } }) => boolean }
+  const evalEv = (id: string): LiveEvent => ({ v: 1, resource: 'eval', action: 'updated', id, at: 0 })
+
+  it('a burst of events is ONE flush after the quiet window, with no dead [eval, id] / [eval, list] keys', () => {
+    const invalidateQueries = vi.fn()
+    const c = { invalidateQueries } as never
+    for (let i = 0; i < 20; i++) { dispatchLiveEvent(c, evalEv('run-1')); vi.advanceTimersByTime(EVAL_DEBOUNCE_MS / 4) }
+    expect(invalidateQueries).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(EVAL_DEBOUNCE_MS)
+    const keys = invalidateQueries.mock.calls.map(x => JSON.stringify((x[0] as Call).queryKey))
+    expect(keys).toEqual([JSON.stringify(['eval', 'suites']), JSON.stringify(['eval', 'suite']), JSON.stringify(['eval'])])
+  })
+
+  it('the scoped flush refetches only the run / attempt / case views whose ids changed', () => {
+    const invalidateQueries = vi.fn()
+    const c = { invalidateQueries } as never
+    dispatchLiveEvent(c, evalEv('run-1'))
+    dispatchLiveEvent(c, evalEv('case-7'))
+    vi.advanceTimersByTime(EVAL_DEBOUNCE_MS)
+    const scoped = invalidateQueries.mock.calls.map(x => x[0] as Call).find(a => a.predicate)!
+    const hit = (queryKey: unknown[], data: unknown = undefined) => scoped.predicate!({ queryKey, state: { data } })
+    expect(hit(['eval', 'run', 'run-1'])).toBe(true)
+    expect(hit(['eval', 'run', 'run-2'])).toBe(false)
+    expect(hit(['eval', 'case', 'case-7'])).toBe(true)
+    expect(hit(['eval', 'attempt', 'res-1'], { run: { id: 'run-9' }, case: { id: 'case-7' } })).toBe(true)
+    expect(hit(['eval', 'attempt', 'res-2'], { run: { id: 'run-9' }, case: { id: 'case-8' } })).toBe(false)
+    // The suite views are refreshed by their own (unscoped) call, never twice by the predicate.
+    expect(hit(['eval', 'suite', 'run-1'])).toBe(false)
+    // The next window starts empty.
+    invalidateQueries.mockClear()
+    dispatchLiveEvent(c, evalEv('run-2'))
+    vi.advanceTimersByTime(EVAL_DEBOUNCE_MS)
+    const next = invalidateQueries.mock.calls.map(x => x[0] as Call).find(a => a.predicate)!
+    expect(next.predicate!({ queryKey: ['eval', 'run', 'run-1'], state: { data: undefined } })).toBe(false)
+  })
+
+  it('evalQueryTouched matches an attempt by its run', () => {
+    expect(evalQueryTouched(['eval', 'attempt', 'r'], { run: { id: 'x' }, case: null }, new Set(['x']))).toBe(true)
+    expect(evalQueryTouched(['eval', 'attempt', 'r'], undefined, new Set(['x']))).toBe(false)
   })
 })

@@ -195,6 +195,35 @@ export async function resolveChain(usage: Usage): Promise<ResolvedModel[]> {
   return resolveChainFrom(await loadConfig(), usage)
 }
 
+/**
+ * Pure (cycle 85 Task 4 fix round 1): the models an EVAL run may be told to run on — every chat-capable
+ * model assigned to `reasoning`, then to `subagents` (deduped, in that order), with their labels.
+ */
+export function evalOverrideModelsFrom(doc: AiConfigDoc): Array<{ id: string; label: string; usage: 'reasoning' | 'subagents' }> {
+  const seen = new Set<string>()
+  const out: Array<{ id: string; label: string; usage: 'reasoning' | 'subagents' }> = []
+  for (const usage of ['reasoning', 'subagents'] as const) {
+    for (const m of chainOf(doc, usage)) {
+      if (m.dim !== null || seen.has(m.modelDefId)) continue
+      seen.add(m.modelDefId)
+      out.push({ id: m.modelDefId, label: m.label, usage })
+    }
+  }
+  return out
+}
+
+/**
+ * Pure (Task 4 fix round 1): an eval run's chat chain under a model override. A reasoning model is
+ * moved to the front (reorderChain); a subagents-only model goes first with the whole reasoning chain
+ * as its failover — so a picked subagents model is really what the run uses. No override → reasoning.
+ */
+export function evalOverrideChainFrom(doc: AiConfigDoc, modelDefId?: string | null): ResolvedModel[] {
+  const reasoning = chainOf(doc, 'reasoning')
+  if (!modelDefId || reasoning.some(m => m.modelDefId === modelDefId)) return reorderChain(reasoning, modelDefId)
+  const sub = chainOf(doc, 'subagents').find(m => m.modelDefId === modelDefId && m.dim === null)
+  return sub ? [sub, ...reasoning] : reasoning
+}
+
 /** Cached: a child workstream's failover chain — see resolveSubagentChainFrom. */
 export async function resolveSubagentModel(label?: string | null): Promise<ResolvedModel[]> {
   return resolveSubagentChainFrom(await loadConfig(), label)

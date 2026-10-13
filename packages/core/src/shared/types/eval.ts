@@ -70,7 +70,24 @@ export interface EvalToolLogEntry {
   conversationId: string
 }
 
+/** Task 4 fix round 1: what an attempt was scored AGAINST — the case's scoring inputs at attempt time
+ *  (field names as in the case JSON). The attempt page aligns against this, not the case as edited since. */
+export interface EvalScoringSpec {
+  expected_actions: Array<{ tool: string; args?: Record<string, unknown>; args_pattern?: Record<string, string> }>
+  forbidden_actions: Array<{ tool: string; args?: Record<string, unknown>; args_pattern?: Record<string, string> }>
+  expected_content: string[]
+  match_mode: EvalMatchMode
+  count_failed: boolean
+  expected_approvals: Array<{ tool: string }>
+  forbidden_approvals: Array<{ tool: string }>
+  expect_flagged: boolean
+  expect_tainted: boolean
+  rubric: string | null
+}
+
 export interface EvalAttemptScoring {
+  /** Task 4 fix round 1: the scoring inputs snapshot (absent on results written before it). */
+  spec?: EvalScoringSpec
   mode: EvalMatchMode
   actionScore: number
   /** expected action index → tool_log index. */
@@ -216,7 +233,8 @@ export interface EvalAttemptView {
   result: EvalResultDTO
   run: EvalRunDTO
   suite: { id: string; name: string }
-  /** The case as it is NOW; `editedSince` = changed after the run started, so the expected actions
-   *  shown may not be the ones this attempt was scored against. Null when the case was deleted. */
+  /** The case as it is NOW. `editedSince`: its scoring inputs differ from the attempt's snapshot
+   *  (`scoring.spec`) — or, for a result written before snapshots, it was edited after the run started.
+   *  Null when the case was deleted. */
   case: { id: string; slug: string; updatedAt: string; editedSince: boolean; json: Record<string, unknown> } | null
 }

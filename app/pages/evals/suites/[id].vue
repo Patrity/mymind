@@ -66,6 +66,21 @@ const runCases = ref<string[]>([])
 const runN = ref<string>('')
 const nOverride = (): number | undefined => (String(runN.value ?? '').trim() ? Number(runN.value) : undefined)
 const runError = ref<string | null>(null)
+// Fix round 1: a 409 names the suite's active run — the dialog links to it.
+const runActiveId = ref<string | null>(null)
+// Fix round 1: model override — reasoning + subagents models by label. reka's select can't hold an
+// empty-string value, so "the default" is a sentinel.
+const DEFAULT_MODEL = '__default__'
+const runModel = ref<string>(DEFAULT_MODEL)
+const { data: evalModels } = useEvalModels()
+const modelItems = computed(() => {
+  const ms = evalModels.value?.models ?? []
+  const head = ms.find(m => m.id === evalModels.value?.defaultId)
+  return [
+    { label: head ? `Default (${head.label})` : 'Default', value: DEFAULT_MODEL },
+    ...ms.map(m => ({ label: `${m.label} · ${m.usage}`, value: m.id }))
+  ]
+})
 const slugItems = computed(() => cases.value.map(c => ({ label: c.enabled ? c.slug : `${c.slug} (disabled)`, value: c.slug })))
 const plannedAttempts = computed(() => {
   const chosen = runCases.value.length ? cases.value.filter(c => runCases.value.includes(c.slug)) : cases.value.filter(c => c.enabled)
@@ -75,22 +90,28 @@ const plannedAttempts = computed(() => {
 function openRun() {
   runCases.value = []
   runN.value = ''
+  runModel.value = DEFAULT_MODEL
   runError.value = null
+  runActiveId.value = null
   runOpen.value = true
 }
 async function startRun() {
   runError.value = null
+  runActiveId.value = null
   const n = nOverride()
   if (n !== undefined && (!Number.isInteger(n) || n < 1 || n > 20)) {
     runError.value = 'Attempts must be a whole number from 1 to 20.'
     return
   }
   try {
-    const run = await runSuite.mutateAsync({ suiteId: id.value, ...(runCases.value.length ? { cases: runCases.value } : {}), ...(n ? { n } : {}) })
+    const model = runModel.value !== DEFAULT_MODEL ? runModel.value : undefined
+    const run = await runSuite.mutateAsync({ suiteId: id.value, ...(runCases.value.length ? { cases: runCases.value } : {}), ...(n ? { n } : {}), ...(model ? { model } : {}) })
     runOpen.value = false
     await navigateTo(`/evals/runs/${run.id}`)
   } catch (e) {
-    runError.value = evalErrorOf(e).message
+    const err = evalErrorOf(e)
+    runError.value = err.message
+    runActiveId.value = err.code === 'run-active' ? err.runId : null
   }
 }
 
@@ -345,15 +366,29 @@ async function exportJson() {
                 data-testid="eval-run-n"
               />
             </UFormField>
+            <UFormField
+              label="Model"
+              help="Runs every attempt on this model first (the reasoning chain stays as failover)."
+            >
+              <USelectMenu
+                v-model="runModel"
+                :items="modelItems"
+                value-key="value"
+                class="w-full"
+                data-testid="eval-run-model"
+              />
+            </UFormField>
             <p class="text-sm text-muted">
               {{ plannedAttempts }} attempt(s) in total.
             </p>
             <UAlert
               v-if="runError"
-              color="error"
+              :color="runActiveId ? 'warning' : 'error'"
               variant="subtle"
               icon="i-lucide-circle-alert"
-              :title="runError"
+              :title="runActiveId ? 'A run of this suite is already going' : runError"
+              :description="runActiveId ? runError : undefined"
+              :actions="runActiveId ? [{ label: 'Open that run', to: `/evals/runs/${runActiveId}`, color: 'neutral', variant: 'subtle' }] : undefined"
               data-testid="eval-run-error"
             />
           </div>

@@ -3,30 +3,36 @@
 import { z } from 'zod'
 import { EvalSetupSchema } from './setup'
 
+/** Task 4 fix round 1: import caps. */
+export const SUITE_CASES_MAX = 500
+export const PROMPT_MAX = 20_000
+export const SPEC_STRING_MAX = 2_000
+export const SPEC_LIST_MAX = 50
+
 export const MATCH_MODES = ['ordered_subset', 'exact', 'subset', 'contains_any'] as const
 
-const regexString = z.string().refine((s) => {
+const regexString = z.string().max(SPEC_STRING_MAX).refine((s) => {
   try { new RegExp(s, 'i'); return true } catch { return false }
 }, { message: 'not a valid regular expression' })
 
 export const EvalActionSpecSchema = z.object({
-  tool: z.string().min(1),
-  args: z.record(z.string(), z.unknown()).optional(),
-  args_pattern: z.record(z.string(), regexString).optional()
+  tool: z.string().min(1).max(200),
+  args: z.record(z.string().max(200), z.unknown()).refine(a => JSON.stringify(a).length <= SPEC_STRING_MAX * 5, { message: `args too large (max ${SPEC_STRING_MAX * 5} chars as JSON)` }).optional(),
+  args_pattern: z.record(z.string().max(200), regexString).optional()
 })
 
-export const EvalApprovalSpecSchema = z.object({ tool: z.string().min(1) })
+export const EvalApprovalSpecSchema = z.object({ tool: z.string().min(1).max(200) })
 
 export const EvalCaseJsonSchema = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/, 'lower-case letters, digits and dashes'),
-  prompt: z.string().min(1),
+  prompt: z.string().min(1).max(PROMPT_MAX),
   surface: z.enum(['chat', 'workstream']).default('chat'),
   setup: EvalSetupSchema.default({}),
-  expected_actions: z.array(EvalActionSpecSchema).default([]),
-  forbidden_actions: z.array(EvalActionSpecSchema).default([]),
-  expected_content: z.array(regexString).default([]),
+  expected_actions: z.array(EvalActionSpecSchema).max(SPEC_LIST_MAX).default([]),
+  forbidden_actions: z.array(EvalActionSpecSchema).max(SPEC_LIST_MAX).default([]),
+  expected_content: z.array(regexString).max(SPEC_LIST_MAX).default([]),
   match_mode: z.enum(MATCH_MODES).default('ordered_subset'),
-  rubric: z.string().min(1).nullable().default(null),
+  rubric: z.string().min(1).max(PROMPT_MAX).nullable().default(null),
   n_runs: z.number().int().min(1).max(20).default(3),
   max_steps: z.number().int().min(1).max(200).default(40),
   holdout: z.boolean().default(false),
@@ -36,8 +42,8 @@ export const EvalCaseJsonSchema = z.object({
   expect_flagged: z.boolean().default(false),
   expect_tainted: z.boolean().default(false),
   /** Fix round 1 (S2): approval cards the scripted approver must / must not have been asked for. */
-  expected_approvals: z.array(EvalApprovalSpecSchema).default([]),
-  forbidden_approvals: z.array(EvalApprovalSpecSchema).default([]),
+  expected_approvals: z.array(EvalApprovalSpecSchema).max(SPEC_LIST_MAX).default([]),
+  forbidden_approvals: z.array(EvalApprovalSpecSchema).max(SPEC_LIST_MAX).default([]),
   /** Fix round 1 (M3): denied / errored calls satisfy expected actions only with this set. */
   count_failed: z.boolean().default(false)
 })
@@ -45,8 +51,8 @@ export const EvalCaseJsonSchema = z.object({
 export const EvalSuiteJsonSchema = z.object({
   version: z.literal(1).default(1),
   name: z.string().min(1).max(120),
-  description: z.string().default(''),
-  cases: z.array(EvalCaseJsonSchema)
+  description: z.string().max(PROMPT_MAX).default(''),
+  cases: z.array(EvalCaseJsonSchema).max(SUITE_CASES_MAX)
 }).superRefine((s, ctx) => {
   const seen = new Set<string>()
   s.cases.forEach((c, i) => {

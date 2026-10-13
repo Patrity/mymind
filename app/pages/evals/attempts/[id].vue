@@ -8,7 +8,7 @@
  * plain text.
  */
 import { MessageResponse } from '@/components/ai-elements/message'
-import type { EvalAttemptScoring } from '@mymind/core/shared/types/eval'
+import type { EvalAttemptScoring, EvalScoringSpec } from '@mymind/core/shared/types/eval'
 import { score, specLabel, type ActionSpecLike } from '~/lib/evals/display'
 import { formatDuration } from '~/lib/workstreams/display'
 
@@ -30,6 +30,10 @@ const caseJson = computed(() => (data.value?.case?.json ?? null) as null | {
   expected_content: string[]; expect_flagged: boolean; expect_tainted: boolean; count_failed: boolean
   expected_approvals: Array<{ tool: string }>; forbidden_approvals: Array<{ tool: string }>; match_mode: string
 })
+// Fix round 1: align against what the attempt was SCORED with (its snapshot); a result written before
+// snapshots falls back to the case as it is now (the edited alert says so).
+const spec = computed<EvalScoringSpec | null>(() => scoring.value?.spec ?? (caseJson.value as EvalScoringSpec | null))
+const fromSnapshot = computed(() => !!scoring.value?.spec)
 const flaggedCalls = computed(() => (result.value?.toolLog ?? []).filter(e => e.flagged && !e.unverified).length)
 
 // Why there is no verdict — from what the attempt was scored with, not the case as it is now (a rubric
@@ -120,8 +124,10 @@ const detail = (d: Record<string, unknown>) => JSON.stringify(d, null, 2)
           color="warning"
           variant="subtle"
           icon="i-lucide-triangle-alert"
-          title="This case was edited after the run"
-          description="The expected actions shown are the case as it is now, not necessarily the ones this attempt was scored against."
+          :title="fromSnapshot ? 'This case\'s scoring has changed since this attempt' : 'This case was edited after the run'"
+          :description="fromSnapshot
+            ? 'Shown against the expected / forbidden actions and checks it was scored with — the case now scores differently.'
+            : 'This attempt predates scoring snapshots: the expected actions shown are the case as it is now, not necessarily the ones it was scored against.'"
           data-testid="eval-attempt-edited"
         />
 
@@ -144,22 +150,22 @@ const detail = (d: Record<string, unknown>) => JSON.stringify(d, null, 2)
               <span
                 v-if="scoring"
                 class="text-xs text-muted"
-              >{{ scoring.mode }} · action score {{ score(scoring.actionScore) }}<template v-if="caseJson?.count_failed"> · failed calls count</template></span>
+              >{{ scoring.mode }} · action score {{ score(scoring.actionScore) }}<template v-if="spec?.count_failed"> · failed calls count</template></span>
             </div>
           </template>
           <EvalsToolLogAlignment
-            :expected="caseJson?.expected_actions ?? []"
-            :forbidden-specs="caseJson?.forbidden_actions ?? []"
+            :expected="spec?.expected_actions ?? []"
+            :forbidden-specs="spec?.forbidden_actions ?? []"
             :tool-log="result.toolLog"
             :scoring="scoring"
-            :count-failed="!!caseJson?.count_failed"
+            :count-failed="!!spec?.count_failed"
           />
           <p
-            v-if="caseJson?.forbidden_actions.length"
+            v-if="spec?.forbidden_actions.length"
             class="mt-3 text-xs text-muted"
           >
             Forbidden: <code
-              v-for="(f, k) in caseJson.forbidden_actions"
+              v-for="(f, k) in spec.forbidden_actions"
               :key="k"
               class="me-2"
             >{{ specLabel(f) }}</code>
@@ -291,10 +297,10 @@ const detail = (d: Record<string, unknown>) => JSON.stringify(d, null, 2)
                 <span class="text-xs text-muted">confidence {{ judge.confidence.toFixed(2) }} · {{ judge.model ?? 'no model' }} · {{ (judge.latencyMs / 1000).toFixed(1) }}s</span>
               </div>
               <p
-                v-if="caseJson?.rubric"
+                v-if="spec?.rubric"
                 class="mt-2 text-xs text-muted whitespace-pre-wrap"
               >
-                Rubric: {{ caseJson.rubric }}
+                Rubric: {{ spec.rubric }}
               </p>
               <ul
                 v-if="judge.gaps.length"

@@ -30,6 +30,7 @@ import { loadConfig } from '../ai/registry/store'
 import { installEvalWorld, cleanupEvalRun, type EvalWorld } from './world'
 import { approvalChecks, contentMatches, forbiddenHits, matchActions, type EvalToolCall, type MatchMode } from './matcher'
 import { scoreAttempt, summarizeRun, CASE_PASS_MEAN, type CaseForSummary } from './score'
+import { scoringSpecOf } from './scoring-spec'
 import { evalPool, evalShareOf, type EvalPool } from './pool'
 import { casePromptHash, gatewayAllow, gatewayOriginsFrom, gitSha, modelLabel, primaryModelFrom, runPromptHash, toolsHash } from './provenance'
 import type { EvalSetup } from './setup'
@@ -459,6 +460,7 @@ export async function runAttempt(c: EvalCaseRow, attempt: number, x: AttemptCont
   const outcomeMetV = c.rubric ? (judge ? outcomeMet({ verdict: judge.verdict, confidence: judge.confidence, error: judge.error }) : false) : null
   const score = scoreAttempt({ actionScore: match.score, contentPass: content.pass, checksPass: checks.pass, forbidden: forbiddenHit, outcomeMet: outcomeMetV, failed })
   const scoring: EvalAttemptScoring = {
+    spec: scoringSpecOf(c),
     mode, actionScore: match.score, matched: match.matched, unmatched: match.unmatched, extra: match.extra,
     forbidden, content, outcomeMet: outcomeMetV, checks, failed
   }
@@ -505,12 +507,14 @@ export async function summarizeStored(runId: string, o: { durationMs: number; pl
 }
 
 async function writeResult(runId: string, r: AttemptRecord): Promise<void> {
-  const [row] = await useDb().insert(evalResults).values({
+  await useDb().insert(evalResults).values({
     runId, caseId: r.caseId, attempt: r.attempt, score: r.score, passed: r.passed,
     toolLog: r.toolLog, finalText: r.finalText, outcome: r.outcome as unknown as Record<string, unknown>,
     capturedWrites: r.captured, error: r.failed, durationMs: r.durationMs, tokens: r.tokens
-  }).returning({ id: evalResults.id })
-  publishChange({ resource: 'eval', action: 'created', id: row!.id })
+  })
+  // Fix round 1 (Task 4): the RUN's id — what changed for any page is the run (its results list);
+  // the dashboard scopes refetches by the ids it shows, and a brand-new result is shown by no page yet.
+  publishChange({ resource: 'eval', action: 'created', id: runId })
 }
 
 /**

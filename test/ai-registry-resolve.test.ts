@@ -1,6 +1,6 @@
 // test/ai-registry-resolve.test.ts
 import { describe, it, expect, beforeAll } from 'vitest'
-import { resolveChainFrom, withFailoverOver, languageModel, reorderChain } from '@mymind/core/lib/ai/registry/resolve'
+import { resolveChainFrom, withFailoverOver, languageModel, reorderChain, evalOverrideChainFrom, evalOverrideModelsFrom } from '@mymind/core/lib/ai/registry/resolve'
 import { AiNotConfiguredError, AiAllFailedError } from '@mymind/core/lib/ai/registry/errors'
 import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 import { emptyDoc, EMBEDDING_DIM, type AiConfigDoc, type ResolvedModel } from '@mymind/core/lib/ai/registry/types'
@@ -111,5 +111,30 @@ describe('withFailoverOver', () => {
       { label: 'A', error: '[POST] 400 Bad Request', status: 400 },
       { label: 'B', error: 'fetch failed' }
     ])
+  })
+})
+
+// Cycle 85 Task 4 fix round 1: an eval run's model override (the /evals Run dialog's picker).
+describe('eval model override', () => {
+  const withSubs = (): AiConfigDoc => {
+    const d = build()
+    d.models.push({ id: 's1', providerId: 'p2', modelId: 'haiku', label: 'Haiku', dim: null, contextWindow: null })
+    d.assignments = { ...d.assignments, subagents: ['s1', 'm2'] }
+    return d
+  }
+  it('lists reasoning then subagents models, deduped, with labels', () => {
+    expect(evalOverrideModelsFrom(withSubs())).toEqual([
+      { id: 'm1', label: 'Qwen', usage: 'reasoning' },
+      { id: 'm2', label: 'Claude', usage: 'reasoning' },
+      { id: 's1', label: 'Haiku', usage: 'subagents' }
+    ])
+  })
+  it('a reasoning override is reordered within reasoning; a subagents-only one leads the whole reasoning chain', () => {
+    expect(evalOverrideChainFrom(withSubs(), 'm2').map(m => m.modelDefId)).toEqual(['m2', 'm1'])
+    expect(evalOverrideChainFrom(withSubs(), 's1').map(m => m.modelDefId)).toEqual(['s1', 'm1', 'm2'])
+    expect(evalOverrideChainFrom(withSubs(), null).map(m => m.modelDefId)).toEqual(['m1', 'm2'])
+    // Unknown / embedding ids never lead.
+    expect(evalOverrideChainFrom(withSubs(), 'e1').map(m => m.modelDefId)).toEqual(['m1', 'm2'])
+    expect(evalOverrideChainFrom(withSubs(), 'nope').map(m => m.modelDefId)).toEqual(['m1', 'm2'])
   })
 })

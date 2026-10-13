@@ -1,6 +1,8 @@
 // server/lib/agent/model.ts
 import type { LanguageModel } from 'ai'
-import { resolveChain, reorderChain, languageModel } from '../ai/registry/resolve'
+import { resolveChain, reorderChain, languageModel, evalOverrideChainFrom } from '../ai/registry/resolve'
+import { loadConfig } from '../ai/registry/store'
+import { currentEvalScope } from '../eval/context'
 
 /**
  * Ordered AI SDK language models for the reasoning role, each paired with the registry
@@ -11,7 +13,11 @@ import { resolveChain, reorderChain, languageModel } from '../ai/registry/resolv
  * entry actually answered (failover-aware — see run.ts's `chosenId`).
  */
 export async function reasoningChain(modelDefId?: string | null): Promise<{ model: LanguageModel; modelDefId: string }[]> {
-  const chain = reorderChain(await resolveChain('reasoning'), modelDefId)
+  // Cycle 85 Task 4 fix round 1: inside an eval world an override may also be a subagents model
+  // (evalOverrideChainFrom); everywhere else it only reorders within `reasoning`.
+  const evalChain = currentEvalScope() && modelDefId ? evalOverrideChainFrom(await loadConfig(), modelDefId) : []
+  // (An empty eval chain = nothing configured: resolveChain throws AiNotConfiguredError as always.)
+  const chain = evalChain.length ? evalChain : reorderChain(await resolveChain('reasoning'), modelDefId)
   return chain.map(m => ({ model: languageModel(m), modelDefId: m.modelDefId }))
 }
 

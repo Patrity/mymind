@@ -3,13 +3,14 @@
 // Read-only; the writes are the run lifecycle (runs.ts) and the case store (suites.ts).
 import { asc, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
-import { evalCases, evalResults, evalRuns, evalSuites, type EvalResultRow } from '../../db/schema'
+import { evalCases, evalResults, evalRuns, evalSuites, type EvalCaseRow, type EvalResultRow } from '../../db/schema'
 import type {
   EvalAttemptOutcome, EvalAttemptView, EvalCaseListItem, EvalCaseView, EvalMatchMode, EvalResultLite, EvalRunSummary,
   EvalRunView, EvalSuiteDetail, EvalSuiteOverview, EvalTrendPoint
 } from '../../shared/types/eval'
 import { evalResultDTO, evalRunDTO, listEvalRuns } from './runs'
 import { caseJsonOf } from './suites'
+import { sameScoringSpec, scoringSpecOf } from './scoring-spec'
 
 /** How many finished runs a suite's sparkline shows. */
 export const TREND_RUNS = 20
@@ -99,6 +100,13 @@ export async function getRunView(runId: string): Promise<EvalRunView | null> {
   }
 }
 
+/** Fix round 1: with a snapshot, "edited" means the scoring inputs differ (a prompt or n_runs edit
+ *  doesn't count); a result written before snapshots falls back to "updated after the run started". */
+function editedSince(r: EvalResultRow, c: EvalCaseRow, runStartedAt: Date): boolean {
+  const spec = (r.outcome as EvalAttemptOutcome | null)?.scoring?.spec
+  return spec ? !sameScoringSpec(spec, scoringSpecOf(c)) : c.updatedAt.getTime() > runStartedAt.getTime()
+}
+
 export async function getAttemptView(resultId: string): Promise<EvalAttemptView | null> {
   const db = useDb()
   const [r] = await db.select().from(evalResults).where(eq(evalResults.id, resultId))
@@ -112,7 +120,15 @@ export async function getAttemptView(resultId: string): Promise<EvalAttemptView 
     run: evalRunDTO(run.r),
     suite: { id: run.r.suiteId, name: run.suiteName },
     case: c
-      ? { id: c.id, slug: c.slug, updatedAt: c.updatedAt.toISOString(), editedSince: c.updatedAt.getTime() > run.r.startedAt.getTime(), json: caseJsonOf(c) as Record<string, unknown> }
+      ? { id: c.id, slug: c.slug, updatedAt: c.updatedAt.toISOString(), editedSince: editedSince(r, c, run.r.startedAt), json: caseJsonOf(c) as Record<string, unknown> }
       : null
   }
+}
+
+/** Task 4 fix round 1: the Run dialog's model picker — every reasoning and subagents model (labels),
+ *  and which one a run uses without an override (the reasoning head). */
+export async function listEvalModels(): Promise<{ defaultId: string | null; models: Array<{ id: string; label: string; usage: 'reasoning' | 'subagents' }> }> {
+  const [{ loadConfig }, { evalOverrideModelsFrom }] = await Promise.all([import('../ai/registry/store'), import('../ai/registry/resolve')])
+  const models = evalOverrideModelsFrom(await loadConfig())
+  return { defaultId: models.find(m => m.usage === 'reasoning')?.id ?? null, models }
 }

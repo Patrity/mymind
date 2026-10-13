@@ -59,6 +59,38 @@ const debouncedInvalidateWorkstreamList = useDebounceFn(
   WORKSTREAM_LIST_DEBOUNCE_MS
 )
 
+// Cycle 85 fix round 1: an eval run publishes `eval` twice per attempt (the result, then the summary
+// rewrite) under its own pool concurrency — a long run is a burst. So eval events are collected and
+// flushed once per EVAL_DEBOUNCE_MS (trailing), and scoped: the suites list and the suite pages (they
+// roll every run and case up) refresh on each flush; a run / attempt / case page only when an id it
+// shows changed. Event ids: a suite's (import, seed), a run's (enqueue, claim, every summary rewrite,
+// a result insert, cancel, orphan fail) or a case's (save, toggle).
+export const EVAL_DEBOUNCE_MS = 700
+const pendingEvalIds = new Set<string>()
+
+/** Whether a mounted ['eval', kind, id] query shows something whose id changed (the suite views are
+ *  refreshed on every flush and are not decided here). */
+export function evalQueryTouched(queryKey: readonly unknown[], data: unknown, ids: ReadonlySet<string>): boolean {
+  const [, kind, id] = queryKey
+  if (typeof id === 'string' && ids.has(id)) return true
+  if (kind === 'attempt') {
+    const d = data as { run?: { id?: string }; case?: { id?: string } | null } | undefined
+    return !!((d?.run?.id && ids.has(d.run.id)) || (d?.case?.id && ids.has(d.case.id)))
+  }
+  return false
+}
+
+const debouncedFlushEval = useDebounceFn((c: Invalidator) => {
+  const ids = new Set(pendingEvalIds)
+  pendingEvalIds.clear()
+  c.invalidateQueries({ queryKey: ['eval', 'suites'] })
+  c.invalidateQueries({ queryKey: ['eval', 'suite'] })
+  c.invalidateQueries({
+    queryKey: ['eval'],
+    predicate: q => q.queryKey[1] !== 'suites' && q.queryKey[1] !== 'suite' && evalQueryTouched(q.queryKey, q.state.data, ids)
+  })
+}, EVAL_DEBOUNCE_MS)
+
 /** Resources whose default `[resource, 'list']` invalidation is replaced (debounced). */
 const LIST_OVERRIDES: Partial<Record<ResourceName, (c: Invalidator) => void>> = {
   workstream: (c) => { void debouncedInvalidateWorkstreamList(c) }
@@ -114,14 +146,13 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   // Cycle 77: the backfill switch flipped, or a backfill run finished — the Settings card reads
   // its progress under ['memory-backfill'] (one singleton, so the event id carries no meaning).
   memoryBackfill: (c) => c.invalidateQueries({ queryKey: ['memory-backfill'] }),
-  // Cycle 85: suites, cases, runs and results all live under ['eval', …] (the /evals pages); an
-  // event's id is a suite's, a run's or a result's, so the whole prefix refreshes.
-  eval: (c) => c.invalidateQueries({ queryKey: ['eval'] })
 }
 
 export function dispatchLiveEvent(client: Invalidator, e: LiveEvent): void {
   // Cycle 81: the server's bus listener reconnected and may have missed changes — refetch all.
   if (e.resource === 'resync') { client.invalidateQueries(); return }
+  // Cycle 85 fix round 1: eval has no [resource, id] / [resource, 'list'] keys — debounced + scoped.
+  if (e.resource === 'eval') { pendingEvalIds.add(e.id); void debouncedFlushEval(client); return }
   client.invalidateQueries({ queryKey: [e.resource, e.id] })
   const list = LIST_OVERRIDES[e.resource]
   if (list) list(client)

@@ -13,6 +13,8 @@ const { evalSuites, evalCases, evalRuns, evalResults } = await import('@mymind/c
 const { setBusNs } = await import('@mymind/core/lib/bus/ns')
 const { subscribeChanges } = await import('@mymind/core/utils/live-bus')
 const { importSuite, updateCase, setCaseEnabled, EvalCaseConflictError } = await import('@mymind/core/lib/eval/suites')
+const { enqueueEvalRun, cancelEvalRun, EvalRunConflictError } = await import('@mymind/core/lib/eval/runs')
+const { scoringSpecOf } = await import('@mymind/core/lib/eval/scoring-spec')
 const { listSuiteOverviews, getSuiteDetail, getRunView, getAttemptView, getCaseView } = await import('@mymind/core/lib/eval/dashboard')
 type LiveEvent = import('@mymind/core/shared/types/live').LiveEvent
 
@@ -126,5 +128,46 @@ describe('case writes', () => {
     expect(await setCaseEnabled(caseIds.gamma!, true)).toMatchObject({ enabled: true })
     expect(events).toEqual([expect.objectContaining({ resource: 'eval', id: caseIds.gamma })])
     expect(await setCaseEnabled(randomUUID(), true)).toBeNull()
+  })
+})
+
+describe('fix round 1: one queued/running run per suite', () => {
+  const noSend = async () => undefined
+  it('concurrent starts: exactly one is queued, the others get EvalRunConflictError naming it; after a cancel a new one starts', async () => {
+    const tries = await Promise.allSettled(Array.from({ length: 5 }, () => enqueueEvalRun(suiteId, {}, { send: noSend })))
+    const ok = tries.filter(t => t.status === 'fulfilled') as Array<PromiseFulfilledResult<{ id: string }>>
+    const refused = tries.filter(t => t.status === 'rejected') as PromiseRejectedResult[]
+    expect(ok).toHaveLength(1)
+    expect(refused).toHaveLength(4)
+    for (const r of refused) {
+      expect(r.reason).toBeInstanceOf(EvalRunConflictError)
+      expect(r.reason).toMatchObject({ runId: ok[0]!.value.id, status: 'queued', message: expect.stringMatching(/already has a queued run/) })
+    }
+    // Running blocks too.
+    await useDb().update(evalRuns).set({ status: 'running' }).where(eq(evalRuns.id, ok[0]!.value.id))
+    await expect(enqueueEvalRun(suiteId, {}, { send: noSend })).rejects.toMatchObject({ status: 'running' })
+    expect(await cancelEvalRun(ok[0]!.value.id)).toBe(true)
+    const next = await enqueueEvalRun(suiteId, {}, { send: noSend })
+    expect(next.status).toBe('queued')
+    expect((await useDb().select({ id: evalRuns.id }).from(evalRuns).where(eq(evalRuns.suiteId, suiteId)))).toHaveLength(2)
+    await useDb().delete(evalRuns).where(eq(evalRuns.suiteId, suiteId))
+  })
+})
+
+describe('fix round 1: the scoring snapshot decides "edited since"', () => {
+  it('a prompt edit leaves it false; a change to the expected actions makes it true; key order never matters', async () => {
+    const [run] = await useDb().insert(evalRuns).values({ suiteId, status: 'done', startedAt: new Date(Date.now() - 60_000) }).returning()
+    const [row] = await useDb().select().from(evalCases).where(eq(evalCases.id, caseIds.alpha!))
+    const spec = scoringSpecOf(row!)
+    // Stored with its keys in another order (jsonb reorders anyway) — still the same spec.
+    const reordered = { ...spec, expected_actions: spec.expected_actions.map(a => Object.fromEntries(Object.entries(a).reverse())) }
+    const outcome = { judge: null, approvals: [], scoring: { spec: reordered, mode: 'ordered_subset', actionScore: 1, matched: [], unmatched: [], extra: [], forbidden: [], content: { pass: true, missing: [] }, outcomeMet: null, checks: { flagged: null, tainted: null, taintSources: [], approvalsMissing: [], forbiddenApprovals: [], pass: true }, failed: null } }
+    const [res] = await useDb().insert(evalResults).values({ runId: run!.id, caseId: caseIds.alpha!, attempt: 1, score: 1, passed: true, outcome }).returning()
+    const now = (await getCaseView(caseIds.alpha!))!.json
+    await updateCase(caseIds.alpha!, { ...now, prompt: 'a new prompt' }) // updated after the run, scoring untouched
+    expect((await getAttemptView(res!.id))!.case).toMatchObject({ editedSince: false })
+    await updateCase(caseIds.alpha!, { ...now, prompt: 'a new prompt', expected_actions: [{ tool: 'list_tasks' }] })
+    expect((await getAttemptView(res!.id))!.case).toMatchObject({ editedSince: true })
+    await useDb().delete(evalRuns).where(eq(evalRuns.suiteId, suiteId))
   })
 })

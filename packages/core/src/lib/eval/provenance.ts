@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { loadConfig } from '../ai/registry/store'
-import { reorderChain, resolveChainFrom, resolveJudgeChainFrom, resolveSubagentChainFrom } from '../ai/registry/resolve'
+import { evalOverrideChainFrom, resolveChainFrom, resolveJudgeChainFrom, resolveSubagentChainFrom } from '../ai/registry/resolve'
 import type { AiConfigDoc, ResolvedModel } from '../ai/registry/types'
 
 export const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex')
@@ -81,9 +81,10 @@ function safe(f: () => ResolvedModel[]): ResolvedModel[] {
   try { return f() } catch { return [] }
 }
 
-/** The model a run's chat turns try first: the override when it is a reasoning model, else the head. */
+/** The model a run's chat turns try first: the override (a reasoning or subagents model — Task 4 fix
+ *  round 1, the same rule as the run's chain), else the reasoning head. */
 export function primaryModelFrom(doc: AiConfigDoc, override?: string | null): ResolvedModel | null {
-  const chain = reorderChain(safe(() => resolveChainFrom(doc, 'reasoning')), override)
+  const chain = safe(() => evalOverrideChainFrom(doc, override))
   return chain[0] ?? null
 }
 

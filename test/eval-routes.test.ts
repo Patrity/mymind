@@ -8,10 +8,17 @@ import { z } from 'zod'
 vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
 vi.stubGlobal('createError', (o: { statusCode: number, statusMessage?: string, data?: unknown }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
 vi.stubGlobal('readBody', async (e: { body: unknown }) => e.body)
+// readJsonBody reads the raw text (the size cap needs it): `raw` wins, else the JSON of `body`.
+vi.stubGlobal('readRawBody', async (e: { body: unknown; raw?: string }) => e.raw ?? (e.body === undefined ? undefined : JSON.stringify(e.body)))
+vi.stubGlobal('getHeader', (e: { headers?: Record<string, string> }, k: string) => e.headers?.[k])
 vi.stubGlobal('getRouterParam', (e: { params?: Record<string, string> }, k: string) => e.params?.[k])
 
 class EvalRunError extends Error { override name = 'EvalRunError' }
 class EvalCaseConflictError extends Error { override name = 'EvalCaseConflictError' }
+class EvalRunConflictError extends EvalRunError {
+  override name = 'EvalRunConflictError'
+  constructor(m: string, readonly runId: string) { super(m) }
+}
 const enqueueEvalRun = vi.fn()
 const cancelEvalRun = vi.fn()
 const importSuite = vi.fn()
@@ -23,9 +30,10 @@ const getRunView = vi.fn()
 const getAttemptView = vi.fn()
 const getSuiteDetail = vi.fn()
 const listSuiteOverviews = vi.fn()
-vi.mock('@mymind/core/lib/eval/runs', () => ({ EvalRunError, enqueueEvalRun, cancelEvalRun, evalRunDTO: (r: unknown) => ({ dto: r }) }))
+const listEvalModels = vi.fn()
+vi.mock('@mymind/core/lib/eval/runs', () => ({ EvalRunError, EvalRunConflictError, enqueueEvalRun, cancelEvalRun, evalRunDTO: (r: unknown) => ({ dto: r }) }))
 vi.mock('@mymind/core/lib/eval/suites', () => ({ EvalCaseConflictError, importSuite, updateCase, setCaseEnabled, exportSuite }))
-vi.mock('@mymind/core/lib/eval/dashboard', () => ({ getCaseView, getRunView, getAttemptView, getSuiteDetail, listSuiteOverviews }))
+vi.mock('@mymind/core/lib/eval/dashboard', () => ({ getCaseView, getRunView, getAttemptView, getSuiteDetail, listSuiteOverviews, listEvalModels }))
 
 type H = (e: unknown) => Promise<unknown>
 const load = async (p: string) => (await import(p)).default as H
@@ -40,11 +48,12 @@ const suitesGet = await load('../server/api/evals/suites/index.get')
 const suiteGet = await load('../server/api/evals/suites/[id]/index.get')
 const exportGet = await load('../server/api/evals/suites/[id]/export.get')
 const caseGet = await load('../server/api/evals/cases/[id].get')
+const modelsGet = await load('../server/api/evals/models.get')
 
 const ID = '0b6f3c1e-5d2a-4f7b-9c8e-1a2b3c4d5e6f'
 const SESSION = { type: 'session', userId: 'u1' }
 const TOKEN = { type: 'api-token', tokenId: 't1' }
-const evt = (client: unknown, body: unknown = {}, id: string = ID) => ({ context: { client }, body, params: { id } })
+const evt = (client: unknown, body: unknown = {}, id: string = ID, extra: { raw?: string; headers?: Record<string, string> } = {}) => ({ context: { client }, body, params: { id }, ...extra })
 
 beforeEach(() => { vi.clearAllMocks() })
 
@@ -97,7 +106,8 @@ describe('reads take a token too', () => {
     getAttemptView.mockResolvedValue({ result: {} })
     exportSuite.mockResolvedValue({ name: 's' })
     getCaseView.mockResolvedValue({ id: ID })
-    for (const h of [suitesGet, suiteGet, runGet, attemptGet, exportGet, caseGet]) await expect(h(evt(TOKEN))).resolves.toBeTruthy()
+    listEvalModels.mockResolvedValue({ defaultId: 'm1', models: [] })
+    for (const h of [suitesGet, suiteGet, runGet, attemptGet, exportGet, caseGet, modelsGet]) await expect(h(evt(TOKEN))).resolves.toBeTruthy()
   })
 
   it('a missing row is 404, a malformed id is 404 without touching the store', async () => {
@@ -139,5 +149,37 @@ describe('refusals become 4xx the editor can show', () => {
     expect(setCaseEnabled).not.toHaveBeenCalled()
     setCaseEnabled.mockResolvedValue(null)
     await expect(casePatch(evt(SESSION, { enabled: true }))).rejects.toMatchObject({ statusCode: 404 })
+  })
+})
+
+describe('fix round 1: one active run per suite, size caps, malformed JSON', () => {
+  it('a second start while one is active is a 409 carrying the active run id', async () => {
+    enqueueEvalRun.mockRejectedValue(new EvalRunConflictError('this suite already has a running run — wait for it to finish or cancel it first', 'run-active-1'))
+    await expect(runsPost(evt(SESSION, {}))).rejects.toMatchObject({ statusCode: 409, data: { code: 'run-active', runId: 'run-active-1', message: expect.stringMatching(/already has a running run/) } })
+  })
+
+  it('an import over 2 MB is refused with 413 — by its declared length before reading, and by its real size', async () => {
+    await expect(importPost(evt(SESSION, undefined, ID, { headers: { 'content-length': String(2 * 1024 * 1024 + 1) }, raw: '{}' }))).rejects.toMatchObject({ statusCode: 413 })
+    const big = JSON.stringify({ suite: { name: 's', description: 'x'.repeat(2 * 1024 * 1024) } })
+    await expect(importPost(evt(SESSION, undefined, ID, { raw: big }))).rejects.toMatchObject({ statusCode: 413 })
+    expect(importSuite).not.toHaveBeenCalled()
+  })
+
+  it('malformed JSON is a 400 on every write that reads a body, never a 500', async () => {
+    for (const h of [importPost, casePut, casePatch, runsPost]) {
+      await expect(h(evt(SESSION, undefined, ID, { raw: '{"suite": ' }))).rejects.toMatchObject({ statusCode: 400, data: { code: 'invalid-json' } })
+    }
+    expect(importSuite).not.toHaveBeenCalled()
+    expect(updateCase).not.toHaveBeenCalled()
+    expect(enqueueEvalRun).not.toHaveBeenCalled()
+  })
+
+  it('the run and toggle routes cap their (small) bodies at 64 KB', async () => {
+    await expect(runsPost(evt(SESSION, undefined, ID, { headers: { 'content-length': String(64 * 1024 + 1) } }))).rejects.toMatchObject({ statusCode: 413 })
+    await expect(casePatch(evt(SESSION, undefined, ID, { raw: JSON.stringify({ enabled: true, pad: 'x'.repeat(70_000) }) }))).rejects.toMatchObject({ statusCode: 413 })
+  })
+
+  it('a token is refused before the body is even read', async () => {
+    await expect(importPost(evt(TOKEN, undefined, ID, { raw: '{bad' }))).rejects.toMatchObject({ statusCode: 403 })
   })
 })

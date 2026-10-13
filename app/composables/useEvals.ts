@@ -9,9 +9,11 @@ import type {
 import type { FieldIssue } from '~/lib/evals/display'
 
 /** The readable text (and field issues) of a failed /api/evals request (they ride in `data`). */
-export function evalErrorOf(e: unknown): { message: string, code: string | null, issues: FieldIssue[] } {
-  const err = e as { data?: { data?: { message?: string, code?: string, issues?: FieldIssue[] }, statusMessage?: string }, message?: string }
+export function evalErrorOf(e: unknown): { message: string, code: string | null, issues: FieldIssue[], runId: string | null } {
+  const err = e as { data?: { data?: { message?: string, code?: string, issues?: FieldIssue[], runId?: string }, statusMessage?: string }, message?: string }
   return {
+    // Fix round 1: a 409 "this suite already has a run" names the active run (the dialog links it).
+    runId: err?.data?.data?.runId ?? null,
     message: err?.data?.data?.message ?? err?.data?.statusMessage ?? err?.message ?? 'Something went wrong',
     code: err?.data?.data?.code ?? null,
     issues: err?.data?.data?.issues ?? []
@@ -29,6 +31,14 @@ function byId<T>(kind: string, id: MaybeRefOrGetter<string | null | undefined>, 
 
 export function useEvalSuites() {
   return useQuery({ queryKey: ['eval', 'suites'] as const, queryFn: () => $fetch<EvalSuiteOverview[]>('/api/evals/suites') })
+}
+/** Fix round 1: the Run dialog's model picker (reasoning + subagents, by label). */
+export function useEvalModels() {
+  return useQuery({
+    queryKey: ['eval', 'models'] as const,
+    queryFn: () => $fetch<{ defaultId: string | null; models: Array<{ id: string; label: string; usage: 'reasoning' | 'subagents' }> }>('/api/evals/models'),
+    staleTime: 60_000
+  })
 }
 export const useEvalSuite = (id: MaybeRefOrGetter<string | null | undefined>) => byId<EvalSuiteDetail>('suite', id, i => `/api/evals/suites/${i}`)
 export const useEvalRun = (id: MaybeRefOrGetter<string | null | undefined>) => byId<EvalRunView>('run', id, i => `/api/evals/runs/${i}`)
