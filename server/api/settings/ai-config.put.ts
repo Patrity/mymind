@@ -5,6 +5,7 @@ import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 import { resolveChainFrom } from '@mymind/core/lib/ai/registry/resolve'
 import { EMBEDDING_DIM, USAGES, type AiConfigDoc } from '@mymind/core/lib/ai/registry/types'
 import { invalidateWorkerCache } from '@mymind/core/lib/bus/invalidate'
+import { requestEmbeddings } from '@mymind/core/lib/ai/embeddings'
 
 const KeyField = z.union([z.object({ apiKey: z.string().min(1) }), z.object({ keep: z.literal(true) }), z.null()])
 const Body = z.object({
@@ -63,11 +64,7 @@ export default defineEventHandler(async (event) => {
   if (doc.assignments.embeddings.length) {
     const [m] = resolveChainFrom(doc, 'embeddings')
     try {
-      const raw = await $fetch<unknown>(`${(m!.baseURL ?? '').replace(/\/$/, '')}/embed`, {
-        method: 'POST', headers: m!.apiKey ? { authorization: `Bearer ${m!.apiKey}` } : undefined,
-        body: { inputs: ['probe'], normalize: true }, signal: AbortSignal.timeout(15000)
-      })
-      const v = Array.isArray(raw) ? (raw as number[][])[0] : ((raw as { embeddings?: number[][] }).embeddings ?? (raw as { data?: number[][] }).data)?.[0]
+      const [v] = await requestEmbeddings(m!, ['probe'], { signal: AbortSignal.timeout(15000) })
       if (!Array.isArray(v) || v.length !== EMBEDDING_DIM) {
         throw createError({ statusCode: 422, statusMessage: `Embedding model returned ${Array.isArray(v) ? v.length : '?'} dims, expected ${EMBEDDING_DIM}` })
       }

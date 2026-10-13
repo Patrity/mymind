@@ -1,13 +1,16 @@
 /**
- * TEI (Text Embeddings Inference) adapter.
+ * Embeddings adapter.
  *
- * TEI native endpoint: POST /embed
- * Expected request body: { inputs: string[], normalize?: boolean }
- * Expected response:     number[][] (one vector per input)
+ * Primary: the OpenAI-compatible endpoint, POST {baseURL}/embeddings with
+ * { model, input } → { data: [{ embedding, index }] }. This is what LiteLLM serves, so
+ * embeddings route through the gateway like every other usage.
  *
- * Assumption: TEI returns a bare number[][] at the top level.
- * If the real rig returns an envelope (e.g. { embeddings: [...] }), Task 4
- * will catch the dim-mismatch error and the normalization below can be adjusted.
+ * Fallback: TEI's native POST {baseURL}/embed with { inputs, normalize } → number[][].
+ * Used only when the OpenAI route 404s — i.e. a provider pointed straight at a TEI root
+ * (TEI serves its OpenAI route under /v1, not at the root).
+ *
+ * Both paths return the same normalized vectors: LiteLLM → TEI was verified byte-identical
+ * to /embed, so stored vectors stay comparable across the switch.
  */
 
 import { ofetch } from 'ofetch'
@@ -17,15 +20,49 @@ import { currentEvalScope } from '../eval/context'
 const DIM = 2560
 
 /** Normalize defensively: unwrap known envelope shapes, fall back to raw value. */
-function normalizeResponse(raw: unknown): number[][] {
+export function normalizeResponse(raw: unknown): number[][] {
   if (Array.isArray(raw)) return raw as number[][]
-  // Some servers wrap under { embeddings: [...] } or { data: [...] }
   if (raw && typeof raw === 'object') {
     const r = raw as Record<string, unknown>
     if (Array.isArray(r.embeddings)) return r.embeddings as number[][]
-    if (Array.isArray(r.data)) return r.data as number[][]
+    if (Array.isArray(r.data)) {
+      const data = r.data as unknown[]
+      // OpenAI shape: [{ embedding, index }] — order by index, not arrival
+      if (data.every(d => d !== null && typeof d === 'object' && Array.isArray((d as { embedding?: unknown }).embedding))) {
+        return (data as Array<{ embedding: number[], index?: number }>)
+          .map((d, i) => ({ v: d.embedding, i: d.index ?? i }))
+          .sort((a, b) => a.i - b.i)
+          .map(d => d.v)
+      }
+      return data as number[][]
+    }
   }
   throw new Error(`Unexpected embeddings response shape: ${JSON.stringify(raw)}`)
+}
+
+/** One embeddings request against a resolved model: OpenAI route, TEI /embed fallback on 404. */
+export async function requestEmbeddings(
+  m: { baseURL: string | null, apiKey: string | null, modelId?: string },
+  texts: string[],
+  opts: { signal?: AbortSignal } = {}
+): Promise<number[][]> {
+  const base = (m.baseURL ?? '').replace(/\/$/, '')
+  const headers = m.apiKey ? { authorization: `Bearer ${m.apiKey}` } : undefined
+  try {
+    const raw = await ofetch(`${base}/embeddings`, {
+      method: 'POST', headers, signal: opts.signal,
+      body: { model: m.modelId, input: texts }
+    })
+    return normalizeResponse(raw)
+  } catch (err) {
+    const e = err as { statusCode?: number, status?: number, response?: { status?: number } }
+    if ((e.statusCode ?? e.status ?? e.response?.status) !== 404) throw err
+  }
+  const raw = await ofetch(`${base}/embed`, {
+    method: 'POST', headers, signal: opts.signal,
+    body: { inputs: texts, normalize: true }
+  })
+  return normalizeResponse(raw)
 }
 
 export async function embed(texts: string[]): Promise<number[][]> {
@@ -35,14 +72,7 @@ export async function embed(texts: string[]): Promise<number[][]> {
   const scope = currentEvalScope()
   if (scope) return scope.embed(texts)
 
-  const vectors = await withFailover('embeddings', async (m) => {
-    const raw = await ofetch(`${(m.baseURL ?? '').replace(/\/$/, '')}/embed`, {
-      method: 'POST',
-      headers: m.apiKey ? { authorization: `Bearer ${m.apiKey}` } : undefined,
-      body: { inputs: texts, normalize: true }
-    })
-    return normalizeResponse(raw)
-  })
+  const vectors = await withFailover('embeddings', m => requestEmbeddings(m, texts))
 
   for (const v of vectors) {
     if (!Array.isArray(v) || v.length !== DIM) {

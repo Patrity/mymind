@@ -20,6 +20,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 // Embeddings / rerank outside a world go through ofetch → $fetch in tests: a fixed vector, no rig.
 const VEC = Array.from({ length: 2560 }, (_, i) => (i === 7 ? 1 : 0))
 vi.stubGlobal('$fetch', async (url: string) => {
+  if (String(url).endsWith('/embeddings')) return { data: [{ embedding: VEC, index: 0 }] }
   if (String(url).endsWith('/embed')) return [VEC]
   throw new Error(`test: no network (${String(url)})`)
 })
