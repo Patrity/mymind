@@ -129,6 +129,8 @@ export interface TenantLock {
   release(): Promise<void>
   /** The lock session's backend pid (tests). */
   readonly pid: number | undefined
+  /** The lock session's connection (tests: simulate its loss). */
+  readonly _connection: { emit(event: string, ...a: unknown[]): boolean }
 }
 
 /**
@@ -169,6 +171,7 @@ export function holdTenantLock(schema: string, onLost: (why: string) => void = (
     try { await c.query(lockSql, [schema]) } catch (err) { released = true; await c.end().catch(() => {}); throw err }
     return {
       pid: (c as unknown as { processID?: number }).processID,
+      _connection: c,
       release: async () => {
         if (released) return
         released = true

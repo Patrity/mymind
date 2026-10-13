@@ -154,7 +154,9 @@ describe('C1 / N1 / B1: the docker CLI only touches the world\'s own offline con
       good().map(x => x.startsWith('type=bind,src=') ? `type=bind,src=/srv/ws/.eval/eval_00000000000040008000000000000bad_0badcafe/${WS},dst=/workspace` : x), // another world's dir
       good().map(x => x.startsWith('type=bind,src=') ? `type=bind,src=${WSDIR}/${WS},dst=/etc` : x),
       withFlag('--pid', 'host'), withFlag('--cap-add', 'SYS_ADMIN'), withFlag('--device', '/dev/sda'), withFlag('--privileged'),
-      withFlag('--security-opt', 'seccomp=unconfined'), withFlag('--user', '0:0', '--group-add', 'docker'),
+      withFlag('--security-opt', 'seccomp=unconfined'), withFlag('--user', '0:0', '--group-add', 'docker'), withFlag('--user', 'root'), withFlag('--user', '1000'),
+      (() => { const a = good(); const i = a.indexOf('--network'); a.splice(i, 2); return a })(),     // no --network at all (docker's default bridge)
+      withFlag('--network=none'),
       // B1 probes: env passthrough
       withFlag('--env', 'DATABASE_URL'), withFlag('--env=DATABASE_URL'), withFlag('-e', 'DATABASE_URL'),
       withFlag('--env-file', '/opt/mymind/.env.native'), withFlag('--env', 'DATABASE_URL=postgres://x'),

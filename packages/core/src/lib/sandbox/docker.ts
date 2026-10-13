@@ -426,7 +426,7 @@ export function assertEvalDockerArgs(args: string[], scope: Pick<EvalScope, 'run
   for (; i < rest.length; i++) {
     const x = rest[i]!
     if (!x.startsWith('-')) break
-    if (x.includes('=')) refuse(`inline flag values are not allowed (${x.split('=')[0]})`)
+    // An inline `--flag=value` is no allowed flag name, so it is refused below like any unknown flag.
     if (spec!.bools.has(x)) { seen.push([x, '']); continue }
     const check = spec!.values[x]
     if (!check) refuse(`flag ${x} is not allowed`)

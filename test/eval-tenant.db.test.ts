@@ -390,6 +390,15 @@ describe('eval tenant: fix round 3 (B2, B3, B4, pool.end)', () => {
     expect(await listEvalTenants()).not.toContain(w.schema)
   })
 
+  it('B2: a lock connection that just ENDS (no error) marks the tenant gone too', async () => {
+    const t = await createEvalTenant(randomUUID())
+    try {
+      const c = await t.pool.connect(); c.release() // works while locked
+      t.lock._connection.emit('end')
+      await expect(t.pool.connect()).rejects.toThrow(/lost its lock/)
+    } finally { await t.pool.end(); await t.lock.release(); await dropEvalSchema(t.schema) }
+  })
+
   it('pool.end times out on a leaked client, destroys it, and dispose still drops the world', async () => {
     const w = await installEvalWorld(randomUUID(), {})
     const before = evalTenantDeps.poolEndTimeoutMs
