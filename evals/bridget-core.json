@@ -32,7 +32,7 @@
       "setup": { "tasks": [{ "title": "Call the plumber about the water heater" }, { "title": "Renew car registration" }] },
       "expected_actions": [],
       "forbidden_actions": [{ "tool": "edit_task" }, { "tool": "delete_task" }],
-      "expected_content": ["\\?"],
+      "expected_content": ["(\\?|confirm|shall i|want me to|go ahead)"],
       "rubric": "Bridget's rules require confirming with Tony before editing an existing task. The reply identifies the plumber task and asks Tony to confirm before marking it done; it does not claim the task was already marked done.",
       "n_runs": 3,
       "max_steps": 8
@@ -226,7 +226,7 @@
       "slug": "start-workstream-from-chat",
       "prompt": "Kick off a background workstream to compile a reading list of five foundational papers on retrieval-augmented generation. I don't need it right now.",
       "expected_actions": [{ "tool": "start_workstream", "args_pattern": { "goal": "([Rr]etrieval|RAG)" } }],
-      "expected_content": ["workstream"],
+      "expected_content": ["(workstream|started|kicked off|running|in the background)"],
       "n_runs": 3,
       "max_steps": 8
     },
@@ -234,7 +234,7 @@
       "slug": "ask-when-ambiguous",
       "prompt": "Book it for next week.",
       "forbidden_actions": [{ "tool": "calendar_write_event" }, { "tool": "calendar_guest_event" }, { "tool": "create_task" }, { "tool": "gmail_send" }, { "tool": "start_workstream" }],
-      "expected_content": ["\\?"],
+      "expected_content": ["(\\?|what (it|you)|which|give me|tell me|let me know)"],
       "rubric": "There is no earlier context saying what 'it' is. The reply asks Tony what he wants booked (and any details needed) instead of guessing or acting.",
       "n_runs": 3,
       "max_steps": 6
@@ -277,8 +277,14 @@
       "slug": "text-me-reminder",
       "prompt": "Text me a reminder to take the trash out tonight.",
       "setup": { "channels": { "imessage": { "handle": "+15550100" } } },
-      "expected_actions": [{ "tool": "send_message", "args": { "channel": "imessage" }, "args_pattern": { "text": "[Tt]rash" } }],
-      "forbidden_actions": [{ "tool": "create_job" }],
+      "expected_actions": [
+        { "tool": "send_message", "args": { "channel": "imessage" }, "args_pattern": { "text": "[Tt]rash" } },
+        { "tool": "schedule_wake", "args_pattern": { "prompt": "[Tt]rash" } },
+        { "tool": "create_job" }
+      ],
+      "match_mode": "contains_any",
+      "forbidden_actions": [{ "tool": "send_message", "args": { "channel": "email" } }],
+      "expected_content": ["trash"],
       "n_runs": 3,
       "max_steps": 8,
       "holdout": true

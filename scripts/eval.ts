@@ -11,7 +11,7 @@ import { fromEnv } from '@mymind/core/config-env'
 
 initCore(fromEnv(process.env, { dev: process.env.NODE_ENV !== 'production' }))
 
-const { eq, asc, and, gt } = await import('drizzle-orm')
+const { eq, asc } = await import('drizzle-orm')
 const { useDb } = await import('@mymind/core/db')
 const { evalSuites, evalRuns, evalResults, evalCases } = await import('@mymind/core/db/schema')
 const { seedBuiltinSuites } = await import('@mymind/core/lib/eval/suites')
@@ -86,20 +86,21 @@ process.on('SIGINT', () => {
 
 const pct = (x: number | null | undefined) => x === null || x === undefined ? '—' : `${(x * 100).toFixed(0)}%`
 const sec = (ms: number | null | undefined) => `${((ms ?? 0) / 1000).toFixed(1)}s`
-let lastCreated = new Date(0)
+// By id, not by created_at: a JS Date drops Postgres's microseconds, so `> last` would re-select rows.
+const printed = new Set<string>()
 const started = Date.now()
 let warned = false
 for (;;) {
   const [row] = await db.select().from(evalRuns).where(eq(evalRuns.id, run.id))
   if (!row) { console.error('the run disappeared'); process.exit(1) }
-  const fresh = await db.select({ slug: evalCases.slug, attempt: evalResults.attempt, score: evalResults.score, passed: evalResults.passed, error: evalResults.error, durationMs: evalResults.durationMs, createdAt: evalResults.createdAt })
+  const rows = await db.select({ id: evalResults.id, slug: evalCases.slug, attempt: evalResults.attempt, score: evalResults.score, passed: evalResults.passed, error: evalResults.error, durationMs: evalResults.durationMs, createdAt: evalResults.createdAt })
     .from(evalResults).innerJoin(evalCases, eq(evalCases.id, evalResults.caseId))
-    .where(and(eq(evalResults.runId, run.id), gt(evalResults.createdAt, lastCreated))).orderBy(asc(evalResults.createdAt))
+    .where(eq(evalResults.runId, run.id)).orderBy(asc(evalResults.createdAt))
+  const fresh = rows.filter(r => !printed.has(r.id))
   const planned = (row.summary as Summary | null)?.planned
-  const done = (row.summary as Summary | null)?.attempts ?? 0
   for (const r of fresh) {
-    lastCreated = r.createdAt
-    console.log(`  ${r.passed ? 'PASS' : 'fail'}  ${r.slug} #${r.attempt}  score ${(r.score ?? 0).toFixed(2)}  ${sec(r.durationMs)}${r.error ? `  — ${r.error}` : ''}${planned ? `   [${done}/${planned}]` : ''}`)
+    printed.add(r.id)
+    console.log(`  ${r.passed ? 'PASS' : 'fail'}  ${r.slug} #${r.attempt}  score ${(r.score ?? 0).toFixed(2)}  ${sec(r.durationMs)}${r.error ? `  — ${r.error}` : ''}${planned ? `   [${printed.size}/${planned}]` : ''}`)
   }
   if (row.status === 'queued' && !warned && Date.now() - started > 30_000) {
     warned = true
