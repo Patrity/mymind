@@ -38,7 +38,7 @@ import type { AgentTool } from '@mymind/core/lib/agent/types'
 import type { JudgeVerdict, RunTaint } from '@mymind/core/lib/agent/judge/types'
 import type { GuardInput, GuardVerdict } from '@mymind/core/lib/agent/judge/guard'
 import { GUARD_WARNING_LEAD } from '@mymind/core/lib/agent/tool-history'
-import { runNetworkMode } from '@mymind/core/lib/agent/tools/workspace'
+import { runTaintMode } from '@mymind/core/lib/agent/tools/workspace'
 import { segmentTaintDeps } from '@mymind/core/lib/agent/workstreams/loop'
 import { spawnWorkstreamsTool } from '@mymind/core/lib/agent/tools/coordinator'
 import { addWorkstreamTaint } from '@mymind/core/lib/agent/workstreams/store'
@@ -391,7 +391,7 @@ describe('I1: work started from a tainted run starts tainted', () => {
 const modes: string[] = []
 const netProbe: AgentTool = {
   name: 'net_probe', description: 'Report the network mode', kind: 'read', toolset: 'core', schema: {},
-  handler: async (_a, ctx) => { modes.push(runNetworkMode(ctx)); return { result: { ok: true }, summary: 'probed' } }
+  handler: async (_a, ctx) => { modes.push(runTaintMode(ctx)); return { result: { ok: true }, summary: 'probed' } }
 }
 /** A web read whose result carries workspace taint (as a tainted workspace's output does) — in history. */
 const wsRead: AgentTool = {
@@ -444,7 +444,7 @@ describe('follow-up N1: `workspace` is derived live from the row\'s flag', () =>
 })
 
 describe('follow-up N2/I5: a guard timeout is run-only (`unverified`)', () => {
-  it('nothing is persisted, spawned children start clean, and the run\'s commands do not mark the workspace (mode `offline`; the flag stays false)', async () => {
+  it('nothing is persisted, spawned children start clean, and the run\'s commands do not mark the workspace (mode `unverified`; the flag stays false)', async () => {
     modes.length = 0
     guardSeam = async () => FAIL_CLOSED
     const ws = await newWorkstream('guard timeout')
@@ -455,7 +455,7 @@ describe('follow-up N2/I5: a guard timeout is run-only (`unverified`)', () => {
     ], [guardedFetch, netProbe, spawnWorkstreamsTool])
     // spawn_workstreams is outbound: in a tainted run it needs Tony — approve it.
     await driveSegment(ws.conversationId, runFn, ws.id, () => true)
-    expect(modes).toEqual(['offline'])
+    expect(modes).toEqual(['unverified'])
     expect(await getWorkstream(ws.id)).toMatchObject({ tainted: false, taintSources: [] })
     const [kid] = await useDb().select().from(workstreams).where(eq(workstreams.parentId, ws.id))
     expect(kid).toBeTruthy()
