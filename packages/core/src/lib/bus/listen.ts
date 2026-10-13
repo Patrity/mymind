@@ -16,7 +16,8 @@ import pg from 'pg'
 import { sql, type SQL } from 'drizzle-orm'
 import { coreConfig } from '../../config'
 import { useDb } from '../../db'
-import { busNs, nsUnwrap, nsWrap } from './ns'
+import { nsUnwrap, nsWrap, processBusNs } from './ns'
+import { outsideEvalScope } from '../eval/context'
 
 export type BusChannel = 'run_event' | 'worker_command' | 'live_change'
 const CHANNELS: ReadonlySet<string> = new Set<BusChannel>(['run_event', 'worker_command', 'live_change'])
@@ -72,7 +73,7 @@ const quote = (ch: BusChannel) => `"${ch}"`
 function dispatch(channel: string, wire: string) {
   if (!CHANNELS.has(channel)) return
   const m = nsUnwrap(wire)
-  if (!m || m.ns !== busNs()) return
+  if (!m || m.ns !== processBusNs()) return
   for (const fn of [...(handlers.get(channel as BusChannel) ?? [])]) {
     try { fn(m.payload) } catch (err) { console.error(`[bus] ${channel} handler threw`, err) }
   }
@@ -174,7 +175,9 @@ function ensureConnected(): Promise<void> {
   if (closed) return Promise.resolve()
   if (client && ready) return Promise.resolve()
   if (connecting) return connecting
-  connecting = connectOnce().finally(() => { connecting = null })
+  // Cycle 85: the LISTEN connection serves the whole process; one first started from inside an
+  // eval call chain must not run its notification handlers (Tony's SSE readers) in that scope.
+  connecting = outsideEvalScope(() => connectOnce()).finally(() => { connecting = null })
   return connecting
 }
 

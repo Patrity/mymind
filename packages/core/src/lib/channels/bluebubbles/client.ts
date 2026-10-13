@@ -11,6 +11,7 @@
 import type { Tapback } from '../types'
 import { normaliseHandle } from '../handles'
 import { loadChannelsConfig, blueBubblesPassword } from '../config'
+import { currentEvalScope } from '../../eval/context'
 
 export interface BlueBubblesClient {
   serverInfo(): Promise<{ privateApi: boolean; serverVersion: string; detectedIcloud: string | null }>
@@ -256,6 +257,10 @@ function clientFor(serverUrl: string, password: string): BlueBubblesClient {
  * server's config, so no test can ever reach it.
  */
 export async function imessageClient(): Promise<BlueBubblesClient | null> {
+  // Cycle 85: an eval world's iMessage is a capturing fake (approval prompts, typing, reads) —
+  // checked first, so not even BLUEBUBBLES_FAKE_URL can route an eval to a server.
+  const scope = currentEvalScope()
+  if (scope) return scope.imessage
   const fakeUrl = process.env.BLUEBUBBLES_FAKE_URL
   if (fakeUrl) return clientFor(fakeUrl, FAKE_BLUEBUBBLES_PASSWORD)
   if (process.env.VITEST) return null

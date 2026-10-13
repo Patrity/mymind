@@ -3,6 +3,7 @@
 
 import { lookup } from 'node:dns/promises'
 import { NodeHtmlMarkdown } from 'node-html-markdown'
+import { currentEvalScope } from '../eval/context'
 
 // ---------------------------------------------------------------------------
 // isPrivateIp
@@ -191,6 +192,18 @@ async function ssrfGuardHop(rawUrl: string): Promise<void> {
  *  - The network fetch fails or times out (10 s per hop)
  */
 export async function fetchAsMarkdown(url: string): Promise<FetchedPage> {
+  // Cycle 85 (spec §3.2): an eval world serves its recorded pages (an unknown URL is a 404) —
+  // before the DNS lookup below, which would itself be network. The static SSRF check still
+  // applies, so an eval sees the same refusals a real fetch would.
+  const scope = currentEvalScope()
+  if (scope) {
+    const check = ssrfCheckUrl(url)
+    if (!check.ok) throw new Error(`SSRF blocked: ${check.reason}`)
+    const page = await scope.webFetch(url)
+    if (page.status < 200 || page.status >= 300) throw new Error(`Fetch failed: ${page.status} ${page.status === 404 ? 'Not Found' : 'Error'}`)
+    const titleMatch = page.body.match(/<title[^>]*>([^<]*)<\/title>/i)
+    return { url, title: titleMatch?.[1]?.trim() ?? new URL(url).hostname, content: htmlToMarkdown(page.body) }
+  }
   let currentUrl = url
   let hops = 0
 

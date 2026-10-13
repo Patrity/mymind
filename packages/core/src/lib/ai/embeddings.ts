@@ -12,6 +12,7 @@
 
 import { ofetch } from 'ofetch'
 import { withFailover } from './registry/resolve'
+import { currentEvalScope } from '../eval/context'
 
 const DIM = 2560
 
@@ -29,6 +30,10 @@ function normalizeResponse(raw: unknown): number[][] {
 
 export async function embed(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return []
+  // Cycle 85: an eval world embeds locally (deterministic, no rig call) — its memories and docs
+  // live in the tenant and are recalled against each other only.
+  const scope = currentEvalScope()
+  if (scope) return scope.embed(texts)
 
   const vectors = await withFailover('embeddings', async (m) => {
     const raw = await ofetch(`${(m.baseURL ?? '').replace(/\/$/, '')}/embed`, {

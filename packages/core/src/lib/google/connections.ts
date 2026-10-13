@@ -5,6 +5,7 @@ import { account, connections } from '../../db/schema'
 import { publishChange } from '../../utils/live-bus'
 import { useAuth } from '../auth'
 import type { ToolsetId } from '../agent/toolsets'
+import { currentEvalScope } from '../eval/context'
 
 /** A linked Google account as the tools see it. `accountId` is the better-auth `account` row id
  *  (connections.account_id); `googleSub` is that row's `account_id` (the Google subject). */
@@ -105,6 +106,9 @@ const selectConnection = {
 }
 
 export async function listConnections(opts: { status?: 'ok' } = {}): Promise<Connection[]> {
+  // Cycle 85: an eval world has its own fixture account(s), never Tony's real ones.
+  const scope = currentEvalScope()
+  if (scope) return scope.googleConnections().filter(c => !opts.status || c.status === opts.status)
   const rows = await useDb().select(selectConnection)
     .from(connections)
     .innerJoin(account, eq(account.id, connections.accountId))

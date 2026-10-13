@@ -9,6 +9,7 @@
 // `setBusNs` (and pass it to child processes via env, which their `fromEnv` picks up).
 import { coreConfig } from '../../config'
 import { BUS_NS_ENV_NAME } from '../../config-env'
+import { currentEvalScope } from '../eval/context'
 
 export const BUS_NS_ENV = BUS_NS_ENV_NAME
 export const DEFAULT_BUS_NS = 'default'
@@ -16,7 +17,17 @@ const VALID = /^[A-Za-z0-9_-]{1,64}$/
 
 let override: string | null = null
 
+/** This call chain's namespace: an eval world's own (cycle 85 — its run events, commands and
+ *  notifies never match Tony's), else the process's. */
 export function busNs(): string {
+  const scope = currentEvalScope()
+  if (scope) return scope.busNs
+  return processBusNs()
+}
+
+/** The process's namespace, ignoring any eval scope — what the shared LISTEN connection filters
+ *  on (it serves the whole process, whichever call chain happened to start it). */
+export function processBusNs(): string {
   const ns = override ?? coreConfig().busNs ?? DEFAULT_BUS_NS
   if (!VALID.test(ns)) throw new Error(`invalid bus namespace "${ns}" (${BUS_NS_ENV}: [A-Za-z0-9_-]{1,64})`)
   return ns

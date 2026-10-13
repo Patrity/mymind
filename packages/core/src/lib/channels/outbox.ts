@@ -18,6 +18,7 @@ import { channelFor } from './registry'
 import { markdownToPlainText } from './plain-text'
 import { MAX_ATTEMPTS, nextAttemptDelayMs } from './backoff'
 import type { DeliveryPayload, OutboundChannelId, SendResult } from './types'
+import { currentEvalScope } from '../eval/context'
 
 export type DbTx = Parameters<Parameters<ReturnType<typeof useDb>['transaction']>[0]>[0]
 
@@ -69,6 +70,10 @@ export async function insertDeliveries(tx: DbTx, rows: NewDelivery[]): Promise<s
     runId: d.runId ?? null
   })))
   if (!values.length) return []
+  // Cycle 85: inside an eval world the row still goes to the world's tenant (the flow is real),
+  // and the message is captured — it is never sent (deliveriesTick is inert in a world).
+  const scope = currentEvalScope()
+  if (scope) for (const v of values) scope.capture('outbox', { channel: v.channel, target: v.target, source: v.source, payload: v.payload as unknown as Record<string, unknown> })
   const inserted = await tx.insert(channelDeliveries).values(values).returning({ id: channelDeliveries.id })
   return inserted.map(r => r.id)
 }
@@ -164,6 +169,8 @@ async function sendRow(row: ChannelDelivery): Promise<SendResult> {
 export async function deliveriesTick(opts: { onlyIds?: string[]; mainConversationId?: string; now?: Date } = {}): Promise<{ sent: number; retried: number; failed: number }> {
   const counts = { sent: 0, retried: 0, failed: 0 }
   if (opts.onlyIds && !opts.onlyIds.length) return counts
+  // Cycle 85: an eval world never sends — its queued messages were captured at insert.
+  if (currentEvalScope()) return counts
   const now = opts.now ?? new Date((((await useDb().execute(sql`select now() as now`)).rows[0]) as { now: string | Date }).now)
   const rows = await claim(now, opts.onlyIds)
   for (const row of rows) publishChange({ resource: 'channelDelivery', action: 'updated', id: row.id })

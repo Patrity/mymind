@@ -7,6 +7,7 @@
 
 import { touchConnection, type Connection } from './connections'
 import { googleToken, forceRefresh, GoogleReconnectError } from './token'
+import { currentEvalScope } from '../eval/context'
 
 export interface GoogleDeps {
   fetch?: typeof globalThis.fetch
@@ -121,9 +122,14 @@ function isScopeInsufficient(body: unknown): boolean {
 }
 
 export function google(c: Connection, deps: GoogleDeps = {}) {
-  const doFetch = deps.fetch ?? globalThis.fetch
-  const getToken = deps.token ?? ((conn: Connection) => googleToken(conn))
-  const forceTokenRefresh = deps.refresh ?? ((conn: Connection) => forceRefresh(conn))
+  // Cycle 85 (spec §3.2): inside an eval world EVERY Google call (gmail, calendar, people, the
+  // judge's sent-history check) is served by the world's fixture server — no real token is ever
+  // fetched and nothing leaves the process. Checked here, below every caller, so no caller can
+  // forget it; it wins over a caller's own deps.
+  const scope = currentEvalScope()
+  const doFetch = scope ? scope.googleFetch : (deps.fetch ?? globalThis.fetch)
+  const getToken = scope ? async () => 'eval-token' : (deps.token ?? ((conn: Connection) => googleToken(conn)))
+  const forceTokenRefresh = scope ? async () => 'eval-token' : (deps.refresh ?? ((conn: Connection) => forceRefresh(conn)))
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
 
   async function call(method: string, url: string, opts: { query?: GoogleQuery; body?: unknown } = {}): Promise<unknown> {
@@ -180,7 +186,7 @@ export function google(c: Connection, deps: GoogleDeps = {}) {
       // Fire-and-forget: a bookkeeping UPDATE (or a DB hiccup touching it) must never turn an
       // already-successful Google response into a thrown error, and must never add latency
       // (Gmail search makes one of these per message).
-      touchConnection(c.id).catch(err => console.warn(`[google] touchConnection failed for ${c.id}`, err))
+      if (!scope) touchConnection(c.id).catch(err => console.warn(`[google] touchConnection failed for ${c.id}`, err))
       if (res.status === 204) return undefined
       return await safeJson(res)
     }

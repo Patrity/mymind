@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import type { LiveEvent } from '../shared/types/live'
+import { currentEvalScope } from '../lib/eval/context'
 
 // Single in-process global channel for data-change signals. Same pattern as
 // server/lib/agent/bus.ts. setMaxListeners(0) removes the 10-listener cap —
@@ -13,6 +14,10 @@ const CHANNEL = 'live-change'
 export function publishChange(e: Pick<LiveEvent, 'resource' | 'action' | 'id'>): void {
   // `satisfies` locks the shape: a future `v: 2` mistake fails to typecheck here.
   const event = { v: 1, at: Date.now(), ...e } satisfies LiveEvent
+  // Cycle 85: an eval world's changes never reach Tony's open tabs (nor the cross-process bridge,
+  // which listens on this emitter) — they would refetch lists that cannot contain eval rows anyway.
+  const scope = currentEvalScope()
+  if (scope) { scope.suppressLive('change', event); return }
   emitter.emit(CHANNEL, event)
 }
 

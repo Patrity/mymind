@@ -10,6 +10,7 @@ import type { ActivityKind } from './types'
 import type { SpanInput } from './types'
 import { sanitizeRequest, sanitizeResponse } from './redact'
 import { jobDidWork } from './job-summary'
+import { currentEvalScope } from '../eval/context'
 
 function safeSanitize<T>(fn: () => T): T | { _redactFailed: true } {
   try { return fn() } catch { return { _redactFailed: true } }
@@ -67,7 +68,13 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     try {
       const parent = als.getStore()
       const c = ctx ?? { traceId: parent?.traceId ?? newId(), spanId: newId() }
-      buffer.push(build(input, c, parent && parent.spanId !== c.spanId ? parent : (ctx ? parent : undefined)))
+      const row = build(input, c, parent && parent.spanId !== c.spanId ? parent : (ctx ? parent : undefined))
+      // Cycle 85: the buffer is process-global and flushed by a timer started at boot (outside any
+      // eval scope) — an eval row pushed here would land in Tony's real activity_log and his error
+      // e-mail digest. The world keeps it instead.
+      const scope = currentEvalScope()
+      if (scope) { scope.recordActivity(row); return }
+      buffer.push(row)
     } catch (err) {
       console.error('[observability] enqueue failed', err)
     }
