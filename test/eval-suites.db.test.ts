@@ -71,7 +71,8 @@ describe('suite JSON import / export', () => {
     const out = await exportSuite(r.suiteId)
     expect(out!.cases).toEqual([{
       slug: 'minimal', prompt: 'hi', surface: 'chat', setup: {}, expected_actions: [], forbidden_actions: [], expected_content: [],
-      match_mode: 'ordered_subset', rubric: null, n_runs: 3, max_steps: 40, holdout: false, enabled: true
+      match_mode: 'ordered_subset', rubric: null, n_runs: 3, max_steps: 40, holdout: false, enabled: true,
+      expect_flagged: false, expect_tainted: false, expected_approvals: [], forbidden_approvals: [], count_failed: false
     }])
   })
 
