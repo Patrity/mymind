@@ -38,8 +38,14 @@ export function stateMeta(ws: { state: WorkstreamState; stateDetail?: 'evaluatin
 export function verifierBadge(ws: Pick<WorkstreamDTO, 'state' | 'verification'>): { label: string; tooltip: string } | null {
   const v = ws.verification
   if (ws.state !== 'done' || !v || !verificationFlagged(v)) return null
-  const label = v.verdict ? `⚠ ${v.verdict}` : '⚠ unverified'
-  return { label, tooltip: v.verdict ? `Verifier: ${v.verdict}${v.gaps.length ? ` — ${v.gaps.join('; ')}` : ''}` : `The verifier could not check it (${v.error ?? 'no verdict'})` }
+  // Fix round 1: a flagged `met` was below the confidence bar — it reads "unverified", never as a pass.
+  const label = v.verdict && v.verdict !== 'met' ? `⚠ ${v.verdict}` : '⚠ unverified'
+  const tooltip = !v.verdict
+    ? `The verifier could not check it (${v.error ?? 'no verdict'})`
+    : v.verdict === 'met'
+      ? `Verifier: met, but only at confidence ${v.confidence.toFixed(2)}${v.gaps.length ? ` — ${v.gaps.join('; ')}` : ''}`
+      : `Verifier: ${v.verdict}${v.gaps.length ? ` — ${v.gaps.join('; ')}` : ''}`
+  return { label, tooltip }
 }
 
 /** Cycle 85: the detail page's verdict panel — colour, icon, title. Null: never verified. */

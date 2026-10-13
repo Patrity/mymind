@@ -48,7 +48,7 @@ import {
   type WorkstreamBudget, type WorkstreamDTO, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 import {
-  addWorkstreamTaint, budgetOf, exhausted, getWorkstream, patchAttentionJudge, patchWorkstream, publishWorkstream, rollupTree, setVerifying, storedTaintSources, usedOf,
+  addWorkstreamTaint, budgetOf, exhausted, getWorkstream, patchAttentionJudge, patchWorkstream, publishWorkstream, rollupTree, patchStateDetail, storedTaintSources, usedOf,
   workstreamDTO, workstreamForConversation, workstreamWorkspaceTainted, type WorkstreamRow
 } from './store'
 import { promptInfo, segmentOrigin, segmentText, type SegmentWhy } from './prompt'
@@ -158,6 +158,10 @@ export interface Segment {
    *  on, and (like the judge's `evaluating`) the time does not count against the wall budget: the
    *  verifier has its own 60 s deadline. Resolves once the row says so. */
   verifying(on: boolean): Promise<void>
+  /** Cycle 85 fix round 1: the segment can still act on a send-back — not the final summary step, and
+   *  at least one more step and some wall time are left. Otherwise a not-met verdict finishes flagged
+   *  (a send-back nobody can act on would end the work `failed`, never allowed for the verifier). */
+  canContinue(): boolean
   /** Cycle 85: aborts an in-flight verification (cancelWorkstream) — the finish is then refused. */
   verifyAbort: AbortController | null
   /** Cycle 85: thread notes ("⚖ Verifier sent this back …") written when the segment ENDS — an event
@@ -282,6 +286,8 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
   // `evaluating` lasts while ANY is in flight, and a drain parks them like a card waiting on Tony.
   const evaluating = new Map<string, ApprovalRequest>()
   let mirror: RunEventWriter | null = null
+  /** Cycle 85: finish_workstream verifications in flight in this segment. */
+  let verifyingN = 0
   let done = false
   let parking = false
 
@@ -368,14 +374,24 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
     taintSettled: () => taintChain,
     verifyAbort: null,
     notes: [],
+    // Fix round 1: counted (two finish_workstream calls in one step verify in parallel); `verifying`
+    // wins over `evaluating`; the wall clock is paused only once the detail is on the row, and only
+    // resumed when nothing else (a card, an evaluation) still holds it.
     async verifying(on) {
       if (on) {
-        pause()
-        await serial(() => setVerifying(ws.id, true))
+        if (verifyingN++ > 0) return
+        let wrote = false
+        await serial(async () => { wrote = await patchStateDetail(ws.id, 'verifying', [null, 'evaluating']) })
+        if (wrote && verifyingN > 0) pause()
       } else {
-        await serial(() => setVerifying(ws.id, false))
+        if (verifyingN === 0 || --verifyingN > 0) return
+        await serial(() => patchStateDetail(ws.id, evaluating.size ? 'evaluating' : null, ['verifying']))
         if (!evaluating.size && !waiting.size) resume()
       }
+    },
+    canContinue() {
+      // The step that called finish_workstream is not counted yet (onStep follows it): one more must fit.
+      return !o.final && base.steps + steps + 1 < budget.maxSteps && wallNow() < budget.maxWallMs
     },
     toolCalls: 0,
     stepsTaken: () => steps,
@@ -417,9 +433,10 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
           // Final fix wave (M3): time spent waiting on the judge is not the workstream's own work — like
           // a wait on Tony, it does not count against the wall budget (the judge has its own deadlines).
           if (evaluating.size) pause()
-          else if (!waiting.size) resume()
-          if (before === 0 && evaluating.size === 1) void serial(() => patchWorkstream(ws.id, { stateDetail: 'evaluating' }, ['running']))
-          else if (before > 0 && evaluating.size === 0) void serial(() => patchWorkstream(ws.id, { stateDetail: null }))
+          else if (!waiting.size && !verifyingN) resume()
+          // Cycle 85: `verifying` wins over `evaluating` — an evaluation never overwrites or clears it.
+          if (before === 0 && evaluating.size === 1) void serial(() => patchStateDetail(ws.id, 'evaluating', [null]))
+          else if (before > 0 && evaluating.size === 0) void serial(() => patchStateDetail(ws.id, null, ['evaluating']))
         },
         onWaiting: (requestId, isWaiting, { req, judge }) => {
           if (isWaiting) {
@@ -463,9 +480,10 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
             // worker's restoreParkedApprovals withdraws it and resumes with a `segment:approval-lost`
             // note (the action did not run; the model re-issues it and Tony approves a fresh card).
             if (!waiting.size && !parking) {
-              resume()
-              // M2: another request may still be under evaluation — keep its detail.
-              void serial(() => patchWorkstream(ws.id, { state: 'running', attention: null, stateDetail: evaluating.size ? 'evaluating' : null }, ['attention']))
+              if (!verifyingN) resume()
+              // M2: another request may still be under evaluation — keep its detail (cycle 85: a
+              // verification in flight wins).
+              void serial(() => patchWorkstream(ws.id, { state: 'running', attention: null, stateDetail: verifyingN ? 'verifying' : evaluating.size ? 'evaluating' : null }, ['attention']))
             } else if (!parking) {
               // Another card still waits: the attention now shows the ones left.
               const left = waitingAttention()
@@ -1421,7 +1439,9 @@ export async function resumeWorkstream(ws: WorkstreamRow, text?: string): Promis
       if (ws.isChild) await (await coordinator()).reserveForResume(tx, ws, budget)
       const [r] = await tx.update(workstreams).set({
         state: 'running', cancelRequested: false, failures: 0, failureReason: null, lastOutcome: null,
-        finishedAt: null, attention: null, summary: null, budget, updatedAt: sql`now()`
+        finishedAt: null, attention: null, summary: null, budget, updatedAt: sql`now()`,
+        // Cycle 85 fix round 1: a resumed workstream's finishes get their send-backs back.
+        sendBacks: 0
       }).where(and(eq(workstreams.id, ws.id), inArray(workstreams.state, ['failed', 'cancelled']))).returning()
       return r ?? null
     })

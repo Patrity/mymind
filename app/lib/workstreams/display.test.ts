@@ -245,6 +245,8 @@ describe('cycle 85: the outcome verifier in the UI', () => {
     expect(verifierBadge({ state: 'done', verification: v({ verdict: 'unmet', gaps: [] }) })).toEqual({ label: '⚠ unmet', tooltip: 'Verifier: unmet' })
     expect(verifierBadge({ state: 'done', verification: v({ verdict: null, error: 'verifier timed out', gaps: [] }) })).toEqual({ label: '⚠ unverified', tooltip: 'The verifier could not check it (verifier timed out)' })
     expect(verifierBadge({ state: 'done', verification: v({ verdict: 'met', outcome: 'finished' }) })).toBeNull()
+    // A flagged low-confidence `met` never reads as a pass.
+    expect(verifierBadge({ state: 'done', verification: v({ verdict: 'met', confidence: 0.55, gaps: [] }) })).toEqual({ label: '⚠ unverified', tooltip: 'Verifier: met, but only at confidence 0.55' })
     expect(verifierBadge({ state: 'done', verification: v({ outcome: 'skipped', verdict: null }) })).toBeNull()
     expect(verifierBadge({ state: 'running', verification: v({ outcome: 'sent-back' }) })).toBeNull()
     expect(verifierBadge({ state: 'done', verification: null })).toBeNull()

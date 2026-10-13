@@ -1,13 +1,13 @@
 // Cycle 81 (spec §5.1): the workstreams table — reads, the guarded state writes, and the live
 // `workstream` resource (published on every state/used change; the Task 6 UI subscribes).
 // Transitions are decided in loop.ts; this file only persists them.
-import { and, asc, desc, eq, getTableColumns, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm'
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { workspaces, workstreams, type WorkstreamRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
 import {
   DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, ZERO_USED, normalizeTreeBudget,
-  type OutcomeVerification, type TreeBudget, type WorkstreamAttention, type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
+  type OutcomeVerification, type TreeBudget, type WorkstreamAttention, type WorkstreamStateDetail, type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 import { persistableTaint, TAINT_SOURCES, type ApprovalVerdictDTO, type TaintSource } from '../judge/types'
 
@@ -257,29 +257,39 @@ export async function patchWorkstream(
 }
 
 /**
- * Cycle 85: the `verifying` detail of a running workstream (the outcome verifier is checking a
- * finish_workstream). Set only while `running`; cleared only while it still says `verifying` (an
- * `evaluating` set meanwhile is never wiped). Publishes on a change.
+ * Cycle 85 (fix round 1): set a running workstream's `stateDetail` only while it currently is one of
+ * `when` (null = none) — so `verifying` (outcome verifier) wins over `evaluating` (approval judge):
+ * an evaluation never overwrites or clears a verification, and a verification's end restores
+ * `evaluating` when one is still in flight. A non-null detail needs `running`. Publishes on a change.
  */
-export async function setVerifying(id: string, on: boolean): Promise<boolean> {
+export async function patchStateDetail(id: string, to: WorkstreamStateDetail | null, when: Array<WorkstreamStateDetail | null>): Promise<boolean> {
+  const states = when.filter((x): x is WorkstreamStateDetail => x !== null)
+  const cond = or(
+    states.length ? inArray(workstreams.stateDetail, states) : undefined,
+    when.includes(null) ? isNull(workstreams.stateDetail) : undefined
+  )
   const rows = await useDb().update(workstreams)
-    .set({ stateDetail: on ? 'verifying' : null, updatedAt: sql`now()` })
-    .where(and(eq(workstreams.id, id), on ? eq(workstreams.state, 'running') : eq(workstreams.stateDetail, 'verifying')))
+    .set({ stateDetail: to, updatedAt: sql`now()` })
+    .where(and(eq(workstreams.id, id), cond, to ? eq(workstreams.state, 'running') : undefined))
     .returning({ id: workstreams.id })
   if (rows.length) publishWorkstream(id)
   return rows.length > 0
 }
 
 /**
- * Cycle 85: record one send-back — compare-and-set on the count read before verifying (`seen`), and
- * only while the workstream is still `running`, so two verifications racing (a restart mid-verify)
- * can never both count, and a send-back can never reopen work that finished or was cancelled.
- * Returns the new row, or null when the guard did not match (the caller re-reads).
+ * Cycle 85: record one send-back — compare-and-set on the count read before verifying (`seen`), only
+ * while the workstream is still going (`running`, or `attention` with a parallel card parked — the
+ * states finish_workstream accepts), not cancelled, and (fix round 1) still owned by THIS segment's
+ * run (`current_run_id`), so two verifications racing — parallel finishes, a restart or a split-brain
+ * stale segment — never both count, and a send-back can never reopen work that finished or was
+ * cancelled. The detail is not touched here (the segment's `verifying(false)` restores it). Returns the
+ * new row, or null when the guard did not match (the caller re-reads).
  */
-export async function recordSendBack(id: string, seen: number, verification: OutcomeVerification): Promise<WorkstreamRow | null> {
+export async function recordSendBack(id: string, runId: string, seen: number, verification: OutcomeVerification): Promise<WorkstreamRow | null> {
   const [r] = await useDb().update(workstreams)
-    .set({ sendBacks: sql`${workstreams.sendBacks} + 1`, verification, stateDetail: null, updatedAt: sql`now()` })
-    .where(and(eq(workstreams.id, id), eq(workstreams.state, 'running'), eq(workstreams.cancelRequested, false), eq(workstreams.sendBacks, seen)))
+    .set({ sendBacks: sql`${workstreams.sendBacks} + 1`, verification, updatedAt: sql`now()` })
+    .where(and(eq(workstreams.id, id), inArray(workstreams.state, ['running', 'attention']), eq(workstreams.cancelRequested, false),
+      eq(workstreams.currentRunId, runId), eq(workstreams.sendBacks, seen)))
     .returning()
   if (r) publishWorkstream(id)
   return r ?? null

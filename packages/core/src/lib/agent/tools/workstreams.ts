@@ -121,10 +121,7 @@ export const finishWorkstreamTool: AgentTool = {
       if ('sendBack' in checked) return { result: { ok: false, notDone: true, error: checked.sendBack }, summary: checked.summary }
       const verification = checked.verification
       const ws = await patchWorkstream(seg.workstreamId, { state: 'done', summary, attention: null, finishedAt: new Date(), stateDetail: null, verification }, ['running', 'attention'])
-      if (!ws) {
-        await seg.verifying(false)
-        return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'finish_workstream: not running' }
-      }
+      if (!ws) return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'finish_workstream: not running' }
       seg.stop = 'finished'
       record(ws.id, verification, verification.outcome)
       const { flagLine } = await outcome()
@@ -148,7 +145,10 @@ type Checked =
   | { refused: string; summary: string }
 
 /**
- * Cycle 85 (spec §2.1): verify a finish (the caller records the activity once the finish lands). `stateDetail: 'verifying'` while it runs. A verifier error or
+ * Cycle 85 (spec §2.1): verify a finish (the caller records the activity once the finish lands).
+ * Fix round 1: a not-met verdict the segment cannot act on (final summary step, no steps/time left)
+ * finishes flagged; the CAS is guarded on this segment's run; a parallel finish whose send-back was
+ * already counted gets the same answer without a second count. `stateDetail: 'verifying'` while it runs. A verifier error or
  * timeout finishes (flagged) — it never blocks; Stop or cancel during it refuses the finish (the
  * segment then pauses / cancels as usual). A send-back is counted on the row (compare-and-set, only
  * while running) BEFORE the agent is told, so it survives segments and restarts and two racing
@@ -157,18 +157,17 @@ type Checked =
 async function verifyFinish(seg: Seg, summary: string, signal: AbortSignal): Promise<Checked> {
   const o = await outcome()
   const row = await getWorkstream(seg.workstreamId)
-  if (!row || !['running', 'attention'].includes(row.state)) return { refused: 'the workstream is no longer running', summary: 'not running' }
+  // The same states the send-back CAS accepts (running, or attention with a parallel card parked).
+  if (!row || !['running', 'attention'].includes(row.state)) return { refused: `the workstream is ${row?.state ?? 'gone'}, not running — it cannot finish now`, summary: 'not running' }
   let enabled = true
   try { enabled = await o.outcomeDeps.enabled() } catch { /* unreadable settings: verify anyway */ }
-  if (!enabled) {
-    const verification = o.toVerification(o.outcomeError('the judge is switched off', 0), 'skipped', row.sendBacks)
-    return { verification }
-  }
+  if (!enabled) return { verification: o.toVerification(o.outcomeError('the judge is switched off', 0), 'skipped', row.sendBacks) }
   const cancel = new AbortController()
   seg.verifyAbort = cancel
   const sig = AbortSignal.any([signal, cancel.signal])
   let v: OutcomeVerdict
   try {
+    // Bound: evidence (≤ 60 s sandbox slot wait + 30 s diff) then the verifier (60 s) — ~150 s worst case.
     await seg.verifying(true)
     let evidence: Awaited<ReturnType<typeof o.outcomeDeps.evidence>> | null = null
     try { evidence = await o.outcomeDeps.evidence(row, summary, { signal: sig }) } catch (err) {
@@ -176,36 +175,39 @@ async function verifyFinish(seg: Seg, summary: string, signal: AbortSignal): Pro
     }
     if (evidence) v = await o.outcomeDeps.verify(evidence, { signal: sig }).catch(err => o.outcomeError(`verifier failed: ${(err as Error).message.slice(0, 200)}`, 0))
   } finally {
-    seg.verifyAbort = null
+    if (seg.verifyAbort === cancel) seg.verifyAbort = null
   }
-  const stopped = cancel.signal.aborted || seg.stop === 'cancel' ? 'cancelled' : signal.aborted ? 'stopped' : null
-  if (stopped) {
-    await seg.verifying(false)
-    record(row.id, o.toVerification(v!, 'skipped', row.sendBacks), stopped)
-    return { refused: `the workstream was ${stopped} while its outcome was being checked — it has not finished`, summary: stopped }
-  }
-  let seen = row.sendBacks
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const d = o.decideOutcome(v!, seen)
+  try {
+    const stopped = cancel.signal.aborted || seg.stop === 'cancel' ? 'cancelled' : signal.aborted ? 'stopped' : null
+    if (stopped) {
+      record(row.id, o.toVerification(v!, 'skipped', row.sendBacks), stopped)
+      return { refused: `the workstream was ${stopped} while its outcome was being checked — it has not finished`, summary: stopped }
+    }
+    const seen = row.sendBacks
+    const d = o.decideOutcome(v!, seen, { canSendBack: seg.canContinue() })
     if (d.kind === 'finish') return { verification: o.toVerification(v!, d.outcome, seen) }
     const verification = o.toVerification(v!, 'sent-back', seen + 1)
-    const sent = await recordSendBack(row.id, seen, verification)
-    if (sent) {
-      await seg.verifying(false)
+    if (await recordSendBack(row.id, seg.runId, seen, verification)) {
       record(row.id, verification, 'sent-back')
       seg.notes.push(`⚖ Verifier sent this back (${seen + 1}/${o.MAX_SEND_BACKS}): ${v!.gaps.join('; ') || (v!.verdict === 'met' ? 'not confident the goal is met' : 'the goal is not yet met')}${v!.nextStep ? ` — next: ${v!.nextStep}` : ''}`)
-      const first = v!.gaps[0] ?? (v!.verdict === 'met' ? 'low confidence' : 'goal not yet met')
-      return { sendBack: o.sendBackText(v!, seen + 1), summary: `⚖ verifier sent this back (${seen + 1}/${o.MAX_SEND_BACKS}): ${first.length > 120 ? `${first.slice(0, 119)}…` : first}` }
+      return sendBackOf(o, v!, seen + 1)
     }
-    // The guard missed: the work ended / was cancelled meanwhile, or another verification counted first.
+    // The CAS missed. Re-read to say why — never count twice.
     const now = await getWorkstream(row.id)
-    if (!now || now.state !== 'running' || now.cancelRequested) {
-      await seg.verifying(false)
-      return { refused: 'the workstream is no longer running', summary: 'not running' }
-    }
-    seen = now.sendBacks
+    if (!now || !['running', 'attention'].includes(now.state) || now.cancelRequested) return { refused: `the workstream is ${now?.cancelRequested ? 'being cancelled' : now?.state ?? 'gone'} — it has not finished`, summary: 'not running' }
+    if (now.currentRunId !== seg.runId) return { refused: 'this segment no longer owns the workstream (it was recovered elsewhere) — stop here', summary: 'superseded' }
+    // C4: another verification of the same work (a parallel finish_workstream in this step) counted
+    // the send-back already — the same answer, without counting it again.
+    if (now.sendBacks > seen) return sendBackOf(o, v!, now.sendBacks)
+    return { refused: 'the outcome check could not be recorded — try finish_workstream again', summary: 'send-back not recorded' }
+  } finally {
+    await seg.verifying(false)
   }
-  return { verification: o.toVerification(v!, 'flagged', seen) }
+}
+
+function sendBackOf(o: Awaited<ReturnType<typeof outcome>>, v: OutcomeVerdict, n: number): Checked {
+  const first = v.gaps[0] ?? (v.verdict === 'met' ? 'low confidence' : 'goal not yet met')
+  return { sendBack: o.sendBackText(v, n), summary: `⚖ verifier sent this back (${n}/${o.MAX_SEND_BACKS}): ${first.length > 120 ? `${first.slice(0, 119)}…` : first}` }
 }
 
 function record(workstreamId: string, v: OutcomeVerification, outcome: string): void {

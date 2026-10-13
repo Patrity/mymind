@@ -20,7 +20,7 @@ import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { closeListener } from '@mymind/core/lib/bus/listen'
 import { createConversation } from '@mymind/core/services/conversations'
 import { controlWorkstream, startWorkstream } from '@mymind/core/lib/agent/workstreams/loop'
-import { getWorkstream, patchWorkstream, workstreamDTO } from '@mymind/core/lib/agent/workstreams/store'
+import { getWorkstream, patchStateDetail, patchWorkstream, workstreamDTO } from '@mymind/core/lib/agent/workstreams/store'
 import { workstreamNotifyDeps } from '@mymind/core/lib/agent/workstreams/notify'
 import {
   buildOutcomeEvidence, buildWorkstreamEvidence, outcomeDeps, verifyOutcome,
@@ -324,7 +324,7 @@ describe('outcome judge — while verifying', () => {
     // Now the dead segment's verifier answers (partial): no send-back, no second finish, no second note.
     g.open()
     expect(await waitForInFlight(10_000)).toBe(true)
-    expect(lateResult).toMatchObject({ result: { ok: false, error: 'the workstream is no longer running' } })
+    expect(lateResult).toMatchObject({ result: { ok: false, error: 'the workstream is done — it has not finished' } })
     const row = (await getWorkstream(ws.id))!
     expect(row).toMatchObject({ state: 'done', summary: 'SUMMARY-SEG1', sendBacks: 0, verification: { verdict: 'met', confidence: 0.99, outcome: 'finished' } })
     expect((await thread(origin)).filter(m => m.origin === `workstream:${ws.id}`)).toHaveLength(1)
@@ -415,8 +415,12 @@ describe('outcome judge — coordinators and evidence', () => {
     const shared = await childRow(ws, { goal: 'T85 shared child', state: 'running' })
     await useDb().update(workstreams).set({ workspaceMode: 'shared' }).where(eq(workstreams.id, shared.id))
     const sharedRow = (await getWorkstream(shared.id))!
-    expect((await buildWorkstreamEvidence(sharedRow, 'S', { diff })).workspace).toBe(`diff of ${w!.id}`)
-    expect(seen).toEqual([w!.id, w!.id])
+    const sharedEv = await buildWorkstreamEvidence(sharedRow, 'S', { diff })
+    expect(sharedEv.workspace).toBe(`diff of ${w!.id}`)
+    // C3: a child's goal is its coordinator's words — untrusted; a top-level goal is not marked.
+    expect(sharedEv.goalTrusted).toBe(false)
+    expect((await buildWorkstreamEvidence(row, 'S', { diff })).goalTrusted).toBeUndefined()
+    expect(seen).toEqual([w!.id, w!.id, w!.id])
     // The real default runs the script OFFLINE (no network, no secrets, never taints the workspace).
     const { workspaceDiffDeps } = await import('@mymind/core/lib/agent/judge/outcome')
     const { setWorkspaceRuntime } = await import('@mymind/core/lib/sandbox/runtime')
@@ -425,6 +429,113 @@ describe('outcome judge — coordinators and evidence', () => {
     try { await workspaceDiffDeps.exec(w!.id, 'true', { timeoutSec: 30, capBytes: 1000 }) } finally { setWorkspaceRuntime(null) }
     expect(execs).toEqual([{ id: w!.id, o: { timeoutSec: 30, capBytes: 1000, offline: true } }])
     await patchWorkstream(shared.id, { state: 'cancelled' })
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+})
+
+// ── fix round 1 ─────────────────────────────────────────────────────────────────────────────────
+
+describe('outcome judge — fix round 1', () => {
+  it('C4: two finish_workstream calls in ONE step, both partial → ONE send-back counted, both told "Not done yet"', async () => {
+    let arrived = 0
+    let both!: () => void
+    const met = new Promise<void>(r => { both = r })
+    // Both verifications are in flight (both read sendBacks = 0) before either answers.
+    outcomeDeps.verify = async () => { verifyCalls++; if (++arrived === 2) both(); await met; return PARTIAL }
+    let results: Array<Awaited<ReturnType<typeof finish>>> = []
+    const { runFn } = harness(async function* (ctx, _m, seg) {
+      step(ctx)
+      if (seg === 0) results = await Promise.all([finish(ctx, 'S-a'), finish(ctx, 'S-b')])
+      yield { type: 'tool-result', name: 'finish_workstream', summary: 'x' }
+      yield { type: 'done' }
+    })
+    const { ws } = await newWorkstream('parallel')
+    expect(await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })).toBe(1)
+    expect(await waitForInFlight(10_000)).toBe(true)
+    expect(verifyCalls).toBe(2)
+    expect(results.map(r => r.result.notDone)).toEqual([true, true])
+    for (const r of results) expect(r.result.error).toEqual(expect.stringMatching(/Outcome check 1 of 2/))
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'running', sendBacks: 1, stateDetail: null })
+    expect((await thread(ws.conversationId)).filter(m => m.origin === 'judge:outcome')).toHaveLength(1)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('the final summary step: a not-met verdict finishes DONE flagged — never a send-back nobody can act on, never failed', async () => {
+    script = [PARTIAL]
+    let out: Awaited<ReturnType<typeof finish>> | undefined
+    const { drive } = harness(async function* (ctx) { out = await finish(ctx, 'FINAL-SUMMARY'); yield { type: 'done' } })
+    const { ws } = await newWorkstream('final')
+    await patchWorkstream(ws.id, { failureReason: 'step budget used up (5 of 5 steps)' })
+    await drive(ws.conversationId)
+    expect(out).toMatchObject({ result: { ok: true, state: 'done', verifier: 'partial' } })
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'done', summary: 'FINAL-SUMMARY', sendBacks: 0, verification: { verdict: 'partial', outcome: 'flagged' } })
+  })
+
+  it('the last step of the budget: a not-met verdict finishes flagged (no step is left to act on it)', async () => {
+    script = [PARTIAL]
+    const { drive } = harness(async function* (ctx) { step(ctx); await finish(ctx, 'LAST'); yield { type: 'done' } })
+    const { ws } = await newWorkstream('last-step')
+    await patchWorkstream(ws.id, { budget: { maxSteps: 2, maxWallMs: 3_600_000 } })
+    await drive(ws.conversationId)
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'done', sendBacks: 0, verification: { outcome: 'flagged' } })
+  })
+
+  it('a stale segment still alive (split brain) cannot count a send-back: the CAS is on current_run_id', async () => {
+    const gA = gate()
+    const gB = gate()
+    script = [async () => { await gA.p; return PARTIAL }]
+    let lateA: Awaited<ReturnType<typeof finish>> | undefined
+    const { runFn } = harness(async function* (ctx, _m, seg) {
+      step(ctx)
+      if (seg === 0) lateA = await finish(ctx, 'A')
+      else await gB.p  // the recovered segment is still working
+      yield { type: 'done' }
+    })
+    const { ws } = await newWorkstream('split-brain')
+    expect(await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })).toBe(1)
+    await until(async () => (await getWorkstream(ws.id))?.stateDetail === 'verifying' && verifyCalls > 0)
+    const runA = (await getWorkstream(ws.id))!.currentRunId!
+    await useDb().update(agentRuns).set({ owner: 'dead-boot', aliveAt: sql`now() - interval '5 minutes'` }).where(eq(agentRuns.id, runA))
+    expect(await recoverStale({ onlyConversations: [ws.conversationId] })).toBe(1)
+    expect(await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })).toBe(1)
+    await until(async () => { const r = await getWorkstream(ws.id); return r?.currentRunId !== runA && r?.state === 'running' })
+    gA.open()
+    await until(async () => lateA)
+    expect(lateA).toMatchObject({ result: { ok: false, error: expect.stringMatching(/no longer owns the workstream/) } })
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'running', sendBacks: 0 })
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+    gB.open()
+    expect(await waitForInFlight(10_000)).toBe(true)
+  })
+
+  it('Resume of a failed / cancelled workstream gives its finishes their send-backs back (send_backs → 0)', async () => {
+    const { ws } = await newWorkstream('resume-reset')
+    await useDb().update(workstreams).set({ sendBacks: 2 }).where(eq(workstreams.id, ws.id))
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'cancelled', sendBacks: 2 })
+    await controlWorkstream({ workstreamId: ws.id, action: 'resume' })
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'running', sendBacks: 0 })
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('stateDetail: `verifying` wins over `evaluating` — an evaluation never overwrites or clears it; its end restores `evaluating`', async () => {
+    const { ws } = await newWorkstream('detail')
+    await patchWorkstream(ws.id, { state: 'running' })
+    const detail = async () => (await getWorkstream(ws.id))!.stateDetail
+    // evaluating starts (only from none), then a verification starts: verifying wins.
+    expect(await patchStateDetail(ws.id, 'evaluating', [null])).toBe(true)
+    expect(await patchStateDetail(ws.id, 'verifying', [null, 'evaluating'])).toBe(true)
+    expect(await detail()).toBe('verifying')
+    // Another evaluation starting, or one ending, leaves `verifying` alone.
+    expect(await patchStateDetail(ws.id, 'evaluating', [null])).toBe(false)
+    expect(await patchStateDetail(ws.id, null, ['evaluating'])).toBe(false)
+    expect(await detail()).toBe('verifying')
+    // The verification ends with an evaluation still in flight: `evaluating` comes back.
+    expect(await patchStateDetail(ws.id, 'evaluating', ['verifying'])).toBe(true)
+    expect(await detail()).toBe('evaluating')
+    // A non-null detail never lands on a workstream that is not running.
+    await patchWorkstream(ws.id, { state: 'paused', stateDetail: null })
+    expect(await patchStateDetail(ws.id, 'verifying', [null, 'evaluating'])).toBe(false)
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 })
