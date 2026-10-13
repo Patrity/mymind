@@ -89,6 +89,16 @@ afterAll(async () => {
   try {
     if (realTaskIds.length) await db().delete(tasks).where(inArray(tasks.id, realTaskIds))
     await cleanupEvalRun(RUN)
+    // Safety net: if isolation ever regresses (or a mutation check breaks it on purpose), the rows
+    // that leaked into public carry TAG — remove them so the shared dev DB stays clean.
+    const like = `${TAG}%`
+    await db().execute(sql`delete from workstreams where goal like ${like}`)
+    await db().execute(sql`delete from conversations where title like ${like}`)
+    await db().execute(sql`delete from tasks where title like ${like}`)
+    await db().execute(sql`delete from memories where content like ${like}`)
+    await db().execute(sql`delete from documents where path like ${`/eval/${TAG}%`}`)
+    await db().execute(sql`delete from channel_deliveries where target like ${like}`)
+    await db().execute(sql`delete from activity_log where name like ${like}`)
   } finally {
     setBusNs(null)
     globalThis.fetch = realFetch
