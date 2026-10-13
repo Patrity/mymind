@@ -23,8 +23,8 @@ Docker sandbox and host `exec` are retired in favour of a native workspace; Sear
 | D2 | Database = **central Postgres** `192.168.2.80:5432`, db `bridget`, role `bridget` (owner; PG 17.6; vector 0.8.1, pgcrypto, pg_trgm, ltree pre-installed by the homelab agent) | Postgres on the mini; keep `mymind-db` in LXC 114 |
 | D3 | **Retire SearXNG**; **Brave** is the only web-search backend, with a client-side rate limiter + retry | SearXNG on the mini; proxy round-robin |
 | D4 | **Build on LXC 114** (16 GB, existing toolchain) as the CI build box; CD ships the web `.output` + worker release to the mini over SSH, migrates against `.80`, restarts launchd services; rollback = release-dir swap | build on the 8 GB mini |
-| D5 | **Native workspace**: workspace tools run as `bridget` in `~/mymind/workspaces/<workspaceId>/`, no approvals in clean runs; Docker sandbox and host `exec`/admin toolset retired | keep Docker (OrbStack) sandbox |
-| D6 | **Tainted runs**: commands run under macOS `sandbox-exec` — **no network, writes only inside the workspace, no secrets**; background shells/watches refused; "Re-enable network" unchanged | approval card per command |
+| D5 | **Bridget owns the machine.** Workspace tools run as `bridget`; `~/mymind/workspaces/<workspaceId>/` is her default working/storage dir (relative paths resolve there; absolute paths go anywhere). Full filesystem, **full network (LAN + internet)**, any CLI, no approvals, **no command-concurrency cap, no per-workspace quota** (only a low-disk alarm). Docker sandbox and host `exec`/admin toolset retired | keep Docker (OrbStack) sandbox; path containment; process caps |
+| D6 | **Taint confinement (trial)**: only a run tainted by mail/calendar reads or a guard flag runs its commands under macOS `sandbox-exec` — no network, writes only inside the workspace, no secrets; background shells/watches refused; "Re-enable network" unchanged. Tony is skeptical it is worth it: it is **one setting** (`agent.taintConfinement`, default on) and every confinement is logged (`sandbox:confined` activity + a chip in the thread) so its real cost can be judged | approval card per command; no guard at all |
 | D7 | **Evals**: per-world schemas on `.80` unchanged; eval workspace commands always run under `sandbox-exec` (offline, scratch dir); host-level commands refused | Docker for evals only |
 | D8 | **Credentials** live in `bridget`'s macOS account (gh, git, ssh). GitHub: **re-auth `gh` as Patrity (Tony's account), full access** — accepted risk on a dedicated box. MyMind's secrets "sandbox" opt-in becomes "export to Bridget's shell"; never in tainted runs | separate GitHub account; fine-grained token |
 | D9 | **Cleanup**: retire Hermes (unload `ai.hermes.serve`/`ai.hermes.gateway`, archive `~/.hermes`), stop/remove the old Homebrew `postgresql@16` service, reclaim disk; **never touch BlueBubbles** | — |
@@ -46,22 +46,25 @@ and `NUXT_DATABASE_URL` → `.80`; `NUXT_STORAGE_LOCAL_DIR` → `~/mymind/data/u
 `NITRO_HOST=0.0.0.0`, `NITRO_PORT=3000`; `AGENT_RUNTIME_EXCLUSIVE=1` on the worker.
 
 ## 3. Native workspace (replaces cycle 82's container runtime)
-- `packages/core/src/lib/sandbox` gains a **host runtime** implementing the same manager interface
-  (`exec`, background shells, watches, quota, file ops) with no container: `spawn` as the current user
-  with `cwd` = workspace dir, env = `HOME`, `PATH` (Homebrew first), `LANG`, opted-in secrets.
-- All existing invariants keep their meaning: file tools resolve paths **inside the workspace** (realpath
-  check — symlinks may not escape for file tools; `bash` may `cd` anywhere as `bridget` in clean runs),
-  output caps, timeouts, quota (du on the dir; 5 GB / 200k files), disk watchdog (on the mini's volume),
-  idle/terminal cleanup, 30-day sweep, background-shell registry (PID-based, process groups; re-attach
-  or mark lost on restart).
-- **Tainted runs**: every command is wrapped in `sandbox-exec -f <profile>` with a generated profile:
-  `(deny network*)`, `(deny file-write*)` except the workspace dir and `/private/tmp/<per-run>`, reads
-  allowed; no secrets in env. Background shells/watches refused while tainted. Workspace taint (cycle 82
-  persistent semantics) unchanged; "Re-enable network" clears it.
-- The Docker runtime stays in the codebase only if evals still need it — they don't (D7), so it is
-  removed along with `deploy/sandbox/*` and the `mymind-sandbox` network/firewall provisioning.
-- Host `exec` + the `admin` toolset are removed; the system prompt's SHELL block describes the workspace
-  as Bridget's real Mac shell with her own logins.
+- `packages/core/src/lib/sandbox` gains a **host runtime** implementing the manager interface (`exec`,
+  background shells, watches, file ops) with no container: `spawn` as `bridget`, `cwd` = the workspace
+  dir, the login environment (Homebrew `PATH`, her CLI auths) plus opted-in secrets.
+- **No restrictions in clean runs**: file tools accept absolute paths anywhere on the machine (relative
+  paths resolve inside the workspace); `bash` can reach the LAN and the internet; no concurrency cap, no
+  per-workspace quota. Kept: output caps and timeouts on foreground commands (so a tool result stays
+  readable), the background-shell registry (process groups; re-attach or mark lost on restart), watches,
+  idle/terminal cleanup of *processes*, the 30-day sweep of finished workstreams' workspace dirs, and a
+  **low-disk alarm** (free space on the mini's volume < 5 GB → iMessage Tony + pause new workspace work
+  until ≥ 8 GB).
+- **Taint confinement (D6)**: when `agent.taintConfinement` is on and the run is tainted, every command is
+  wrapped in `sandbox-exec -f <generated profile>`: `(deny network*)`, `(deny file-write*)` except the
+  workspace dir and a per-run tmp dir; no secrets in env; background shells/watches refused. Each
+  confinement records `sandbox:confined` activity and shows a "confined (tainted run)" chip on the tool
+  part. Workspace taint (cycle 82 persistent semantics) and "Re-enable network" unchanged.
+- The Docker runtime, `deploy/sandbox/*`, and the `mymind-sandbox` network/iptables provisioning are
+  removed. Host `exec` + the `admin` toolset are removed; the system prompt's SHELL block describes the
+  workspace as Bridget's own Mac: full machine, LAN and internet, her own logins, workspaces as her
+  default storage.
 
 ## 4. Search
 `search/providers/searxng.ts` and SearXNG settings removed; `resolve.ts` returns Brave; the Settings →
@@ -78,8 +81,8 @@ fixtures unaffected (fake world).
   evals first, activate + `launchctl kickstart -k`, health gates (`/api/health`, worker heartbeat).
 - Logs: `~/Library/Logs/mymind/{web,worker}.log` with rotation (newsyslog). The `prod-deploy` skill is
   rewritten for the mini (+ the LXC build box).
-- Memory budget on 8 GB: web ≤ 1.5 GB, worker ≤ 2 GB (`--max-old-space-size`), workspace builds share the
-  rest; `SANDBOX_MAX_RUNNING` becomes a cap on concurrent workspace command processes (default 4).
+- Memory: only MyMind's own processes are capped (web ≤ 1.5 GB, worker ≤ 2 GB `--max-old-space-size`) so
+  heavy agent work can't OOM-kill the app; agent commands are uncapped.
 
 ## 6. Cutover runbook (executed by the controller, Tony informed)
 1. Preflight on the mini: provision, ship the release, health-check against an **empty** test DB is not
@@ -93,9 +96,10 @@ fixtures unaffected (fake world).
    Pangolin back.
 
 ## 7. Testing
-Unit/DB: host runtime (exec, caps, timeouts, background shells, watches, quota, path containment,
-symlink escape refused for file tools), `sandbox-exec` profile generation + a darwin-only integration
-test proving tainted commands have no network and cannot write outside the workspace; Brave limiter +
+Unit/DB: host runtime (exec, output caps, timeouts, background shells, watches, relative vs absolute
+paths, low-disk alarm), `sandbox-exec` profile generation + a darwin-only integration test proving a
+tainted command has no network and cannot write outside the workspace while a clean one can reach the LAN
+and write anywhere; the `agent.taintConfinement` switch; Brave limiter +
 429 retry; evals run green on the host runtime (bridget-core on dev). Browser: Files/Shells tabs against
 host workspaces; Settings → Search Brave-only. Prod acceptance: cutover checklist (§6) + bridget-core on
 prod ≥ the 2026-10-13 baseline (20/21 → now 22/23 with the new edit cases).
