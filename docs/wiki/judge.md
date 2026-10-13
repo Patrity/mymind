@@ -301,7 +301,7 @@ the run. Disabling the judge is **not** a quiet off switch.
   run.
 - **Workspace effect.** A real flag on a workspace source taints the **workspace** (cycle 82: network
   off until Tony re-enables). A run tainted **only** by `unverified` runs its workspace commands
-  `--network none` with no secrets, but **never** marks the workspace tainted — so a guard outage or
+  `--network none` with no secrets and stops the workspace's live background shells/watches (follow-up 2, NB4; `bash_output`/`kill_shell` always hit the real container), but **never** marks the workspace tainted — so a guard outage or
   fan-out contention can't quietly take workspaces offline. Any other run taint (`mail`, real
   `flagged`) keeps the cycle-82 rule: the run's workspace commands taint the workspace.
 
@@ -324,8 +324,8 @@ pre-existing cycle-81 hole this cycle also closes) and, worse, let Smart Approva
 `gmail_send` or `calendar_rsvp` steered by content the workstream had genuinely read.
 
 **`workstreams.taint_sources`** (migration 0083, `text[] not null default '{}'`) holds the union of the
-**persisted** sources that have ever tainted the workstream — only `'mail'` and **real-verdict**
-`'flagged'` (`PERSISTED_TAINT_SOURCES`); it only grows, it is never cleared. `'workspace'` is **never
+**persisted** sources that have ever tainted the workstream — only `'mail'`, **real-verdict**
+`'flagged'` and `'child'` (`PERSISTED_TAINT_SOURCES`); it only grows, it is never cleared. `'workspace'` is **never
 persisted** (it is derived from the workspace's own flag at every segment start, so "Re-enable
 network" works), and `'unverified'` (fail-closed guard) is run-only — not persisted, not inherited. `storedTaintSources(row)` reads it (a legacy row with `tainted = true` and no sources reads
 as `mail`, the cycle-83 meaning of the bare boolean).
@@ -342,7 +342,7 @@ not just the in-window case.
 only then recorded in the run; a failed write retries ×3 and then aborts the segment as a failure, and
 `finish_workstream` / `ask_tony` refuse while a taint is unpersisted. A legacy row (tainted, no
 sources) gets `mail` alongside its first new source (N4). Children inherit only persisted sources at
-creation; a coordinator that reads a tainted child gains the child's `mail`/`flagged` (`childTaint`).
+creation; a coordinator that reads output from a child whose row **or workspace** is tainted gains the persisted source `child` (follow-up 2, NB2; it replaces copying the child's own sources).
 
 **Immediate persistence**, not just at segment end. `buildAiTools` gained `RunHooks.onTaint`: it
 fires once at the very start when the run begins already tainted, and again every time the run gains
