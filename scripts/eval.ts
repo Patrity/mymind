@@ -1,8 +1,9 @@
-// Cycle 85 (spec §3.3): `pnpm eval <suite> [--case <slug>]… [--n <runs>] [--model <modelDefId>] [--no-wait]`
+// Cycle 85 (spec §3.3): `pnpm eval <suite> [--case <slug>]… [--n <runs>] [--model <modelDefId>] [--no-wait] [--local]`
 //
 // Enqueues an eval run (the worker job `eval:run-suite` — the worker in THIS bus namespace runs it,
 // so it must be up: `pnpm dev` locally, mymind-worker in prod) and tails its progress until it ends.
 // Ctrl-C stops tailing only; the run keeps going in the worker (`--cancel <runId>` cancels one).
+// `--local` runs the job in THIS process instead (no worker needed — dev); Ctrl-C then cancels it.
 // Built-in suites (evals/*.json) are seeded first, so `pnpm eval bridget-core` works on a fresh DB.
 // Exit code: 0 when the run finished (`done`), 1 otherwise.
 import { initCore } from '@mymind/core/config'
@@ -14,14 +15,14 @@ const { eq, asc, and, gt } = await import('drizzle-orm')
 const { useDb } = await import('@mymind/core/db')
 const { evalSuites, evalRuns, evalResults, evalCases } = await import('@mymind/core/db/schema')
 const { seedBuiltinSuites } = await import('@mymind/core/lib/eval/suites')
-const { enqueueEvalRun, cancelEvalRun, EvalRunError } = await import('@mymind/core/lib/eval/runs')
+const { enqueueEvalRun, cancelEvalRun, startEvalRun, _evalRunSettled, EvalRunError } = await import('@mymind/core/lib/eval/runs')
 const { busNs } = await import('@mymind/core/lib/bus/ns')
 const { EVAL_RUN_TERMINAL } = await import('@mymind/core/shared/types/eval')
 type Summary = import('@mymind/core/shared/types/eval').EvalRunSummary
 
 function usage(msg?: string): never {
   if (msg) console.error(`eval: ${msg}`)
-  console.error('usage: pnpm eval <suite> [--case <slug>]… [--n <runs>] [--model <modelDefId>] [--no-wait]\n       pnpm eval --cancel <runId>')
+  console.error('usage: pnpm eval <suite> [--case <slug>]… [--n <runs>] [--model <modelDefId>] [--no-wait] [--local]\n       pnpm eval --cancel <runId>')
   process.exit(2)
 }
 
@@ -32,6 +33,7 @@ let n: number | undefined
 let model: string | undefined
 let wait = true
 let cancel: string | null = null
+let local = false
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i]!
   const val = () => argv[++i] ?? usage(`${a} needs a value`)
@@ -39,6 +41,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--n') { n = Number(val()); if (!Number.isInteger(n) || n < 1) usage('--n must be a positive whole number') }
   else if (a === '--model') model = val()
   else if (a === '--no-wait') wait = false
+  else if (a === '--local') local = true
   else if (a === '--cancel') cancel = val()
   else if (a.startsWith('--')) usage(`unknown option ${a}`)
   else if (!suiteName) suiteName = a
@@ -61,15 +64,25 @@ if (!suite) {
 
 let run
 try {
-  run = await enqueueEvalRun(suite.id, { ...(cases.length ? { cases } : {}), ...(n ? { n } : {}), ...(model ? { model } : {}) })
+  run = await enqueueEvalRun(suite.id, { ...(cases.length ? { cases } : {}), ...(n ? { n } : {}), ...(model ? { model } : {}) }, local ? { send: async () => {} } : {})
 } catch (err) {
   if (err instanceof EvalRunError) usage(err.message)
   throw err
 }
-console.log(`eval run ${run.id} — suite ${suite.name} (bus ns ${busNs()})`)
-if (!wait) process.exit(0)
+console.log(`eval run ${run.id} — suite ${suite.name} (${local ? 'in this process' : `bus ns ${busNs()}`})`)
+if (local) {
+  if (!(await startEvalRun(run.id)).started) { console.error('could not claim the run'); process.exit(1) }
+} else if (!wait) process.exit(0)
 
-process.on('SIGINT', () => { console.log(`\nstopped tailing; the run continues in the worker (cancel: pnpm eval --cancel ${run.id})`); process.exit(130) })
+process.on('SIGINT', () => {
+  if (local) {
+    console.log('\ncancelling (the attempt in flight stops, its world is cleaned up)…')
+    void cancelEvalRun(run.id).then(() => _evalRunSettled(run.id)).finally(() => process.exit(130))
+    return
+  }
+  console.log(`\nstopped tailing; the run continues in the worker (cancel: pnpm eval --cancel ${run.id})`)
+  process.exit(130)
+})
 
 const pct = (x: number | null | undefined) => x === null || x === undefined ? '—' : `${(x * 100).toFixed(0)}%`
 const sec = (ms: number | null | undefined) => `${((ms ?? 0) / 1000).toFixed(1)}s`
@@ -101,6 +114,7 @@ for (;;) {
       for (const c of s.cases) console.log(`  ${c.passed ? 'PASS' : 'fail'}  ${c.slug}${c.holdout ? ' (holdout)' : ''}  mean ${c.meanScore?.toFixed(2) ?? '—'}${c.forbidden ? '  FORBIDDEN' : ''}${c.failedAttempts ? `  ${c.failedAttempts} failed` : ''}`)
     }
     console.log(`git ${row.gitSha ?? '—'} · model ${row.modelLabel ?? '—'} · prompt ${row.promptHash?.slice(0, 12) ?? '—'} · tools ${row.toolsHash?.slice(0, 12) ?? '—'}`)
+    if (local) await _evalRunSettled(run.id) // its worlds are cleaned up before the process ends
     process.exit(row.status === 'done' ? 0 : 1)
   }
   await new Promise(r => setTimeout(r, 2_000))
