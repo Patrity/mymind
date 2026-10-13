@@ -580,6 +580,14 @@ describe('build-artifacts.sh never builds in the LXC runtime tree (final wave I2
     expect(existsSync(join(app, '.macmini-out'))).toBe(false)
   })
 
+  it('runs prune-arch.sh on both release trees, after staging and before release.env', () => {
+    const src = readFileSync('deploy/macmini/build-artifacts.sh', 'utf8').split('\n').filter(l => !l.trim().startsWith('#')).join('\n')
+    const call = src.indexOf('bash "$APP_DIR/deploy/macmini/prune-arch.sh" "$OUT/web" "$OUT/worker"')
+    expect(call).toBeGreaterThan(src.indexOf('node apps/worker/stage.mjs'))
+    expect(call).toBeLessThan(src.indexOf('release.env'))
+    expect(src).not.toMatch(/find "\$OUT"/) // no second, unchecked prune
+  })
+
   it('a separate build checkout passes the guard (and goes on to install)', () => {
     const r = build(tree('opt-mymind-build'), tree('opt-mymind'))
     expect(r.out).not.toContain('refusing to build in')

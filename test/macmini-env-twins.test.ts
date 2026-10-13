@@ -3,7 +3,7 @@
 // runtimeConfig mapping implies: every plain key core's coreRuntimeConfig reads → NUXT_<key> (the
 // override fromEnv / Nitro honour), plus nuxt.config.ts's own `process.env.X` runtimeConfig reads.
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -83,5 +83,26 @@ describe('check-env-twins.sh', () => {
     const r = check('DATABASE_URL=x\nNUXT_DATABASE_URL=\n')
     expect(r.code).toBe(1)
     expect(r.out).toContain('sets DATABASE_URL but not NUXT_DATABASE_URL')
+  })
+})
+
+describe('provision-macmini.sh --check counts a missing twin as a problem (darwin, read-only)', () => {
+  let root: string
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'mm-prov-')) })
+  afterEach(() => { rmSync(root, { recursive: true, force: true }) })
+  const problems = (env: string) => {
+    mkdirSync(join(root, 'env'), { recursive: true, mode: 0o700 })
+    writeFileSync(join(root, 'env/mymind.env'), env, { mode: 0o600 })
+    const r = spawnSync('bash', [resolve('deploy/macmini/provision-macmini.sh'), '--check'], { env: { ...process.env, MYMIND_ROOT: root }, encoding: 'utf8' })
+    const out = `${r.stdout}${r.stderr}`
+    return { n: Number(out.match(/\[provision\] (\d+) problem/)?.[1] ?? 0), out }
+  }
+
+  it.skipIf(process.platform !== 'darwin')('one plain key without its twin adds exactly one FAIL', () => {
+    const base = problems('MAX_UPLOAD_BYTES=1\nNUXT_MAX_UPLOAD_BYTES=1\n')
+    const missing = problems('MAX_UPLOAD_BYTES=1\n')
+    expect(missing.out).toContain('[FAIL] env file sets MAX_UPLOAD_BYTES but not NUXT_MAX_UPLOAD_BYTES')
+    expect(base.out).not.toContain('NUXT_MAX_UPLOAD_BYTES')
+    expect(missing.n).toBe(base.n + 1)
   })
 })
