@@ -192,7 +192,7 @@ async function doImport() {
               v-model="replace"
               label="Replace: also delete this suite's cases the JSON doesn't have"
             />
-            <UAlert
+            <UAlert class="shrink-0"
               v-if="importError"
               color="error"
               variant="subtle"

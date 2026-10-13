@@ -130,7 +130,7 @@ async function cancel() {
           </span>
         </div>
 
-        <UAlert
+        <UAlert class="shrink-0"
           v-if="run.error"
           color="error"
           variant="subtle"

@@ -68,7 +68,7 @@ const deltaClass = (d: number | null) => (d === null || Math.abs(d) < 1e-9 ? 'te
     </template>
 
     <template #body>
-      <UAlert
+      <UAlert class="shrink-0"
         v-if="!aId || !bId"
         color="neutral"
         variant="subtle"

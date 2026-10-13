@@ -171,7 +171,7 @@ function revert() {
         class="h-40"
       />
       <template v-else-if="form">
-        <UAlert
+        <UAlert class="shrink-0"
           v-if="changedElsewhere && dirty"
           color="warning"
           variant="subtle"
@@ -179,7 +179,7 @@ function revert() {
           title="This case was changed elsewhere since you opened it"
           description="Saving overwrites that change. Revert to load it."
         />
-        <UAlert
+        <UAlert class="shrink-0"
           v-if="serverMessage"
           color="error"
           variant="subtle"
@@ -205,7 +205,7 @@ function revert() {
           </template>
           <template #json>
             <div class="mt-3 flex flex-col gap-2">
-              <UAlert
+              <UAlert class="shrink-0"
                 v-if="issues.length"
                 color="error"
                 variant="subtle"

@@ -381,7 +381,7 @@ async function exportJson() {
             <p class="text-sm text-muted">
               {{ plannedAttempts }} attempt(s) in total.
             </p>
-            <UAlert
+            <UAlert class="shrink-0"
               v-if="runError"
               :color="runActiveId ? 'warning' : 'error'"
               variant="subtle"

@@ -111,7 +111,7 @@ const detail = (d: Record<string, unknown>) => JSON.stringify(d, null, 2)
           >· {{ result.tokens.toLocaleString() }} tokens</span>
         </div>
 
-        <UAlert
+        <UAlert class="shrink-0"
           v-if="scoring?.failed || result.error"
           color="error"
           variant="subtle"
@@ -119,7 +119,7 @@ const detail = (d: Record<string, unknown>) => JSON.stringify(d, null, 2)
           title="The attempt failed before it could be scored"
           :description="scoring?.failed ?? result.error ?? ''"
         />
-        <UAlert
+        <UAlert class="shrink-0"
           v-if="data.case?.editedSince"
           color="warning"
           variant="subtle"
@@ -137,6 +137,7 @@ const detail = (d: Record<string, unknown>) => JSON.stringify(d, null, 2)
         >
           <template #header>
             <span class="text-sm font-medium text-highlighted">Prompt</span>
+            <span class="ms-2 text-xs text-muted">the case's current wording</span>
           </template>
           <p class="whitespace-pre-wrap break-words text-sm">
             {{ caseJson.prompt }}
