@@ -37,7 +37,9 @@ const { installEvalWorld, cleanupEvalRun } = await import('@mymind/core/lib/eval
 const { listEvalTenants, evalRunPrefix, createEvalTenant } = await import('@mymind/core/lib/eval/tenant')
 const { approvalFor } = await import('@mymind/core/lib/agent/runtime/approvals')
 const { loadConfig } = await import('@mymind/core/lib/ai/registry/store')
-const { primaryModelFrom } = await import('@mymind/core/lib/eval/provenance')
+const { primaryModelFrom, gatewayOriginsFrom } = await import('@mymind/core/lib/eval/provenance')
+const { currentEvalScope } = await import('@mymind/core/lib/eval/context')
+const pg = (await import('pg')).default
 const { stubOutcomeVerifier } = await import('./helpers/outcome-stub')
 type AgentMessage = import('@mymind/core/lib/agent/run').AgentMessage
 type RunAgentCtx = import('@mymind/core/lib/agent/run').RunAgentCtx
@@ -101,6 +103,16 @@ function script(messages: AgentMessage[], ctx: RunAgentCtx): Steps {
       [...text('The post is about soil sensors and moisture-based watering.'), finish('stop')]
     ]
   }
+  if (ctx.workstream && /reading list/.test(ctx.workstream.goal)) {
+    drivenWorkstreams++
+    return [[call('fw', 'finish_workstream', { summary: 'list' }), finish('tool-calls')], [...text('done'), finish('stop')]]
+  }
+  if (/reading list of five/.test(asked)) {
+    return [
+      [call('sw', 'start_workstream', { goal: 'Compile a reading list of five RAG papers' }), finish('tool-calls')],
+      [...text('Started a background workstream for the reading list.'), finish('stop')]
+    ]
+  }
   if (/sales\.csv/.test(asked)) {
     return [
       [call('m1', 'send_message', { channel: 'imessage', text: `revenue is in ${TAG}` }), finish('tool-calls')],
@@ -110,6 +122,9 @@ function script(messages: AgentMessage[], ctx: RunAgentCtx): Steps {
   return [[...text('ok'), finish('stop')]]
 }
 
+let drivenWorkstreams = 0
+/** Runs inside the world before the model (tests reach the world's scope from here). */
+let beforeModel: ((ctx: RunAgentCtx) => Promise<void>) | null = null
 let live = 0
 let maxLive = 0
 let holdMs = 0
@@ -125,6 +140,7 @@ const runner = {
       live++; maxLive = Math.max(maxLive, live)
       try {
         if (holdMs) await new Promise(r => setTimeout(r, holdMs))
+        if (beforeModel) await beforeModel(ctx)
         yield* inner
       } finally { live-- }
     })()
@@ -267,6 +283,75 @@ describe('the runner end to end (fake model)', () => {
     // Outside a world nothing changed: no channel → denied, as before.
     expect((await approvalFor('no-channel-run')(req('exec'))).approved).toBe(false)
   })
+})
+
+describe('attempt guards', () => {
+  it('a truncated capture log or tenant drift fails the attempt (score 0) even when it otherwise passes', async () => {
+    const suiteId = await testSuite(['task-create'])
+    const c = await caseRow(suiteId, 'task-create')
+    const runId = randomUUID()
+    runIds.push(runId)
+    const ctx = { runId, params: {}, allowNetwork: () => false, limits: {}, defaultModel: null, opts: { runner } }
+    const clean = await runAttempt(c, 1, ctx)
+    expect(clean).toMatchObject({ failed: null, score: 1 })
+    beforeModel = async () => { const s = currentEvalScope()!; for (let i = 0; i < 2_001; i++) s.capture('noise', { i }) }
+    try {
+      const truncated = await runAttempt(c, 2, ctx)
+      expect(truncated.failed).toEqual(expect.stringMatching(/truncated/))
+      expect(truncated.score).toBe(0)
+    } finally { beforeModel = null }
+    // A public table created after the world was installed (a migration mid-run) — the world does not
+    // shadow it, so in-world SQL could fall through to Tony's.
+    const table = `evaldrift_${TAG}`
+    const admin = new pg.Client({ connectionString: process.env.DATABASE_URL })
+    await admin.connect()
+    try {
+      beforeModel = async () => { await admin.query(`create table if not exists public.${table} (id int)`) }
+      const drifted = await runAttempt(c, 3, ctx)
+      expect(drifted.failed).toEqual(expect.stringMatching(new RegExp(`tenant drift.*${table}`)))
+      expect(drifted.score).toBe(0)
+    } finally {
+      beforeModel = null
+      await admin.query(`drop table if exists public.${table}`)
+      await admin.end()
+    }
+  }, 60_000)
+
+  it('a chat attempt drives only its own thread — a workstream it starts is recorded, never run', async () => {
+    const suiteId = await testSuite(['start-workstream-from-chat'])
+    const c = await caseRow(suiteId, 'start-workstream-from-chat')
+    const runId = randomUUID()
+    runIds.push(runId)
+    drivenWorkstreams = 0
+    const rec = await runAttempt(c, 1, { runId, params: {}, allowNetwork: () => false, limits: {}, defaultModel: null, opts: { runner, pollMs: 20 } })
+    expect(rec.failed).toBeNull()
+    expect(rec.toolLog.map(t => t.tool)).toEqual(['start_workstream'])
+    expect(rec.score).toBe(1)
+    expect(drivenWorkstreams).toBe(0)
+  }, 30_000)
+
+  it('by default a world reaches ONLY the registry\'s gateway origins (exact origin), nothing else', async () => {
+    const origins = [...gatewayOriginsFrom(await loadConfig())]
+    expect(origins.length).toBeGreaterThan(0) // the dev AI config has a gateway
+    const gw = new URL(origins[0]!)
+    const suiteId = await testSuite(['task-create'])
+    const tried: Array<{ url: string; ok: boolean }> = []
+    beforeModel = async () => {
+      for (const url of [`${gw.origin}/v1/models`, `${gw.protocol}//${gw.hostname}.evil.example:${gw.port || 443}/v1`, `${gw.protocol}//x@evil.example/v1`, 'https://example.com/']) {
+        tried.push({ url, ok: await fetch(url).then(() => true, () => false) })
+      }
+    }
+    transport.mockClear()
+    try {
+      const run = await enqueueEvalRun(suiteId, {}, { send: noSend })
+      runIds.push(run.id)
+      await startEvalRun(run.id, { runner, verify: metVerify }) // no allowNetwork override
+      await _evalRunSettled(run.id)
+    } finally { beforeModel = null }
+    expect(tried.map(t => t.ok)).toEqual([true, false, false, false])
+    expect(transport).toHaveBeenCalledTimes(1)
+    expect(String(transport.mock.calls[0]![0])).toBe(`${gw.origin}/v1/models`)
+  }, 30_000)
 })
 
 describe('caps', () => {
