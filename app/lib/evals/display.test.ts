@@ -88,6 +88,7 @@ describe('progress, formatting, sparkline', () => {
   it('runProgress is attempts / planned, capped at 1; unknown plan is null', () => {
     expect(runProgress({ status: 'running', summary: { ...run({}).summary!, attempts: 3, planned: 9 } })).toEqual({ done: 3, planned: 9, ratio: 1 / 3 })
     expect(runProgress({ status: 'queued', summary: null })).toEqual({ done: 0, planned: null, ratio: null })
+    expect(runProgress({ status: 'running', summary: { ...run({}).summary!, attempts: 10, planned: 9 } }).ratio).toBe(1)
   })
   it('pct', () => {
     expect(pct(0.875)).toBe('88%')

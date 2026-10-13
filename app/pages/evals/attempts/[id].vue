@@ -32,6 +32,11 @@ const caseJson = computed(() => (data.value?.case?.json ?? null) as null | {
 })
 const flaggedCalls = computed(() => (result.value?.toolLog ?? []).filter(e => e.flagged && !e.unverified).length)
 
+// Why there is no verdict — from what the attempt was scored with, not the case as it is now (a rubric
+// added later must not read as "the judge was skipped").
+const noJudgeReason = computed(() => (scoring.value?.failed || result.value?.error
+  ? 'Not judged: the attempt failed before it could be.'
+  : 'The case had no rubric when this attempt ran, so no outcome judge.'))
 const verdictColor = (v: string | null) => (v === 'met' ? 'success' : v === 'partial' ? 'warning' : v === 'unmet' ? 'error' : 'neutral')
 const check = (v: boolean | null) => (v === null ? { label: 'not checked', color: 'neutral' as const, icon: 'i-lucide-minus' } : v ? { label: 'yes', color: 'success' as const, icon: 'i-lucide-check' } : { label: 'no', color: 'error' as const, icon: 'i-lucide-x' })
 const detail = (d: Record<string, unknown>) => JSON.stringify(d, null, 2)
@@ -274,7 +279,7 @@ const detail = (d: Record<string, unknown>) => JSON.stringify(d, null, 2)
               v-if="!judge"
               class="text-sm text-muted"
             >
-              {{ caseJson?.rubric ? 'Not judged (the attempt failed first).' : 'This case has no rubric, so no outcome judge.' }}
+              {{ noJudgeReason }}
             </p>
             <template v-else>
               <div class="flex items-center gap-2">
