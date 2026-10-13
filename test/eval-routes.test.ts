@@ -8,8 +8,16 @@ import { z } from 'zod'
 vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
 vi.stubGlobal('createError', (o: { statusCode: number, statusMessage?: string, data?: unknown }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
 vi.stubGlobal('readBody', async (e: { body: unknown }) => e.body)
-// readJsonBody reads the raw text (the size cap needs it): `raw` wins, else the JSON of `body`.
-vi.stubGlobal('readRawBody', async (e: { body: unknown; raw?: string }) => e.raw ?? (e.body === undefined ? undefined : JSON.stringify(e.body)))
+// readJsonBody streams the body (the size cap stops the read): `chunks` (a chunked body, each one
+// counted as it is pulled) wins, then `raw`, else the JSON of `body`.
+const pulled = { n: 0 }
+vi.stubGlobal('getRequestWebStream', (e: { body: unknown; raw?: string; chunks?: string[] }) => {
+  const parts = e.chunks ?? [e.raw ?? (e.body === undefined ? '' : JSON.stringify(e.body))]
+  let i = 0
+  return new ReadableStream<Uint8Array>({
+    pull(c) { if (i < parts.length) { pulled.n++; c.enqueue(new TextEncoder().encode(parts[i++])) } else c.close() }
+  })
+})
 vi.stubGlobal('getHeader', (e: { headers?: Record<string, string> }, k: string) => e.headers?.[k])
 vi.stubGlobal('getRouterParam', (e: { params?: Record<string, string> }, k: string) => e.params?.[k])
 
@@ -53,7 +61,7 @@ const modelsGet = await load('../server/api/evals/models.get')
 const ID = '0b6f3c1e-5d2a-4f7b-9c8e-1a2b3c4d5e6f'
 const SESSION = { type: 'session', userId: 'u1' }
 const TOKEN = { type: 'api-token', tokenId: 't1' }
-const evt = (client: unknown, body: unknown = {}, id: string = ID, extra: { raw?: string; headers?: Record<string, string> } = {}) => ({ context: { client }, body, params: { id }, ...extra })
+const evt = (client: unknown, body: unknown = {}, id: string = ID, extra: { raw?: string; chunks?: string[]; headers?: Record<string, string> } = {}) => ({ context: { client }, body, params: { id }, ...extra })
 
 beforeEach(() => { vi.clearAllMocks() })
 
@@ -156,6 +164,19 @@ describe('fix round 1: one active run per suite, size caps, malformed JSON', () 
   it('a second start while one is active is a 409 carrying the active run id', async () => {
     enqueueEvalRun.mockRejectedValue(new EvalRunConflictError('this suite already has a running run — wait for it to finish or cancel it first', 'run-active-1'))
     await expect(runsPost(evt(SESSION, {}))).rejects.toMatchObject({ statusCode: 409, data: { code: 'run-active', runId: 'run-active-1', message: expect.stringMatching(/already has a running run/) } })
+  })
+
+  it('final fix wave: a chunked body with no length is refused AS IT STREAMS — the read stops at the first chunk past the cap', async () => {
+    pulled.n = 0
+    const chunk = 'x'.repeat(16 * 1024)
+    const chunks = Array.from({ length: 1000 }, () => chunk) // ~16 MB if it were buffered whole
+    await expect(runsPost(evt(SESSION, undefined, ID, { chunks }))).rejects.toMatchObject({ statusCode: 413 })
+    expect(pulled.n).toBeLessThanOrEqual(64 / 16 + 2) // 64 KB cap / 16 KB chunks, plus the one that crossed it
+    expect(enqueueEvalRun).not.toHaveBeenCalled()
+    // A chunked body under the cap still reads (and parses) whole.
+    enqueueEvalRun.mockResolvedValue({ id: 'r1' })
+    await runsPost(evt(SESSION, undefined, ID, { chunks: ['{"n":', '2}'] }))
+    expect(enqueueEvalRun).toHaveBeenCalledWith(ID, { n: 2 })
   })
 
   it('an import over 2 MB is refused with 413 — by its declared length before reading, and by its real size', async () => {

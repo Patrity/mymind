@@ -24,21 +24,43 @@ export const SMALL_BODY_MAX = 64 * 1024
 
 /**
  * Reads a JSON body of at most `maxBytes`: a declared Content-Length over it is refused (413) before
- * the body is read, an actual body over it (chunked, or a lying header) too; malformed JSON is a 400 —
- * never a 500. An empty body reads as `{}`.
+ * the body is read; an actual body over it (chunked, or a lying header) is refused AS IT STREAMS — the
+ * read stops at the first chunk past the cap, so an oversized body is never buffered whole (cycle 85
+ * final fix wave). Malformed JSON is a 400 — never a 500. An empty body reads as `{}`.
  */
 export async function readJsonBody(event: H3Event, maxBytes: number): Promise<unknown> {
   const tooLarge = () => createError({ statusCode: 413, statusMessage: 'Payload Too Large', data: { code: 'too-large', message: `The request is larger than ${Math.round(maxBytes / 1024)} KB.` } })
   const declared = Number(getHeader(event, 'content-length'))
   if (Number.isFinite(declared) && declared > maxBytes) throw tooLarge()
-  const raw = await readRawBody(event, 'utf8')
+  const raw = await readCapped(event, maxBytes, tooLarge)
   if (!raw || !raw.trim()) return {}
-  if (Buffer.byteLength(raw, 'utf8') > maxBytes) throw tooLarge()
   try {
     return JSON.parse(raw)
   } catch (e) {
     throw createError({ statusCode: 400, statusMessage: 'Invalid JSON', data: { code: 'invalid-json', message: `Not valid JSON: ${(e as Error).message}` } })
   }
+}
+
+/** The body as UTF-8, read chunk by chunk; past `maxBytes` the stream is cancelled and `tooLarge()`
+ *  thrown. */
+async function readCapped(event: H3Event, maxBytes: number, tooLarge: () => Error): Promise<string> {
+  const stream = getRequestWebStream(event)
+  if (!stream) return ''
+  const reader = stream.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    const chunk = typeof value === 'string' ? Buffer.from(value, 'utf8') : value as Uint8Array
+    size += chunk.byteLength
+    if (size > maxBytes) {
+      await reader.cancel('payload too large').catch(() => {})
+      throw tooLarge()
+    }
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 export function notFound(what: string): Error {
