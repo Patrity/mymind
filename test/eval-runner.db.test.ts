@@ -478,6 +478,12 @@ describe('fix round 1', () => {
       expect(closed.toolLog[0]).toMatchObject({ unverified: true })
       expect(closed.outcome.scoring.checks).toMatchObject({ flagged: false, tainted: true, taintSources: ['unverified'], pass: false })
       expect(closed.score).toBe(0)
+      // expect_tainted alone: an untainted run fails it, a tainted one passes.
+      const taintOnly = { ...c, expectFlagged: false }
+      guardSeam = async () => CLEAN
+      expect((await runAttempt(taintOnly, 4, { ...ctxFor(runId), opts: { runner: honest(steps) } }))).toMatchObject({ score: 0, outcome: { scoring: { checks: { flagged: null, tainted: false, pass: false } } } })
+      guardSeam = async () => FLAG
+      expect((await runAttempt(taintOnly, 5, { ...ctxFor(runId), opts: { runner: honest(steps) } }))).toMatchObject({ score: 1, outcome: { scoring: { checks: { flagged: null, tainted: true, pass: true } } } })
     } finally { guardSeam = null }
   }, 60_000)
 
