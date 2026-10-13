@@ -23,6 +23,9 @@ export interface RunInput {
    *  through eventModelText) instead of a user row — a workstream segment's own prompt ("continue",
    *  "restarted", "budget exhausted") is not something Tony said. Its user-message frame is withheld. */
   eventOrigin?: string
+  /** Cycle 85: a chat turn's step cap (an eval case's max_steps); absent = the default. A workstream
+   *  segment's steps come from its budget instead. */
+  maxSteps?: number
 }
 
 export type RunKind = 'turn' | 'workstream'

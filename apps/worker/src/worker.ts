@@ -47,6 +47,8 @@ export interface WorkerDeps {
   workspaceView(p: CommandPayloads['workspace-view']): Promise<unknown>
   /** Cycle 82 Task 3: Tony's Kill on the Shells tab. */
   workspaceKillShell(p: CommandPayloads['workspace-kill-shell']): Promise<CommandResults['workspace-kill-shell']>
+  /** Cycle 85: claim a queued eval run and start it in the background (lib/eval/runs.ts). */
+  evalRun(p: CommandPayloads['eval-run']): Promise<CommandResults['eval-run']>
   startSchedule(): () => void
   startRecorderFlush(): () => void
   /** Cycle 82: sandbox housekeeping — boot reconcile, then idle-stop + quota every minute and the
@@ -79,7 +81,7 @@ export interface WorkerProcess {
 }
 
 /** Handlers for every command type. Each returns once its action has started (bus contract). */
-export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate' | 'workstreamControl' | 'workspaceReenableNetwork' | 'workspaceReadText' | 'workspaceView' | 'workspaceKillShell'>
+export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate' | 'workstreamControl' | 'workspaceReenableNetwork' | 'workspaceReadText' | 'workspaceView' | 'workspaceKillShell' | 'evalRun'>
 export function commandHandlers(deps: CommandDeps): CommandHandlers {
   return {
     kick: async () => { deps.kick() },
@@ -124,6 +126,10 @@ export function commandHandlers(deps: CommandDeps): CommandHandlers {
     'workspace-kill-shell': async (p) => {
       if (!p || !isUuid(p.workspaceId) || !isUuid(p.shellId)) throw new Error('workspace-kill-shell: bad payload')
       return deps.workspaceKillShell({ workspaceId: p.workspaceId, shellId: p.shellId })
+    },
+    'eval-run': async (p) => {
+      if (!p || !isUuid(p.runId)) throw new Error('eval-run: bad payload')
+      return deps.evalRun({ runId: p.runId })
     }
   }
 }

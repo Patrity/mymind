@@ -56,7 +56,9 @@ const worker = createWorkerProcess({
     const r = await bootAgentRuntime(undefined, { ...DEFAULT_BOOT_RETRY, stopped })
     // Cycle 85 (fix round 1, I2): eval tenants / sandboxes / dirs left by a crash or redeploy —
     // in the background (docker can be slow), never a live run's young world. Never throws.
-    void import('@mymind/core/lib/eval/world').then(m => m.bootSweepEval()).catch(err => console.warn('[eval] boot sweep failed:', err))
+    // Task 3: first an eval run a crash left 'running' is marked failed (partial results kept), so the
+    // sweep drops its worlds; then the built-in suites (evals/*.json) are seeded.
+    void import('@mymind/core/lib/eval/runs').then(m => m.bootEval()).catch(err => console.warn('[eval] boot failed:', err))
     return r
   },
   tick: () => queue.workerTick(),

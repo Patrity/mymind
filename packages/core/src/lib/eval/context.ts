@@ -63,6 +63,10 @@ export interface EvalScope {
   permitHost(host: string, port: number): void
   /** A blocked outbound request (the guard threw). */
   onBlockedNetwork(url: string): void
+  /** Task 3 (spec §3.2): the case's scripted approver — answers EVERY approval card raised in the
+   *  world (runtime/approvals.ts approvalFor) instead of Tony, a channel or the judge, and records the
+   *  card as an `approval.request` capture. `setup.approve`: 'all' | 'none' (default) | tool names. */
+  scriptedApproval?(req: { tool: string; title?: string }): boolean
 }
 
 const als = new AsyncLocalStorage<EvalScope>()

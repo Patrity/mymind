@@ -297,6 +297,14 @@ export function _executeClaimedForTests(run: AgentRun, runFn: RunFn): Promise<vo
   return execute(run, runFn, false)
 }
 
+/** Cycle 85: the eval runner (lib/eval/runner.ts) drives an attempt's runs itself, inside its
+ *  world — never the process pump or the tick. It claims each run with claimNextRun and executes it
+ *  here, through the same path a pump uses (finishRun, the workstream successor, steer requeue,
+ *  abort's settle-wait, waitForInFlight on drain). Never rekicks. */
+export function executeClaimedRun(run: AgentRun, runFn: RunFn): Promise<void> {
+  return execute(run, runFn, false)
+}
+
 /** Claim and START everything currently runnable; returns how many were started. */
 /** `rekick: false` + `onlyConversations` is the test seam: the dev DB is shared, and an unscoped
  *  re-pump after a test run finishes would claim (and fake-execute) other sessions' queued runs. */

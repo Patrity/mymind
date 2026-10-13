@@ -393,7 +393,8 @@ function handlersRecording(seen: string[]) {
     'workspace-read-text': async () => undefined,
     'workspace-view': async () => undefined,
     'workspace-kill-shell': async () => undefined,
-    'imessage-health': async () => ({ ok: true, privateApi: null, checkedAt: null })
+    'imessage-health': async () => ({ ok: true, privateApi: null, checkedAt: null }),
+    'eval-run': async () => ({ started: false })
   }
 }
 

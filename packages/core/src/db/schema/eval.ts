@@ -51,6 +51,13 @@ export const evalRuns = pgTable('eval_runs', {
   toolsHash: text('tools_hash'),
   status: text('status').notNull().default('queued'),                 // 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
   summary: jsonb('summary').$type<Record<string, unknown>>(),
+  /** Task 3: what the run was asked to do (case slugs, n, model override) — EvalRunParams. */
+  params: jsonb('params').$type<Record<string, unknown>>().notNull().default({}),
+  /** Task 3: why a run failed (worker restart, a crash, a bad suite). */
+  error: text('error'),
+  /** Task 3: the worker boot that runs it, and its liveness — a stale running run is a crash. */
+  owner: text('owner'),
+  aliveAt: timestamp('alive_at', { withTimezone: true }),
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp('finished_at', { withTimezone: true })
 }, t => [index('eval_runs_suite_idx').on(t.suiteId, t.startedAt)])

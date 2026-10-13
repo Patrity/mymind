@@ -61,6 +61,15 @@ export const EvalSetupSchema = z.object({
   /** Seeded into the world's tenant before the attempt. */
   memories: z.array(z.object({ content: z.string().min(1), scope: z.enum(['user', 'agent', 'world']).optional(), project: z.string().optional(), tags: z.array(z.string()).optional() })).optional(),
   tasks: z.array(z.object({ title: z.string().min(1), description: z.string().optional(), status: z.string().optional(), project: z.string().optional() })).optional(),
+  /** Task 3: documents seeded into the world's tenant (path → a markdown doc). */
+  documents: z.array(z.object({ path: z.string().regex(/^\/[^\0]+$/, 'an absolute document path'), title: z.string().optional(), content: z.string() })).optional(),
+  /** Task 3: channels configured in the world (they are "not set up" otherwise — the settings
+   *  allow-list never copies Tony's). Seeded into the world's tenant only for a case that sets it;
+   *  every send is captured by the outbox, never delivered. */
+  channels: z.object({
+    imessage: z.object({ handle: z.string().min(3) }).optional(),
+    email: z.object({ to: z.string().min(3) }).optional()
+  }).optional(),
   /** The scripted approver (spec §3.2): which approval cards are approved. Default `none`. */
   approve: z.union([z.literal('all'), z.literal('none'), z.array(z.string())]).optional()
 })

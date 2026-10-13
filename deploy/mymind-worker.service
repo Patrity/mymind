@@ -24,6 +24,8 @@ Environment=AGENT_RUNTIME_EXCLUSIVE=1
 # both processes must agree on.
 EnvironmentFile=/opt/mymind/.env
 EnvironmentFile=/opt/mymind/.env.native
+# Cycle 85: MYMIND_GIT_SHA of the active release (worker-release.sh stage writes it; optional).
+EnvironmentFile=-/opt/mymind/.worker/release.env
 # The ACTIVE release (deploy/worker-release.sh): bundle + its own node_modules, outside the tree CD
 # clears and the node_modules `pnpm install` rewrites, so a restart mid-deploy still finds it whole.
 ExecStart=/usr/bin/node /opt/mymind/.worker/dist/worker.mjs

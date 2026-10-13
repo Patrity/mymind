@@ -19,6 +19,9 @@ case "${1:-}" in
   stage)
     pnpm --filter worker build
     node apps/worker/stage.mjs "$APP_DIR/.worker-next"
+    # Cycle 85: the commit this release was built from — the eval runner records it on every run
+    # (mymind-worker.service reads this file; no .git exists in the release).
+    if [ -n "${MYMIND_GIT_SHA:-}" ]; then printf 'MYMIND_GIT_SHA=%s\n' "$MYMIND_GIT_SHA" > "$APP_DIR/.worker-next/release.env"; fi
     ;;
   activate)
     [ -f .worker-next/dist/worker.mjs ] || { echo "[worker-release] no staged release (.worker-next) — run stage first" >&2; exit 1; }

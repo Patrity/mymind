@@ -11,6 +11,7 @@ import type { ApprovalOptions, ApprovalRequest } from '../types'
 import { loadApprovals, touchApproval, matchesApproval } from '../../exec/approvals'
 import { recordEvent } from '../../observability/record'
 import type { TurnStream } from '../../voice/turn-stream'
+import { currentEvalScope } from '../../eval/context'
 
 type Channel = (req: ApprovalRequest, opts?: ApprovalOptions) => Promise<{ approved: boolean }>
 const channels = new Map<string, Channel>()
@@ -38,6 +39,14 @@ export function approvalFor(runId: string): Channel {
       // Cycle 84: an allowlisted call never reaches a card, so its judge never starts (R1: the saved
       // allowlist is a fast path BEFORE the judge) — nothing to show, nothing to audit.
       return { approved: true }
+    }
+    // Cycle 85 (spec §3.2): inside an eval world the case's scripted approver answers every card —
+    // never Tony, a channel or the judge (the judge is told it was decided by the system).
+    const scope = currentEvalScope()
+    if (scope?.scriptedApproval) {
+      const approved = scope.scriptedApproval({ tool: req.tool, ...(req.title ? { title: req.title } : {}) })
+      opts?.judge?.settle(approved ? 'approved' : 'denied', 'system')
+      return { approved }
     }
     const ch = channels.get(runId)
     // No channel: denied at once — the judge (if any) is told, so its audit never waits on it.

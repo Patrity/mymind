@@ -384,7 +384,13 @@ export function buildEvalWorld(args: { runId: string; schema: string; pool: Pool
     allowHost: host => hosts.has(host.toLowerCase()),
     allowSocket: (host, port) => port === null ? sockets.has(`unix:${host}`) : sockets.has(`${host.toLowerCase()}:${port}`),
     permitHost: (host, port) => { if (host) { hosts.add(host.toLowerCase()); sockets.add(`${host.toLowerCase()}:${port}`) } },
-    onBlockedNetwork: (url) => { blockedNetwork.push(url) }
+    onBlockedNetwork: (url) => { blockedNetwork.push(url) },
+    scriptedApproval: (req) => {
+      const a = setup.approve ?? 'none'
+      const approved = a === 'all' || (Array.isArray(a) && a.includes(req.tool))
+      capture('approval.request', { tool: req.tool, ...(req.title ? { title: req.title } : {}), approved })
+      return approved
+    }
   }
   let disposed: Promise<void> | null = null
   return {
@@ -450,6 +456,12 @@ async function seedWorld(setup: EvalSetup): Promise<void> {
     const { createMemory } = await import('../../services/memory')
     for (const m of setup.memories) {
       await createMemory({ content: m.content, scope: m.scope ?? 'user', project: m.project ?? null, tags: m.tags ?? [], reviewed: true })
+    }
+  }
+  if (setup.documents?.length) {
+    const { createDoc } = await import('../../services/documents')
+    for (const d of setup.documents) {
+      await createDoc({ path: d.path, title: d.title ?? d.path.split('/').pop()!.replace(/\.md$/, ''), content: d.content })
     }
   }
   if (setup.tasks?.length) {

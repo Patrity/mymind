@@ -113,7 +113,10 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   channelDelivery: (c) => c.invalidateQueries({ queryKey: ['conversation'] }),
   // Cycle 77: the backfill switch flipped, or a backfill run finished — the Settings card reads
   // its progress under ['memory-backfill'] (one singleton, so the event id carries no meaning).
-  memoryBackfill: (c) => c.invalidateQueries({ queryKey: ['memory-backfill'] })
+  memoryBackfill: (c) => c.invalidateQueries({ queryKey: ['memory-backfill'] }),
+  // Cycle 85: suites, cases, runs and results all live under ['eval', …] (the /evals pages); an
+  // event's id is a suite's, a run's or a result's, so the whole prefix refreshes.
+  eval: (c) => c.invalidateQueries({ queryKey: ['eval'] })
 }
 
 export function dispatchLiveEvent(client: Invalidator, e: LiveEvent): void {

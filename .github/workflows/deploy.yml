@@ -100,7 +100,7 @@ jobs:
           # The worker release is staged after the web build (cycle 81) into .worker-next — the running
           # worker keeps executing from .worker, untouched by the install/build — and is swapped in only
           # right before its restart below.
-          pct exec 114 -- bash -lc 'cd /opt/mymind && pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build && bash deploy/worker-release.sh stage && set -a && . ./.env.native && set +a && pnpm db:migrate'
+          pct exec 114 -- bash -lc 'cd /opt/mymind && pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build && MYMIND_GIT_SHA=${{ github.sha }} bash deploy/worker-release.sh stage && set -a && . ./.env.native && set +a && pnpm db:migrate'
 
       - name: Cut over to native (drop old app container, start native on :3000)
         run: |

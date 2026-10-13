@@ -31,6 +31,7 @@ function fakeDeps(over: Partial<WorkerDeps> = {}) {
     workspaceReadText: vi.fn(async (p: { workspaceId: string; path: string }) => ({ content: 'hello', bytes: 5, path: `/workspace/${p.path}`, tainted: false })),
     workspaceView: vi.fn(async (p: { op: string }) => ({ op: p.op })),
     workspaceKillShell: vi.fn(async (p: { shellId: string }) => ({ shellId: p.shellId, state: 'killed', alreadyEnded: false })),
+    evalRun: vi.fn(async () => ({ started: true })),
     startSchedule: vi.fn(() => { calls.push('schedule:start'); return () => { calls.push('schedule:stop') } }),
     startRecorderFlush: vi.fn(() => { calls.push('flush-loop:start'); return () => { calls.push('flush-loop:stop') } }),
     startSandbox: vi.fn(() => { calls.push('sandbox:start'); return () => { calls.push('sandbox:stop') } }),
@@ -195,6 +196,17 @@ describe('worker boot', () => {
     expect(await h['workspace-kill-shell']({ workspaceId: id, shellId: sh })).toEqual({ shellId: sh, state: 'killed', alreadyEnded: false })
     await expect(h['workspace-kill-shell']({ workspaceId: id, shellId: '../x' })).rejects.toThrow(/bad payload/)
     expect(deps.workspaceKillShell).toHaveBeenCalledTimes(1)
+  })
+
+  it('eval-run (cycle 85) reaches evalRun with the run id and refuses a bad one', async () => {
+    const { deps } = fakeDeps()
+    const h = commandHandlers(deps)
+    const id = '11111111-2222-4333-8444-555555555555'
+    expect(await h['eval-run']({ runId: id })).toEqual({ started: true })
+    expect(deps.evalRun).toHaveBeenCalledWith({ runId: id })
+    await expect(h['eval-run']({ runId: '../x' })).rejects.toThrow(/bad payload/)
+    await expect(h['eval-run'](null as never)).rejects.toThrow(/bad payload/)
+    expect(deps.evalRun).toHaveBeenCalledTimes(1)
   })
 
   // Cycle 81 Task 4: each command reaches its dependency with the payload's fields, and returns the

@@ -18,6 +18,7 @@
     "db:migrate": "drizzle-kit migrate",
     "seed:skills": "node_modules/.bin/tsx --env-file=.env scripts/seed-skills.ts",
     "reflect:eval": "node_modules/.bin/tsx --env-file=.env scripts/reflect-eval.ts",
+    "eval": "node_modules/.bin/tsx --env-file-if-exists=.env scripts/eval.ts",
     "memory:eval": "node_modules/.bin/tsx --env-file=.env scripts/memory-eval.ts",
     "memory:export": "node_modules/.bin/tsx --env-file-if-exists=.env scripts/memory-export.ts",
     "label": "node_modules/.bin/tsx scripts/label-memories.ts",

@@ -90,6 +90,13 @@ describe('dispatchLiveEvent', () => {
     expect(c.calls).toContainEqual([{ queryKey: ['memory-backfill'] }])
   })
 
+  // Cycle 85: suites, runs and results share the ['eval'] prefix (the /evals pages).
+  it('eval events invalidate the bare ["eval"] prefix', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'eval', id: 'run-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['eval'] }])
+  })
+
   // Cycle 76 (Task 7): a pending improvement is a /review card.
   it('agentImprovement events invalidate the ["review"] and ["agentImprovement"] prefixes', () => {
     const c = fakeClient()

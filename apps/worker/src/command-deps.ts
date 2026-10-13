@@ -46,6 +46,8 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
       if (p.op === 'chunk') return view.readChunk(p.workspaceId, p.path, p.offset, p.length, o)
       return view.shellTail(p.workspaceId, p.shellId, o)
     },
-    workspaceKillShell: p => view.killShellFromUi(p.workspaceId, p.shellId)
+    workspaceKillShell: p => view.killShellFromUi(p.workspaceId, p.shellId),
+    // Cycle 85: the eval job — claims the queued run and runs it in the background.
+    evalRun: async p => (await import('@mymind/core/lib/eval/runs')).startEvalRun(p.runId)
   }
 }

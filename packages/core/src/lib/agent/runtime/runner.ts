@@ -316,7 +316,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         return fresh.map((i) => { const o = originOf(i); return o ? eventModelText(o, i.text) : i.text })
       }, wake: isWake ? { reason: run.wakeReason ?? 'unspecified' } : undefined,
       runId: run.id, toolsets,
-      ...(seg ? { maxSteps: seg.maxSteps, shouldStop: seg.shouldStop, onStep: seg.onStep, workstream: seg.promptInfo } : {}),
+      ...(seg ? { maxSteps: seg.maxSteps, shouldStop: seg.shouldStop, onStep: seg.onStep, workstream: seg.promptInfo } : input.maxSteps ? { maxSteps: input.maxSteps } : {}),
       // Cycle 83 (carried C2): a child runs on its subagents chain (label → rest of subagents → reasoning).
       ...(seg?.child ? { subagent: { label: seg.child.modelLabel } } : {}),
       // Cycle 84 final fix wave (C1): a workstream's taint is sticky for its whole life — every segment
