@@ -137,34 +137,45 @@ ssh bridget@192.168.2.35 'ls ~/mymind/evals-scratch'
 ## Deploy & rollback
 
 **Deploy = push to `master`.** The `deploy` job's target is `${{ inputs.target || vars.DEPLOY_TARGET || 'lxc' }}`
-(a manual `workflow_dispatch` can pick it). Flip at cutover: `gh variable set DEPLOY_TARGET --body macmini`.
+(a manual `workflow_dispatch` defaults to `auto` = the variable; only an explicit `lxc`/`macmini` overrides
+it). Flip at cutover: `gh variable set DEPLOY_TARGET --body macmini` and `gh variable set MYMIND_CUTOVER_DONE --body true`
+— from then on the `[lxc] Refuse after cutover` step fails any lxc run, so nothing restarts the retired
+LXC 114 units by accident.
 
 `macmini` (every step `[macmini]`):
-1. Reach the mini → `provision-native.sh --build-only` in LXC 114 (Node/pnpm, `.env.macmini` check, a
-   warning if the old LXC units still run).
+1. Reach the mini → `provision-native.sh --build-only` in LXC 114 (Node/pnpm, `.env.macmini` check;
+   FAILS while the old LXC units still run).
 2. `deploy/macmini/build-artifacts.sh` in LXC 114: `pnpm install` (clean when the darwin-arm64 natives are
    missing), build (`--max-old-space-size=4096`), worker bundle + stage → `.macmini-out/{web,worker}`
-   (worker gets `evals/` + `release.env` with the sha).
+   (both get `release.env` with the sha, the worker `evals/`; linux-arm64/darwin-x64 natives are dropped).
 3. Ship `deploy/macmini/` to `~/mymind/deploy/` and run `provision-macmini.sh` (dirs, ripgrep/libpq,
-   `~/mymind/bin/{run,release}.sh`, plists via `plutil -lint`, env key check, Hermes guard).
+   `~/mymind/bin/{run,release}.sh`, plists via `plutil -lint`, env key check, Hermes guard). It NEVER
+   reloads a running agent: a changed plist waits in `~/mymind/deploy/agents/` and `release.sh restart`
+   applies it inside the gated step (bootout → wait for the exit → install → bootstrap, retried on
+   `Bootstrap failed: 5`).
 4. Stream each release as tar → `release.sh stage <kind> <sha>`: entry file, every linux native has its
-   darwin-arm64 twin, externals/sharp load with the mini's node. **The running services are untouched.**
+   darwin-arm64 twin, every darwin `*.node` dlopens, externals/sharp load with the mini's node. **The running services are untouched.**
 5. In LXC 114 with `.env.macmini`: `pnpm eval --cancel-all --wait 60` (never fails the deploy) →
    `pnpm db:migrate` against `.80`.
-6. `release.sh activate web && release.sh restart web` → `curl http://192.168.2.35:3000/api/health` from
-   the runner (30 × 5 s) — failure: `rollback web` + restart, job red.
-7. `release.sh activate worker && release.sh restart worker` → `release.sh health worker 120` (heartbeat
-   row with launchd's pid + this host, beat < 30 s) — failure: `rollback worker` + restart, job red.
+6. `release.sh activate web && release.sh restart web` (returns only once launchd runs a NEW pid) →
+   `curl http://192.168.2.35:3000/api/health` from the runner until it reports `"sha":"<this commit>"`
+   (30 × 5 s; `sha` = `MYMIND_GIT_SHA` from the release's `release.env`).
+7. `release.sh activate worker && release.sh restart worker` → `release.sh health worker 120`: launchd's
+   pid differs from the one replaced, and has a heartbeat row started after the restart, on this host,
+   beating < 30 s ago.
+8. **Any failure** → the last step `[macmini] Roll back web + worker on failure` runs `release.sh undo` for
+   both kinds — web and worker go back **together** (no version skew), but only a release this run
+   activated (undo is a no-op unless current is exactly the release this run staged).
 
 `lxc` (the pre-cutover path, steps `[lxc]`): sync → `docker compose up -d db` → `provision-native.sh` →
 install/build/`worker-release.sh stage` → cancel evals + migrate (`.env.native`) → `systemctl restart
 mymind` → health → `worker-release.sh activate` + `systemctl restart mymind-worker` → heartbeat.
 
 - Watch: `gh run watch <id> --exit-status` — **never pipe it to `tail`** (masks a failed deploy).
-- **Rollback (mini)**, one level, any time: `ssh bridget@192.168.2.35 'bash ~/mymind/bin/release.sh rollback web && bash ~/mymind/bin/release.sh restart web'` (same for `worker`). Migrations are never reverted — a rollback across a migration needs the old code to tolerate the new schema; otherwise revert on `master` and push.
+- **Rollback (mini)**, one level, any time — both kinds together, as CD does: `ssh bridget@192.168.2.35 'for k in worker web; do bash ~/mymind/bin/release.sh rollback $k && bash ~/mymind/bin/release.sh restart $k; done'`. Rolling back only one kind leaves web and worker on different commits (they share the DB and the bus — avoid unless you know the pair is compatible). Migrations are never reverted — a rollback across a migration needs the old code to tolerate the new schema; otherwise revert on `master` and push.
 - **Back to LXC 114** (first 7 days after cutover, while its DB + data are kept): stop both launchd agents
   (`launchctl bootout gui/501/com.mymind.web` / `…worker`), `systemctl enable --now mymind mymind-worker`
-  in LXC 114, Pangolin back to the LXC IP, `gh variable set DEPLOY_TARGET --body lxc`. Data written on
+  in LXC 114, Pangolin back to the LXC IP, `gh variable set DEPLOY_TARGET --body lxc`, `gh variable delete MYMIND_CUTOVER_DONE`. Data written on
   `.80` meanwhile is NOT in the LXC DB.
 
 ### When CD never fires (manual deploy)

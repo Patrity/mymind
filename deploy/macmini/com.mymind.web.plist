@@ -21,7 +21,7 @@
   <key>KeepAlive</key>
   <true/>
   <key>ThrottleInterval</key>
-  <integer>5</integer>
+  <integer>10</integer>
   <!-- kickstart -k / bootout: SIGTERM, then SIGKILL after this many seconds. -->
   <key>ExitTimeOut</key>
   <integer>20</integer>

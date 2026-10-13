@@ -33,11 +33,12 @@ if [ "$BUILD_ONLY" = 1 ]; then
     host="$(grep -E "^$k=" "$f" | tail -1 | cut -d= -f2- | sed -nE 's#^[a-z]+://([^@/]*@)?([^:/?]+).*#\2#p' || true)"
     [ "$host" = 192.168.2.80 ] || { echo "[provision] $f: $k must point at 192.168.2.80 (host is '${host:-unset}')" >&2; exit 1; }
   done
-  # After cutover the app runs on the mini only: a still-running LXC worker would execute Tony's jobs a
-  # second time against the old database. Stopping it is the cutover runbook's step, not this script's.
+  # After cutover the app runs on the mini only: a still-running LXC worker would execute Tony's jobs and
+  # iMessages a second time against the old database. Refuse until the cutover runbook has stopped them.
   for u in mymind mymind-worker; do
     if systemctl is-active --quiet "$u" 2>/dev/null; then
-      echo "::warning title=LXC 114 runtime still active::$u is running in LXC 114 while prod deploys to the Mac mini — systemctl disable --now $u"
+      echo "::error title=LXC 114 runtime still active::$u is running in LXC 114 while prod deploys to the Mac mini — systemctl disable --now mymind mymind-worker first"
+      exit 1
     fi
   done
   echo "[provision] build box ready"

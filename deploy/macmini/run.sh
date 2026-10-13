@@ -37,9 +37,10 @@ export NODE_ENV=production
 
 # The physical release dir: a later activate repoints the symlink, never this process's tree.
 cd -P "$DIR"
+# The commit this release was built from (build-artifacts.sh ships it; optional): the worker records it
+# on eval runs (cycle 85), the web reports it on /api/health for CD's gate (cycle 86).
+if [ -f release.env ]; then set -a; . ./release.env; set +a; fi
 if [ "$KIND" = worker ]; then
-  # Cycle 85: the commit this release was built from (release.sh stage ships it; optional).
-  if [ -f release.env ]; then set -a; . ./release.env; set +a; fi
   # The only executor on the prod DB (boot recovery may take over any 'running' run).
   export AGENT_RUNTIME_EXCLUSIVE=1
   # Built-in eval suites ship inside the worker release.
@@ -56,6 +57,8 @@ LOG="$LOG_DIR/$KIND.log"
 # every 100 lines). launchd's own StandardOutPath can't rotate under a running process; this can.
 rotate_log() {
   set +e   # a failed rotation must never kill the pipe node writes to
+  # launchd signals the whole job on stop: keep reading until node's EOF so its drain lines land.
+  trap '' TERM INT HUP
   local f="$1" n=0 i line
   exec 3>>"$f"
   while IFS= read -r line || [ -n "$line" ]; do

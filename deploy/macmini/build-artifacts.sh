@@ -35,5 +35,10 @@ cp -a .output "$OUT/web/.output"
 # the mini with the darwin ones).
 node apps/worker/stage.mjs "$OUT/worker"
 cp -a evals "$OUT/worker/evals"
-if [ -n "${MYMIND_GIT_SHA:-}" ]; then printf 'MYMIND_GIT_SHA=%s\n' "$MYMIND_GIT_SHA" > "$OUT/worker/release.env"; fi
+# pnpm's supportedArchitectures is a cross product (os × cpu): drop the platforms nobody runs —
+# linux-arm64 and darwin-x64 — so only this box's linux-x64 and the mini's darwin-arm64 ship.
+find "$OUT" -depth -type d \( -name '*-linux-arm64*' -o -name '*-darwin-x64*' -o -name '*-linuxmusl-*' \) -exec rm -rf {} +
+if [ -n "${MYMIND_GIT_SHA:-}" ]; then
+  for k in web worker; do printf 'MYMIND_GIT_SHA=%s\n' "$MYMIND_GIT_SHA" > "$OUT/$k/release.env"; done
+fi
 du -sh "$OUT/web" "$OUT/worker"

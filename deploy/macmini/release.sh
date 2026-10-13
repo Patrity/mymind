@@ -6,8 +6,13 @@
 #                                file, darwin native binaries, externals load) and point <next> at it
 #   activate <web|worker>        <next> becomes <current>, the old <current> becomes <prev>
 #   rollback <web|worker>        <prev> becomes <current>, the old <current> becomes <next>
-#   restart  <web|worker>        launchctl kickstart -k (or bootstrap when the agent isn't loaded)
-#   health   <worker>            the launchd-run worker's pid has a fresh worker_heartbeat row on the DB
+#   restart  <web|worker>        restart the launchd agent and wait for a NEW pid: kickstart -k, or — when
+#                                provision left a changed plist pending — bootout, wait for the exit,
+#                                install it, bootstrap (retried: "Bootstrap failed: 5" while it exits)
+#   health   <worker> [s]        the worker launchd runs NOW (a pid other than the one `restart` replaced)
+#                                has a heartbeat row on the DB that started after that restart, < 30 s old
+#   undo     <web|worker> <rel>  roll back + restart, but only while <current> is exactly release <rel>
+#                                (CD's failure step: never rolls back a release this deploy didn't activate)
 #   status                       print where each pointer points
 #
 # Pointers are SYMLINKS under $MYMIND_ROOT (default ~/mymind), each swapped with one rename(2), so a
@@ -25,6 +30,10 @@ NODE="${MYMIND_NODE:-/opt/homebrew/bin/node}"
 PSQL="${MYMIND_PSQL:-/opt/homebrew/opt/libpq/bin/psql}"
 ENV_FILE="${MYMIND_ENV_FILE:-$ROOT/env/mymind.env}"
 LAUNCH_AGENTS="${MYMIND_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
+# Plists provision-macmini.sh rendered but could not install (their agent was running): applied by restart.
+PENDING="${MYMIND_PENDING_AGENTS:-$ROOT/deploy/agents}"
+POLL="${MYMIND_POLL_SECONDS:-5}"
+RESTART_WAIT="${MYMIND_RESTART_WAIT:-120}"   # > the worker's ExitTimeOut (90)
 
 die() { echo "[release] $*" >&2; exit 1; }
 say() { echo "[release] $*"; }
@@ -88,7 +97,13 @@ check_natives() {
 
 # Load the release's native/external packages with THIS machine's node.
 check_loads() {
-  local kind="$1" dir="$2" probe pkgs=()
+  local kind="$1" dir="$2" probe pkgs=() f
+  # Every darwin native binary must load here — sharp's, @napi-rs/canvas's (pdfjs only WARNS when that
+  # one fails, so an import probe can't see it), and any future native.
+  while IFS= read -r f; do
+    "$NODE" -e 'process.dlopen({ exports: {} }, process.argv[1])' "$f" >/dev/null 2>&1 \
+      || { echo "[release] native binary does not load: ${f#"$dir"/}" >&2; return 1; }
+  done < <(find "$dir" -type f -name '*.node' -path '*darwin-arm64*')
   if [ "$kind" = web ]; then
     [ -d "$dir/.output/server/node_modules/sharp" ] || return 0
     (cd "$dir/.output/server" && "$NODE" --input-type=module -e 'await import("sharp")') >/dev/null \
@@ -154,38 +169,85 @@ cmd_rollback() {
   say "rolled $1 back → $(basename "$prev") ($NEXT holds the release that was active)"
 }
 
-cmd_restart() {
-  ptrs "$1"
-  local uid; uid="$(id -u)"
-  if launchctl print "gui/$uid/$LABEL" >/dev/null 2>&1; then
-    # SIGTERM, then SIGKILL after the plist's ExitTimeOut (the worker drains in-flight runs ≤ 60 s).
-    launchctl kickstart -k "gui/$uid/$LABEL"
-    say "kickstarted $LABEL"
-  else
-    [ -f "$LAUNCH_AGENTS/$LABEL.plist" ] || die "$LAUNCH_AGENTS/$LABEL.plist missing — run provision-macmini.sh"
-    launchctl bootstrap "gui/$uid" "$LAUNCH_AGENTS/$LABEL.plist"
-    say "bootstrapped $LABEL"
-  fi
+pid_of() { launchctl print "gui/$(id -u)/$1" 2>/dev/null | awk '$1 == "pid" { print $3; exit }'; }
+loaded() { launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1; }
+
+bootstrap_retry() { # <plist>
+  local i
+  for i in 1 2 3 4 5 6; do
+    if launchctl bootstrap "gui/$(id -u)" "$1" 2>/dev/null; then return 0; fi
+    sleep "$POLL"
+  done
+  return 1
 }
 
-# The worker launchd runs now has beaten within 30 s (pid + host match: a beat from a previous boot or
-# another box never counts). Polls up to $2 seconds (default 60).
+cmd_restart() {
+  ptrs "$1"
+  local svc plist pending old pid i
+  svc="gui/$(id -u)/$LABEL"; plist="$LAUNCH_AGENTS/$LABEL.plist"; pending="$PENDING/$LABEL.plist"
+  old="$(pid_of "$LABEL" || true)"
+  # What `health` compares against: the pid being replaced and when (epoch seconds, this clock).
+  printf '%s %s\n' "$(date +%s)" "${old:-0}" > "$ROOT/.restarted-$1"
+  if [ -f "$pending" ] && ! cmp -s "$pending" "$plist"; then
+    if loaded "$LABEL"; then
+      launchctl bootout "$svc" 2>/dev/null || true
+      i=$((SECONDS + RESTART_WAIT)); while loaded "$LABEL" && [ "$SECONDS" -lt "$i" ]; do sleep "$POLL"; done
+      loaded "$LABEL" && die "$LABEL still loaded ${RESTART_WAIT}s after bootout"
+    fi
+    install -m 644 "$pending" "$plist"
+    bootstrap_retry "$plist" || die "bootstrap of $LABEL failed (agent NOT loaded)"
+    say "reloaded $LABEL with its changed plist"
+  elif loaded "$LABEL"; then
+    # SIGTERM, then SIGKILL after the plist's ExitTimeOut (the worker drains in-flight runs ≤ 60 s).
+    launchctl kickstart -k "$svc"
+    say "kickstarted $LABEL"
+  else
+    [ -f "$plist" ] || die "$plist missing — run provision-macmini.sh"
+    bootstrap_retry "$plist" || die "bootstrap of $LABEL failed (agent NOT loaded)"
+    say "bootstrapped $LABEL"
+  fi
+  # Done only when launchd runs a NEW process (kickstart -k may return before the old one exits).
+  i=$((SECONDS + RESTART_WAIT))
+  while :; do
+    pid="$(pid_of "$LABEL" || true)"
+    if [ -n "$pid" ] && [ "$pid" != "$old" ]; then say "$LABEL running as pid $pid (was ${old:-none})"; return 0; fi
+    [ "$SECONDS" -lt "$i" ] || break
+    sleep "$POLL"
+  done
+  loaded "$LABEL" || die "$LABEL is not loaded"
+  die "$LABEL has no new pid within ${RESTART_WAIT}s (still ${pid:-none})"
+}
+
+# The worker launchd runs now — not the pid `restart` replaced — wrote a heartbeat row that started
+# after that restart (5 s clock slack) on this host, beating < 30 s ago. Polls up to $2 seconds.
 cmd_health() {
   [ "$1" = worker ] || die "health: only 'worker' (the web is checked over HTTP)"
-  local uid pid n i wait="${2:-60}" host
-  uid="$(id -u)"; host="$(hostname)"
+  local pid n wait="${2:-60}" host since old
+  host="$(hostname)"
   [ -r "$ENV_FILE" ] || die "$ENV_FILE unreadable"
-  # Sourced in a subshell for DATABASE_URL only; never echoed.
-  for ((i = 0; i < wait; i += 5)); do
-    pid="$(launchctl print "gui/$uid/com.mymind.worker" 2>/dev/null | awk '$1 == "pid" { print $3; exit }')"
-    if [ -n "$pid" ]; then
+  [ -r "$ROOT/.restarted-worker" ] || die "no restart recorded — run release.sh restart worker first"
+  read -r since old < "$ROOT/.restarted-worker"
+  local deadline=$((SECONDS + wait))
+  while :; do
+    pid="$(pid_of com.mymind.worker || true)"
+    if [ -n "$pid" ] && [ "$pid" != "$old" ]; then
+      # Sourced in a subshell for the DB URL only; never echoed.
       n="$( (set -a; . "$ENV_FILE"; set +a; "$PSQL" "${NUXT_DATABASE_URL:-$DATABASE_URL}" -Atc \
-        "select count(*) from worker_heartbeat where pid = $pid and host = '$host' and beat_at > now() - interval '30 seconds'") 2>/dev/null || echo 0)"
-      if [ "${n:-0}" -gt 0 ]; then say "worker healthy (pid $pid)"; return 0; fi
+        "select count(*) from worker_heartbeat where pid = $pid and host = '$host' and started_at > to_timestamp($since) - interval '5 seconds' and beat_at > now() - interval '30 seconds'") 2>/dev/null || echo 0)"
+      if [ "${n:-0}" -gt 0 ] 2>/dev/null; then say "worker healthy (pid $pid)"; return 0; fi
     fi
-    say "waiting for the worker heartbeat (${i}s, pid ${pid:-none})"; sleep 5
+    [ "$SECONDS" -lt "$deadline" ] || break
+    say "waiting for the worker heartbeat (pid ${pid:-none}, replaced ${old})"; sleep "$POLL"
   done
-  die "no fresh worker heartbeat within ${wait}s"
+  die "no fresh heartbeat from a new worker within ${wait}s"
+}
+
+cmd_undo() {
+  ptrs "$1"
+  local cur; cur="$(target "$CUR")"
+  if [ -z "$cur" ] || [ "$(basename "$cur")" != "$2" ]; then say "undo $1: current is $( [ -n "$cur" ] && basename "$cur" || echo none ), not $2 — nothing to undo"; return 0; fi
+  cmd_rollback "$1"
+  cmd_restart "$1"
 }
 
 cmd_status() {
@@ -201,6 +263,7 @@ case "${1:-}" in
   rollback) [ $# -eq 2 ] || die "usage: rollback <web|worker>"; cmd_rollback "$2" ;;
   restart)  [ $# -eq 2 ] || die "usage: restart <web|worker>"; cmd_restart "$2" ;;
   health)   [ $# -ge 2 ] || die "usage: health worker [seconds]"; cmd_health "$2" "${3:-60}" ;;
+  undo)     [ $# -eq 3 ] || die "usage: undo <web|worker> <release>"; cmd_undo "$2" "$3" ;;
   status)   cmd_status ;;
-  *) echo "usage: $0 stage|activate|rollback|restart|health|status …" >&2; exit 2 ;;
+  *) echo "usage: $0 stage|activate|rollback|restart|health|undo|status …" >&2; exit 2 ;;
 esac

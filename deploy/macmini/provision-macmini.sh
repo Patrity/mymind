@@ -82,7 +82,7 @@ else act "mkdir -m 700 $ROOT/env" mkdir -m 700 "$ROOT/env"; fi
 #    Only key NAMES and the DB host are inspected — never a value.
 val() { grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- | sed -E "s/^['\"]//; s/['\"]$//" || true; }
 if [ ! -f "$ENV_FILE" ]; then
-  fail "$ENV_FILE missing — write it by hand (keys: the prod-deploy skill, "Env file")"
+  fail "$ENV_FILE missing — write it by hand (keys: the prod-deploy skill, section Env file)"
 else
   mode="$(stat -f %Lp "$ENV_FILE")"
   if [ "$mode" = 600 ]; then ok "env file mode 600"; else act "chmod 600 $ENV_FILE (was $mode)" chmod 600 "$ENV_FILE"; fi
@@ -116,26 +116,31 @@ for s in run.sh release.sh; do
   else act "install bin/$s" install -m 755 "$HERE/$s" "$ROOT/bin/$s"; fi
 done
 
-# 7. LaunchAgents: render the templates for this $HOME, lint, install when they differ. A changed plist
-#    of a LOADED agent is reloaded (bootout + bootstrap, a restart on the same release); an agent that
-#    isn't loaded is left for `release.sh restart` (it would start before any release exists).
+# 7. LaunchAgents: render the templates for this $HOME and lint them. NEVER reload a loaded agent here
+#    (that would restart prod outside CD's gates): a changed plist of a RUNNING agent is left pending in
+#    ~/mymind/deploy/agents/ and applied by `release.sh restart` (bootout → wait for exit → bootstrap),
+#    inside the gated activate step. An agent that isn't loaded gets its plist installed directly (it
+#    is not started here — it would start before any release exists).
 uid="$(id -u)"
+PENDING="$ROOT/deploy/agents"
 for label in com.mymind.web com.mymind.worker; do
   rendered="$(mktemp -t "$label")"
   sed "s#__HOME__#$HOME#g" "$HERE/$label.plist" > "$rendered"
   if plutil -lint -s "$rendered"; then ok "$label.plist lints"; else fail "$label.plist does not lint"; rm -f "$rendered"; continue; fi
   dest="$AGENTS/$label.plist"
+  is_loaded=0; launchctl print "gui/$uid/$label" >/dev/null 2>&1 && is_loaded=1
   if cmp -s "$rendered" "$dest"; then ok "$label.plist installed and current"
-  elif [ "$CHECK" = 1 ]; then fail "$dest $( [ -f "$dest" ] && echo differs || echo 'not installed' ) (would install)"
+  elif [ "$CHECK" = 1 ]; then fail "$dest $( [ -f "$dest" ] && echo differs || echo 'not installed' ) (would $( [ "$is_loaded" = 1 ] && echo 'stage it for the next release.sh restart' || echo install ))"
+  elif [ "$is_loaded" = 1 ]; then
+    mkdir -p "$PENDING"; install -m 644 "$rendered" "$PENDING/$label.plist"
+    fix "$label is running: changed plist pending in $PENDING (applied by release.sh restart)"
   else
     install -m 644 "$rendered" "$dest"; fix "installed $dest"
-    if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
-      launchctl bootout "gui/$uid/$label" 2>/dev/null || true
-      launchctl bootstrap "gui/$uid" "$dest"; fix "reloaded $label"
-    fi
   fi
+  # Keep the pending copy in step with the template either way, so restart's cmp sees no false change.
+  if [ "$CHECK" = 0 ]; then mkdir -p "$PENDING"; install -m 644 "$rendered" "$PENDING/$label.plist"; fi
   rm -f "$rendered"
-  if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then ok "$label loaded"; else warn "$label not loaded (release.sh restart bootstraps it)"; fi
+  if [ "$is_loaded" = 1 ]; then ok "$label loaded"; else warn "$label not loaded (release.sh restart bootstraps it)"; fi
 done
 
 # 8. Read-only context.

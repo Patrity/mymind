@@ -44,7 +44,7 @@ function release(args: string[], input?: Buffer) {
 }
 function stage(kind: 'web' | 'worker', id: string, files: Files) {
   writeTree(src, files)
-  return release(['stage', kind, id], execFileSync('tar', ['-c', '-C', src, '.']))
+  return release(['stage', kind, id], execFileSync('tar', ['-c', '-C', src, '.'], { maxBuffer: 256 * 1024 * 1024 }))
 }
 /** Where a pointer points: the release name, null when absent. Asserts it is a symlink. */
 function ptr(name: string): string | null {
@@ -185,6 +185,145 @@ describe('release.sh activate / rollback', () => {
   })
 })
 
+describe('release.sh native dlopen check', () => {
+  it('refuses a release whose darwin *.node binary does not load (worker and web)', () => {
+    const bad = 'not a mach-o binary'
+    const w = stage('worker', 'a', { ...WORKER, 'node_modules/.pnpm/@napi-rs+canvas-darwin-arm64@0.1.100/node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node': bad })
+    expect(w.code).not.toBe(0)
+    expect(w.out).toContain('native binary does not load: node_modules/.pnpm/@napi-rs+canvas-darwin-arm64@0.1.100/node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node')
+    expect(releases()).toEqual([])
+    const web = stage('web', 'a', { ...WEB, '.output/server/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node': bad })
+    expect(web.code).not.toBe(0)
+    expect(web.out).toContain('native binary does not load: .output/server/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node')
+  })
+
+  const realNode = (() => {
+    try { return execFileSync('bash', ['-c', 'ls node_modules/.pnpm/@napi-rs+canvas-darwin-arm64@*/node_modules/@napi-rs/canvas-darwin-arm64/*.node | head -1'], { encoding: 'utf8' }).trim() } catch { return '' }
+  })()
+  it.skipIf(process.platform !== 'darwin' || process.arch !== 'arm64' || !realNode)('accepts a release whose darwin binary really loads', () => {
+    const r = stage('worker', 'a', { ...WORKER, 'node_modules/.pnpm/@napi-rs+canvas-darwin-arm64@0.1.100/node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node': readFileSync(realNode) as unknown as string })
+    expect(r.code, r.out).toBe(0)
+  })
+})
+
+describe('release.sh restart / health / undo (fake launchctl + psql)', () => {
+  let fake: string
+  let bin: string
+  beforeEach(() => {
+    fake = join(dirname(root), 'lc'); bin = join(dirname(root), 'bin')
+    mkdirSync(fake); mkdirSync(bin)
+    // State: <label>.pid = loaded with that pid. `unload-in` = prints left before a bootout completes;
+    // `fail-bootstrap` = bootstraps to fail with launchd's error 5 first; `stuck` = kickstart never respawns.
+    writeFileSync(join(bin, 'launchctl'), `#!/bin/bash
+S="$FAKE_LC"; echo "$*" >> "$S/calls"
+label() { basename "$1" .plist | sed 's#.*/##'; }
+case "$1" in
+  print)
+    l=$(label "$2")
+    if [ -f "$S/$l.unloading" ]; then n=$(cat "$S/$l.unloading"); if [ "$n" -le 0 ]; then rm -f "$S/$l.unloading" "$S/$l.pid"; else echo $((n-1)) > "$S/$l.unloading"; fi; fi
+    [ -f "$S/$l.pid" ] || exit 113; echo "	pid = $(cat "$S/$l.pid")" ;;
+  kickstart) l=$(label "$3"); [ -f "$S/stuck" ] || echo $(( $(cat "$S/$l.pid") + 1 )) > "$S/$l.pid" ;;
+  bootout) l=$(label "$2"); echo "\${UNLOAD_IN:-0}" > "$S/$l.unloading" ;;
+  bootstrap)
+    l=$(label "$3")
+    if [ -f "$S/$l.pid" ]; then echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi
+    if [ -s "$S/fail-bootstrap" ] && [ "$(cat "$S/fail-bootstrap")" -gt 0 ]; then echo $(( $(cat "$S/fail-bootstrap") - 1 )) > "$S/fail-bootstrap"; echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi
+    echo 900 > "$S/$l.pid"; cp "$3" "$S/$l.bootstrapped" ;;
+esac
+`, { mode: 0o755 })
+    // Answers 1 only for the query shape health must send: this pid, a started_at bound, a fresh beat.
+    writeFileSync(join(bin, 'psql'), `#!/bin/bash
+q="\${@: -1}"; echo "$q" > "$FAKE_LC/sql"
+case "$q" in *"pid = $HEALTHY_PID "*"started_at > to_timestamp("*"beat_at > now() - interval '30 seconds'"*) echo 1 ;; *) echo 0 ;; esac
+`, { mode: 0o755 })
+    writeFileSync(join(dirname(root), 'mymind.env'), 'DATABASE_URL=postgres://u:secret@192.168.2.80/bridget\n')
+    mkdirSync(join(root, 'agents'))
+    writeFileSync(join(root, 'agents/com.mymind.worker.plist'), 'v1')
+  })
+  function rel(args: string[], env: Record<string, string> = {}) {
+    const r = spawnSync('bash', [RELEASE, ...args], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LC: fake, MYMIND_ROOT: root, MYMIND_NODE: process.execPath,
+        MYMIND_PSQL: join(bin, 'psql'), MYMIND_ENV_FILE: join(dirname(root), 'mymind.env'), MYMIND_LAUNCH_AGENTS: join(root, 'agents'),
+        MYMIND_PENDING_AGENTS: join(root, 'pending'), MYMIND_POLL_SECONDS: '0', MYMIND_RESTART_WAIT: '3', ...env },
+      encoding: 'utf8'
+    })
+    return { code: r.status, out: `${r.stdout}${r.stderr}` }
+  }
+  const pid = () => readFileSync(join(fake, 'com.mymind.worker.pid'), 'utf8').trim()
+  const calls = () => readFileSync(join(fake, 'calls'), 'utf8')
+
+  it('restart of a loaded agent kickstarts it and returns once launchd runs a new pid', () => {
+    writeFileSync(join(fake, 'com.mymind.worker.pid'), '100')
+    const r = rel(['restart', 'worker'])
+    expect(r.code, r.out).toBe(0)
+    expect(r.out).toContain('running as pid 101 (was 100)')
+    expect(calls()).toMatch(/^kickstart -k gui\/\d+\/com\.mymind\.worker$/m)
+    expect(readFileSync(join(root, '.restarted-worker'), 'utf8')).toMatch(/^\d+ 100\n$/)
+  })
+
+  it('restart fails when no new pid appears (kickstart returned but the old process is still the one)', () => {
+    writeFileSync(join(fake, 'com.mymind.worker.pid'), '100'); writeFileSync(join(fake, 'stuck'), '')
+    const r = rel(['restart', 'worker'])
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain('has no new pid')
+  })
+
+  it('a pending plist change: bootout, wait for the exit, install, bootstrap (retrying error 5)', () => {
+    writeFileSync(join(fake, 'com.mymind.worker.pid'), '100')
+    mkdirSync(join(root, 'pending')); writeFileSync(join(root, 'pending/com.mymind.worker.plist'), 'v2')
+    writeFileSync(join(fake, 'fail-bootstrap'), '2')
+    const r = rel(['restart', 'worker'], { UNLOAD_IN: '2' })
+    expect(r.code, r.out).toBe(0)
+    expect(readFileSync(join(root, 'agents/com.mymind.worker.plist'), 'utf8')).toBe('v2')
+    expect(readFileSync(join(fake, 'com.mymind.worker.bootstrapped'), 'utf8')).toBe('v2')
+    expect(pid()).toBe('900')
+    expect(calls()).not.toContain('kickstart')
+    expect(calls().match(/^bootstrap /gm)).toHaveLength(3)
+  })
+
+  it('a bootstrap that keeps failing leaves the agent unloaded and FAILS the restart', () => {
+    writeFileSync(join(fake, 'fail-bootstrap'), '99')
+    const r = rel(['restart', 'worker'])
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain('bootstrap of com.mymind.worker failed (agent NOT loaded)')
+  })
+
+  it('health passes only for a new pid whose heartbeat started after the restart', () => {
+    writeFileSync(join(fake, 'com.mymind.worker.pid'), '100')
+    expect(rel(['restart', 'worker']).code).toBe(0)
+    const ok = rel(['health', 'worker', '0'], { HEALTHY_PID: '101' })
+    expect(ok.code, ok.out).toBe(0)
+    expect(ok.out).toContain('worker healthy (pid 101)')
+    const since = readFileSync(join(root, '.restarted-worker'), 'utf8').split(' ')[0]
+    expect(readFileSync(join(fake, 'sql'), 'utf8')).toContain(`started_at > to_timestamp(${since}) - interval '5 seconds'`)
+    expect(ok.out).not.toContain('secret')
+    // The DB says nothing fresh for this pid → red.
+    expect(rel(['health', 'worker', '0'], { HEALTHY_PID: '999' }).code).not.toBe(0)
+  })
+
+  it('health never accepts the pid restart replaced, even with a fresh beat', () => {
+    writeFileSync(join(fake, 'com.mymind.worker.pid'), '100')
+    writeFileSync(join(root, '.restarted-worker'), `${Math.floor(Date.now() / 1000)} 100\n`)
+    const r = rel(['health', 'worker', '0'], { HEALTHY_PID: '100' })
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain('no fresh heartbeat from a new worker')
+  })
+
+  it('undo rolls back + restarts only while current is exactly the given release', () => {
+    stage('worker', 'a', WORKER); release(['activate', 'worker'])
+    stage('worker', 'b', WORKER); release(['activate', 'worker'])
+    writeFileSync(join(fake, 'com.mymind.worker.pid'), '100')
+    const skip = rel(['undo', 'worker', 'worker-a'])
+    expect(skip.code, skip.out).toBe(0)
+    expect(skip.out).toContain('nothing to undo')
+    expect(ptr('.worker')).toBe('worker-b')
+    const r = rel(['undo', 'worker', 'worker-b'])
+    expect(r.code, r.out).toBe(0)
+    expect(ptr('.worker')).toBe('worker-a')
+    expect(pid()).toBe('101')
+  })
+})
+
 describe('run.sh (the launchd wrapper)', () => {
   let fakeNode: string
   let envFile: string
@@ -213,8 +352,8 @@ describe('run.sh (the launchd wrapper)', () => {
     throw new Error(`no complete ${kind}.log`)
   }
 
-  it('web: env file exported, NODE_ENV=production, 1536 MB heap, cwd = the real release dir, no worker-only vars', async () => {
-    stage('web', 'a', WEB); release(['activate', 'web'])
+  it('web: env file exported, NODE_ENV=production, 1536 MB heap, cwd = the real release dir, release sha, no worker-only vars', async () => {
+    stage('web', 'a', { ...WEB, 'release.env': 'MYMIND_GIT_SHA=websha\n' }); release(['activate', 'web'])
     expect(run('web').status).toBe(0)
     const log = await logOf('web')
     expect(log).toContain('ARGS=--max-old-space-size=1536 .output/server/index.mjs')
@@ -222,6 +361,7 @@ describe('run.sh (the launchd wrapper)', () => {
     expect(log).toContain('NODE_ENV=production')
     expect(log).toContain('FROM_ENV_FILE=has a space')
     expect(log).toContain('AGENT_RUNTIME_EXCLUSIVE=<unset>')
+    expect(log).toContain('MYMIND_GIT_SHA=websha')
     expect(log).toContain('MYMIND_EVALS_DIR=<unset>')
   })
 
@@ -280,17 +420,43 @@ describe('deploy.yml', () => {
   const wf = parse(readFileSync('.github/workflows/deploy.yml', 'utf8'))
   const steps: Array<{ name: string; if?: string; run?: string }> = wf.jobs.deploy.steps
 
-  it('defaults to the lxc target and lets the repo variable or a manual run pick macmini', () => {
-    expect(wf.jobs.deploy.env.DEPLOY_TARGET).toBe("${{ inputs.target || vars.DEPLOY_TARGET || 'lxc' }}")
-    expect(wf.on.workflow_dispatch.inputs.target.options).toEqual(['lxc', 'macmini'])
+  it('a push or a default manual run follows the repo variable; only an explicit choice overrides it', () => {
+    expect(wf.jobs.deploy.env.DEPLOY_TARGET).toBe("${{ (inputs.target != 'auto' && inputs.target) || vars.DEPLOY_TARGET || 'lxc' }}")
+    expect(wf.on.workflow_dispatch.inputs.target).toMatchObject({ options: ['auto', 'lxc', 'macmini'], default: 'auto' })
   })
 
-  it('gates every runtime step on exactly one target', () => {
-    for (const s of steps.slice(2)) {
+  it('gates every runtime step on exactly one target; the rollback step runs only on failure', () => {
+    for (const s of steps.slice(2, -1)) {
       const target = s.name.match(/^\[(lxc|macmini)\]/)?.[1]
       expect(target, s.name).toBeDefined()
       expect(s.if).toBe(`env.DEPLOY_TARGET == '${target}'`)
     }
+    const last = steps.at(-1)!
+    expect(last.if).toBe("failure() && env.DEPLOY_TARGET == 'macmini'")
+    expect(last.run).toContain('release.sh undo $kind $rel')
+    expect(last.run).toMatch(/for kind in worker web/)
+  })
+
+  it('lxc: the first runtime step refuses once the variables say the cutover is done', () => {
+    const lxc = steps.filter(s => s.name.startsWith('[lxc]'))
+    expect(lxc[0]!.name).toBe('[lxc] Refuse after cutover')
+    const guard = lxc[0] as { env: Record<string, string>; run: string }
+    expect(guard.env).toEqual({ VAR_TARGET: '${{ vars.DEPLOY_TARGET }}', CUTOVER_DONE: '${{ vars.MYMIND_CUTOVER_DONE }}' })
+    const sh = (env: Record<string, string>) => spawnSync('bash', ['-c', guard.run], { env: { ...process.env, ...env }, encoding: 'utf8' }).status
+    expect(sh({ VAR_TARGET: 'macmini', CUTOVER_DONE: '' })).toBe(1)
+    expect(sh({ VAR_TARGET: 'lxc', CUTOVER_DONE: 'true' })).toBe(1)
+    expect(sh({ VAR_TARGET: '', CUTOVER_DONE: '' })).toBe(0)
+  })
+
+  it('web gate: only a /api/health body carrying THIS sha passes', () => {
+    const gate = steps.find(s => s.name.startsWith('[macmini] Web health'))!.run!
+    // Run the gate's own match against candidate bodies (the curl loop itself needs the network).
+    const match = gate.match(/grep -qF (.+?); then/)![1]!
+    const ok = (body: string) => spawnSync('bash', ['-c', `printf '%s' "$BODY" | grep -qF ${match}`], { env: { ...process.env, BODY: body, GITHUB_SHA: 'abc123' } }).status === 0
+    expect(ok('{"ok":true,"sha":"abc123"}')).toBe(true)
+    expect(ok('{"ok":true,"sha":"0ld5ha"}')).toBe(false)
+    expect(ok('{"ok":true,"sha":null}')).toBe(false)
+    expect(ok('')).toBe(false)
   })
 
   it('macmini: never restarts LXC 114 units, migrates before activating, health-gates both with rollback', () => {
@@ -298,15 +464,21 @@ describe('deploy.yml', () => {
     const all = mini.map(s => s.run ?? '').join('\n')
     expect(all).not.toMatch(/systemctl (restart|start)/)
     expect(all).not.toMatch(/docker compose/)
-    const at = (re: RegExp) => mini.findIndex(s => re.test(s.run ?? ''))
+    const at = (re: RegExp) => {
+      const i = mini.findIndex(s => re.test(s.run ?? ''))
+      expect(i, `a [macmini] step matching ${re}`).toBeGreaterThanOrEqual(0)
+      return i
+    }
     expect(at(/release\.sh stage/)).toBeLessThan(at(/db:migrate/))
     expect(at(/eval --cancel-all/)).toBe(at(/db:migrate/))
     expect(at(/db:migrate/)).toBeLessThan(at(/release\.sh activate web/))
     expect(at(/release\.sh activate web/)).toBeLessThan(at(/192\.168\.2\.35:3000\/api\/health/))
     expect(at(/192\.168\.2\.35:3000\/api\/health/)).toBeLessThan(at(/release\.sh activate worker/))
+    expect(at(/STAGED_WEB=/)).toBe(at(/release\.sh stage/))
     expect(at(/release\.sh activate worker/)).toBeLessThan(at(/release\.sh health worker/))
-    expect(all).toContain('release.sh rollback web')
-    expect(all).toContain('release.sh rollback worker')
+    expect(at(/release\.sh health worker/)).toBeLessThan(at(/release\.sh undo/))
+    expect(all).toMatch(/release\.sh activate web && bash ~\/mymind\/bin\/release\.sh restart web/)
+    expect(all).toMatch(/release\.sh activate worker && bash ~\/mymind\/bin\/release\.sh restart worker/)
     expect(all).toContain('.env.macmini')
   })
 

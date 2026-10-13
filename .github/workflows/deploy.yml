@@ -11,10 +11,10 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: 'Where prod runs: lxc (LXC 114, the pre-cutover runtime) or macmini (bridget@192.168.2.35)'
+        description: 'auto = the repo variable DEPLOY_TARGET; lxc = LXC 114 (pre-cutover runtime); macmini = bridget@192.168.2.35'
         type: choice
-        options: [lxc, macmini]
-        default: lxc
+        options: [auto, lxc, macmini]
+        default: auto
 
 # A newer push to master supersedes an in-flight deploy.
 concurrency:
@@ -71,7 +71,8 @@ jobs:
       # Postgres); `macmini` = LXC 114 only BUILDS, the release runs on the Mac mini (launchd) against the
       # central Postgres at 192.168.2.80. The controller flips the repo variable at cutover:
       #   gh variable set DEPLOY_TARGET --body macmini
-      DEPLOY_TARGET: ${{ inputs.target || vars.DEPLOY_TARGET || 'lxc' }}
+      # `auto` (a manual run's default) and a push (no input) both fall through to the variable.
+      DEPLOY_TARGET: ${{ (inputs.target != 'auto' && inputs.target) || vars.DEPLOY_TARGET || 'lxc' }}
       MINI: bridget@192.168.2.35
       # The runner (root on the Proxmox host) reaches the mini with its own key; the host key is pinned
       # in /root/.ssh/known_hosts (one-time setup: prod-deploy skill, "Runner SSH key").
@@ -99,6 +100,20 @@ jobs:
             -cf - . | pct exec 114 -- tar -C /opt/mymind -xf -
 
       # ───────────── target lxc: the pre-cutover runtime (web + worker units in LXC 114) ─────────────
+
+      - name: '[lxc] Refuse after cutover'
+        if: env.DEPLOY_TARGET == 'lxc'
+        env:
+          VAR_TARGET: ${{ vars.DEPLOY_TARGET }}
+          CUTOVER_DONE: ${{ vars.MYMIND_CUTOVER_DONE }}
+        run: |
+          # Once prod runs on the mini, the lxc steps below would START the retired units in LXC 114 — a
+          # second worker re-running Tony's jobs and iMessages against the old database. Going back to
+          # LXC is a deliberate rollback: set DEPLOY_TARGET=lxc and delete MYMIND_CUTOVER_DONE first.
+          if [ "$VAR_TARGET" = macmini ] || [ "$CUTOVER_DONE" = true ]; then
+            echo "::error title=Cutover done::refusing the lxc runtime (DEPLOY_TARGET=${VAR_TARGET:-unset}, MYMIND_CUTOVER_DONE=${CUTOVER_DONE:-unset})"
+            exit 1
+          fi
 
       - name: '[lxc] Ensure db up (keep the OLD app serving during the build)'
         if: env.DEPLOY_TARGET == 'lxc'
@@ -201,13 +216,17 @@ jobs:
         if: env.DEPLOY_TARGET == 'macmini'
         run: |
           # release.sh stage checks the entry file, that every linux native package has its darwin-arm64
-          # twin, and that the externals load with the mini's node — a bad release fails HERE, before any
-          # migration or restart.
+          # twin, that every darwin *.node dlopens and the externals load with the mini's node — a bad
+          # release fails HERE, before any migration or restart.
           set -o pipefail
           for kind in web worker; do
             pct exec 114 -- tar -C "/opt/mymind/.macmini-out/$kind" -cf - . \
               | $MINI_SSH "$MINI" "bash ~/mymind/bin/release.sh stage $kind ${{ github.sha }}"
           done
+          # The exact releases this run staged: the failure step rolls back only these.
+          st="$($MINI_SSH "$MINI" 'bash ~/mymind/bin/release.sh status')"
+          echo "STAGED_WEB=$(echo "$st" | awk '$1 == ".app-next" { print $2 }')" >> "$GITHUB_ENV"
+          echo "STAGED_WORKER=$(echo "$st" | awk '$1 == ".worker-next" { print $2 }')" >> "$GITHUB_ENV"
 
       - name: '[macmini] Cancel evals + migrate the central DB (192.168.2.80)'
         if: env.DEPLOY_TARGET == 'macmini'
@@ -222,34 +241,48 @@ jobs:
       - name: '[macmini] Activate + restart the web'
         if: env.DEPLOY_TARGET == 'macmini'
         run: |
+          # restart returns once launchd runs a NEW pid (applying a pending plist change first, if any).
           $MINI_SSH "$MINI" 'bash ~/mymind/bin/release.sh activate web && bash ~/mymind/bin/release.sh restart web'
 
-      - name: '[macmini] Web health (/api/health over the LAN; rollback on failure)'
+      - name: '[macmini] Web health (/api/health over the LAN reports THIS sha)'
         if: env.DEPLOY_TARGET == 'macmini'
         run: |
           # From the runner, by the mini's LAN IP: proves the DB-touching health route AND the 0.0.0.0 bind
-          # Pangolin depends on. A failure swaps app back to .app-prev and restarts it, then fails the run.
+          # Pangolin depends on, and — via `sha` — that the answer comes from the new release, not the
+          # outgoing process. On failure the last step rolls web + worker back.
           for i in $(seq 1 30); do
-            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://192.168.2.35:3000/api/health || true)
-            if [ "$code" = "200" ]; then echo "healthy"; exit 0; fi
-            echo "waiting ($i): got $code"; sleep 5
+            body=$(curl -fsS --max-time 5 http://192.168.2.35:3000/api/health || true)
+            if printf '%s' "$body" | grep -qF "\"sha\":\"$GITHUB_SHA\""; then echo "healthy: $body"; exit 0; fi
+            echo "waiting ($i): ${body:-no answer}"; sleep 5
           done
-          echo "::error title=Web unhealthy::rolling the web back"
-          $MINI_SSH "$MINI" 'tail -n 80 ~/Library/Logs/mymind/web.log; bash ~/mymind/bin/release.sh rollback web && bash ~/mymind/bin/release.sh restart web' || true
+          echo "::error title=Web unhealthy::/api/health never reported $GITHUB_SHA"
           exit 1
 
       - name: '[macmini] Activate + restart the agent worker (drains in-flight runs, ≤60s)'
         if: env.DEPLOY_TARGET == 'macmini'
         run: |
           # kickstart -k = SIGTERM: the old worker stops claiming, drains (≤60s; the plist's ExitTimeOut is
-          # 90), exits; launchd starts the new release. Queued runs wait in the DB meanwhile.
+          # 90), exits; launchd starts the new release. restart waits for the new pid.
           $MINI_SSH "$MINI" 'bash ~/mymind/bin/release.sh activate worker && bash ~/mymind/bin/release.sh restart worker'
 
-      - name: '[macmini] Worker health (fresh heartbeat from the launchd pid; rollback on failure)'
+      - name: '[macmini] Worker health (a heartbeat from the NEW worker)'
         if: env.DEPLOY_TARGET == 'macmini'
         run: |
-          # release.sh health: a worker_heartbeat row on .80 with the pid launchd reports and a beat < 30s old.
-          if $MINI_SSH "$MINI" 'bash ~/mymind/bin/release.sh health worker 120'; then exit 0; fi
-          echo "::error title=Worker unhealthy::rolling the worker back"
-          $MINI_SSH "$MINI" 'tail -n 80 ~/Library/Logs/mymind/worker.log; bash ~/mymind/bin/release.sh rollback worker && bash ~/mymind/bin/release.sh restart worker' || true
-          exit 1
+          # release.sh health: launchd's pid differs from the one restart replaced, and that pid has a
+          # worker_heartbeat row on .80 started after the restart, on this host, beating < 30 s ago.
+          $MINI_SSH "$MINI" 'bash ~/mymind/bin/release.sh health worker 120'
+
+      - name: '[macmini] Roll back web + worker on failure'
+        if: failure() && env.DEPLOY_TARGET == 'macmini'
+        run: |
+          # Any failure after a pointer swap (a restart that never got a new pid, a red gate, a dropped ssh)
+          # lands here. Both kinds go back together (no web/worker version skew) — but only a release THIS
+          # run activated: `undo` is a no-op unless current is exactly the release staged above.
+          $MINI_SSH "$MINI" 'tail -n 60 ~/Library/Logs/mymind/web.log; tail -n 60 ~/Library/Logs/mymind/worker.log' || true
+          rc=0
+          for kind in worker web; do
+            rel=$([ "$kind" = web ] && echo "$STAGED_WEB" || echo "$STAGED_WORKER")
+            [ -n "$rel" ] || { echo "$kind: nothing staged by this run"; continue; }
+            $MINI_SSH "$MINI" "bash ~/mymind/bin/release.sh undo $kind $rel" || rc=1
+          done
+          exit $rc
