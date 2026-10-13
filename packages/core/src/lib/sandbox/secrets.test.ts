@@ -41,3 +41,16 @@ describe('sandbox secret masking', () => {
     expect(await secretValues()).toEqual(['long-enough', 'ab'])
   })
 })
+
+// Cycle 85 fix round 1 (C1): an eval sandbox never gets a secret — this gate holds on its own,
+// even if the store below it were to answer inside a world (here it does: it is mocked).
+describe('sandboxSecretEnv in an eval world', () => {
+  it('returns nothing in a world, the opted-in secrets outside it', async () => {
+    const { runInEvalScope } = await import('../eval/context')
+    store.opted = { GITHUB_TOKEN: 'ghp_abcdef' }
+    try {
+      expect(await sandboxSecretEnv({ tainted: false })).toEqual({ GITHUB_TOKEN: 'ghp_abcdef' })
+      expect(await runInEvalScope({} as never, () => sandboxSecretEnv({ tainted: false }))).toEqual({})
+    } finally { store.opted = {} }
+  })
+})

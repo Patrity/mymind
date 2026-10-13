@@ -87,6 +87,20 @@ describe('cleanupEvalRun outside the schema (C1, Concern 5)', () => {
   })
 })
 
+describe('world.dispose outside the schema', () => {
+  it('removes the world\'s own containers and dir (no run-level sweep involved)', async () => {
+    const w = await installEvalWorld(randomUUID(), {})
+    mySchemas.push(w.schema)
+    containers.set('c-world', { [LABEL_EVAL_RUN]: w.runId, [LABEL_EVAL_WORLD]: w.schema })
+    containers.set('c-sibling', { [LABEL_EVAL_RUN]: w.runId, [LABEL_EVAL_WORLD]: 'eval_sibling' })
+    removedDirs.length = 0
+    await w.dispose()
+    expect([...containers.keys()]).toEqual(['c-sibling']) // the same run's other world is untouched
+    expect(removedDirs).toEqual([`${BASE}/.eval/${w.schema}`])
+    containers.clear()
+  })
+})
+
 describe('boot sweep (I2)', () => {
   it('drops finished / absent-and-stale / >2 h tenants with their containers and dirs; keeps live ones', async () => {
     const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
