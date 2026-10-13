@@ -28,6 +28,8 @@ import { VOICE_TUNING } from '../voice/tuning'
 import { buildOutcomeEvidence, outcomeMet, verifyOutcome, type OutcomeVerdict } from '../agent/judge/outcome'
 import { loadConfig } from '../ai/registry/store'
 import { installEvalWorld, cleanupEvalRun, type EvalWorld } from './world'
+import { assertEvalConnectionsFit } from './tenant'
+import { readEvalSettingsFresh } from '../agent/agent-settings'
 import { approvalChecks, contentMatches, forbiddenHits, matchActions, type EvalToolCall, type MatchMode } from './matcher'
 import { attemptHitForbidden, scoreAttempt, summarizeRun, CASE_PASS_MEAN, type CaseForSummary } from './score'
 import { scoringSpecOf } from './scoring-spec'
@@ -44,6 +46,10 @@ export const UNWIND_MS = 30_000
 /** Liveness of a running eval run (eval_runs.alive_at); stale past EVAL_RUN_STALE_MS = a crash. */
 export const EVAL_RUN_BEAT_MS = 15_000
 export const EVAL_RUN_STALE_MS = 2 * 60_000
+/** Final fix wave (I3): attempts of one run in parallel, whatever the settings say. */
+export const EVAL_MAX_CONCURRENCY = 4
+/** Final fix wave (I4): the error a run over its token budget ends with (status failed). */
+export const BUDGET_STOP_PREFIX = 'stopped: budget'
 const ARG_STRING_CAP = 2_000
 const RESULT_CAP = 500
 const FINAL_TEXT_CAP = 20_000
@@ -64,8 +70,13 @@ export interface EvalRunnerOptions {
   pollMs?: number
   /** Overrides the gateway allow-list (tests). */
   allowNetwork?: (url: string) => boolean
-  /** Attempts of one run started at once (default: the primary model's eval share). */
+  /** Attempts of one run started at once (default: settings `eval.concurrency`; never above
+   *  EVAL_MAX_CONCURRENCY). */
   concurrency?: number
+  /** The run's token budget (default: settings `eval.maxTokensPerRun`). */
+  maxTokensPerRun?: number
+  /** Postgres connection stats for the run-start check (default: the server's) — a test seam. */
+  connectionStats?: () => Promise<import('./tenant').PgConnectionStats>
   /** Heartbeat interval (default EVAL_RUN_BEAT_MS). */
   beatMs?: number
   /** How long aborted runs get to unwind before their slots are force-released (default UNWIND_MS). */
@@ -541,6 +552,7 @@ export async function executeEvalRun(runId: string, opts: EvalRunnerOptions = {}
   }, opts.beatMs ?? EVAL_RUN_BEAT_MS)
   let planned = 0
   let promptHashes: Record<string, string> = {}
+  let overBudget: string | null = null
   try {
     const [run] = await useDb().select().from(evalRuns).where(eq(evalRuns.id, runId))
     if (!run || run.status !== 'running' || run.owner !== BOOT_ID) return run ?? null
@@ -563,9 +575,16 @@ export async function executeEvalRun(runId: string, opts: EvalRunnerOptions = {}
     planned = queue.length
     await patchRun(runId, { summary: await summarizeStored(runId, { durationMs: 0, planned, promptHashes }) as unknown as Record<string, unknown> }, { onlyRunning: true })
     const defaultModel = head?.modelDefId ?? null
-    const concurrency = Math.max(1, opts.concurrency ?? evalShareOf(defaultModel ? limits[defaultModel] : undefined))
+    // Final fix wave (I2/I3): attempts in parallel come from settings `eval.concurrency` (1 on prod),
+    // never above EVAL_MAX_CONCURRENCY, and each attempt's model calls stay inside the model's one eval
+    // budget (pool.ts) whatever this is. The worlds must fit beside Tony's Postgres connections.
+    const knobs = await readEvalSettingsFresh()
+    const concurrency = Math.min(EVAL_MAX_CONCURRENCY, queue.length, Math.max(1, opts.concurrency ?? knobs.concurrency))
+    const budget = opts.maxTokensPerRun ?? knobs.maxTokensPerRun
+    await assertEvalConnectionsFit(concurrency, opts.connectionStats)
     const ctx: AttemptContext = { runId, params, allowNetwork, limits, defaultModel, opts, signal: stop.signal }
     let next = 0
+    let spent = 0
     const write = opts.writeResult ?? writeResult
     const worker = async () => {
       while (next < queue.length && !stop.signal.aborted && !claimingIsStopped()) {
@@ -575,6 +594,13 @@ export async function executeEvalRun(runId: string, opts: EvalRunnerOptions = {}
         if (stop.signal.aborted && rec.failed?.startsWith('stopped')) return
         await write(runId, rec)
         await patchRun(runId, { summary: await summarizeStored(runId, { durationMs: Date.now() - started, planned, promptHashes }) as unknown as Record<string, unknown> }, { onlyRunning: true })
+        // I4: past the token budget the run stops — attempts in flight are aborted (not recorded),
+        // nothing new starts; the results so far are kept.
+        spent += rec.tokens || 0
+        if (spent > budget && !overBudget) {
+          overBudget = `${BUDGET_STOP_PREFIX} — the attempts used ${spent.toLocaleString('en-US')} tokens, over the run's ${budget.toLocaleString('en-US')} (eval.maxTokensPerRun); partial results kept`
+          stop.abort()
+        }
       }
     }
     // Fix round 1 (I1): one worker failing stops the others FIRST (abort: their attempts end, nothing
@@ -589,6 +615,7 @@ export async function executeEvalRun(runId: string, opts: EvalRunnerOptions = {}
     if (claimingIsStopped()) stop.abort()
     const summary = await summarizeStored(runId, { durationMs: Date.now() - started, planned, promptHashes }) as unknown as Record<string, unknown>
     if (cancelled) await patchRun(runId, { summary, finishedAt: new Date() })
+    else if (overBudget) await patchRun(runId, { status: 'failed', error: overBudget, summary, finishedAt: new Date() }, { onlyRunning: true })
     else if (stop.signal.aborted) await patchRun(runId, { status: 'failed', error: 'the worker stopped mid-run (drain) — partial results kept', summary, finishedAt: new Date() }, { onlyRunning: true })
     else await patchRun(runId, { status: 'done', summary, finishedAt: new Date() }, { onlyRunning: true })
   } catch (err) {

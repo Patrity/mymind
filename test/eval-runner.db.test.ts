@@ -35,7 +35,7 @@ const { enqueueEvalRun, startEvalRun, _evalRunSettled, bootEval, ORPHANED_RUN_ER
 const { runAttempt, summarizeStored } = await import('@mymind/core/lib/eval/runner')
 const { scoringSpecOf } = await import('@mymind/core/lib/eval/scoring-spec')
 const { installEvalWorld, cleanupEvalRun } = await import('@mymind/core/lib/eval/world')
-const { listEvalTenants, evalRunPrefix, createEvalTenant } = await import('@mymind/core/lib/eval/tenant')
+const { listEvalTenants, evalRunPrefix, createEvalTenant, dropEvalTenant } = await import('@mymind/core/lib/eval/tenant')
 const { approvalFor } = await import('@mymind/core/lib/agent/runtime/approvals')
 const { loadConfig } = await import('@mymind/core/lib/ai/registry/store')
 const { primaryModelFrom, gatewayOriginsFrom } = await import('@mymind/core/lib/eval/provenance')
@@ -682,4 +682,52 @@ describe('final fix wave', () => {
     expect(s.cases).toEqual([expect.objectContaining({ slug: 'exec-needs-approval', attempts: 5, meanScore: 0.8, forbidden: true, passed: false })])
     expect(s.overall).toMatchObject({ cases: 1, passed: 0 })
   })
+  it('I3: attempts in parallel are capped at 4 whatever is asked; a world\'s pool is 2 connections', async () => {
+    const doc = await loadConfig()
+    const key = primaryModelFrom(doc)?.modelDefId ?? 'default'
+    const suiteId = await testSuite(['task-create', 'memory-save', 'task-list', 'memory-recall'])
+    const run = await enqueueEvalRun(suiteId, { n: 2 }, { send: noSend })
+    runIds.push(run.id)
+    holdMs = 150
+    maxLive = 0
+    try {
+      await startEvalRun(run.id, { runner, concurrency: 9, poolLimits: async () => ({ [key]: 32 }), allowNetwork: () => false })
+      await _evalRunSettled(run.id)
+    } finally { holdMs = 0 }
+    expect((await db().select({ s: evalRuns.status }).from(evalRuns).where(eq(evalRuns.id, run.id)))[0]!.s).toBe('done')
+    expect(maxLive).toBe(4)
+    const t = await createEvalTenant(randomUUID())
+    try {
+      expect((t.pool as unknown as { options: { max: number } }).options.max).toBe(2)
+    } finally { await dropEvalTenant(t) }
+  }, 60_000)
+
+  it('I3: a run whose worlds would not fit beside Tony\'s Postgres connections fails at start, naming the numbers', async () => {
+    const suiteId = await testSuite(['task-create'])
+    const run = await enqueueEvalRun(suiteId, {}, { send: noSend })
+    runIds.push(run.id)
+    await startEvalRun(run.id, { runner, concurrency: 1, allowNetwork: () => false, connectionStats: async () => ({ max: 20, reserved: 3, used: 5 }) })
+    await _evalRunSettled(run.id)
+    const [row] = await db().select().from(evalRuns).where(eq(evalRuns.id, run.id))
+    expect(row).toMatchObject({ status: 'failed', error: expect.stringMatching(/1 attempt\(s\) at once need 4 Postgres connections but only 2 are free \(max_connections 20, 3 reserved, 5 in use, 10 kept for Tony\)/) })
+    expect(await db().select({ id: evalResults.id }).from(evalResults).where(eq(evalResults.runId, run.id))).toEqual([])
+    // The real server fits a default run.
+    const { assertEvalConnectionsFit } = await import('@mymind/core/lib/eval/tenant')
+    await expect(assertEvalConnectionsFit(1)).resolves.toBeUndefined()
+  }, 30_000)
+
+  it('I4: a run past its token budget stops as `stopped: budget`, keeping the results so far', async () => {
+    const suiteId = await testSuite(['task-create', 'memory-save', 'task-list', 'memory-recall'])
+    const run = await enqueueEvalRun(suiteId, {}, { send: noSend })
+    runIds.push(run.id)
+    await startEvalRun(run.id, { runner, concurrency: 1, maxTokensPerRun: 15, allowNetwork: () => false })
+    await _evalRunSettled(run.id)
+    const [row] = await db().select().from(evalRuns).where(eq(evalRuns.id, run.id))
+    expect(row).toMatchObject({ status: 'failed', error: expect.stringMatching(/^stopped: budget — the attempts used \d+ tokens, over the run's 15/) })
+    const n = (await db().select({ id: evalResults.id }).from(evalResults).where(eq(evalResults.runId, run.id))).length
+    expect(n).toBeGreaterThanOrEqual(1)
+    expect(n).toBeLessThan(4)
+    expect((row!.summary as { attempts: number }).attempts).toBe(n)
+    expect((await listEvalTenants()).filter(s => s.startsWith(evalRunPrefix(run.id)))).toEqual([])
+  }, 60_000)
 })

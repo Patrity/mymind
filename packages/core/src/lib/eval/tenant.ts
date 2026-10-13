@@ -23,6 +23,38 @@ import { outsideEvalScope } from './context'
 
 export const EVAL_SCHEMA_PREFIX = 'eval_'
 
+/** Final fix wave (I3): a world's own pool size — an attempt rarely needs more than two connections. */
+export const EVAL_TENANT_POOL_MAX = 2
+/** Postgres sessions one live world holds: its pool plus its lock session. */
+export const EVAL_CONNECTIONS_PER_WORLD = EVAL_TENANT_POOL_MAX + 1
+/** Connections kept free for Tony's own web + worker pools to grow into while an eval runs. */
+export const EVAL_CONNECTION_HEADROOM = 10
+
+export interface PgConnectionStats { max: number; reserved: number; used: number }
+
+/** The server's connection limits and how many sessions are open right now. */
+export async function pgConnectionStats(): Promise<PgConnectionStats> {
+  return outsideEvalScope(async () => {
+    const r = await adminDb().execute(sql`select current_setting('max_connections')::int as max,
+      current_setting('superuser_reserved_connections')::int as reserved,
+      (select count(*)::int from pg_stat_activity where backend_type = 'client backend') as used`)
+    const row = r.rows[0] as { max: number; reserved: number; used: number }
+    return { max: Number(row.max), reserved: Number(row.reserved), used: Number(row.used) }
+  })
+}
+
+/** Final fix wave (I3): refuses a run whose worlds would not fit beside Tony's connections — `attempts`
+ *  live worlds (pool + lock each) plus one transient try-lock session at a drop, with headroom left
+ *  for his pools. Throws a message naming the numbers. */
+export async function assertEvalConnectionsFit(attempts: number, stats: () => Promise<PgConnectionStats> = pgConnectionStats): Promise<void> {
+  const s = await stats()
+  const need = attempts * EVAL_CONNECTIONS_PER_WORLD + 1
+  const free = s.max - s.reserved - s.used - EVAL_CONNECTION_HEADROOM
+  if (need > free) {
+    throw new Error(`${attempts} attempt(s) at once need ${need} Postgres connections but only ${Math.max(0, free)} are free (max_connections ${s.max}, ${s.reserved} reserved, ${s.used} in use, ${EVAL_CONNECTION_HEADROOM} kept for Tony) — lower eval.concurrency`)
+  }
+}
+
 /** Public tables a world never shadows: the eval system's own records. */
 export function isUnshadowedTable(name: string): boolean {
   return name.startsWith('eval_')
@@ -259,7 +291,7 @@ export async function createEvalTenant(runId: string): Promise<EvalTenant> {
   }
   pool = new TenantPool({
     connectionString: coreConfig().databaseUrl,
-    max: 4,
+    max: EVAL_TENANT_POOL_MAX,
     options: `-c search_path=${schema},public`
   }, schema)
   if (lostBeforePool.length) pool.markGone(`lost its lock (${lostBeforePool[0]})`)

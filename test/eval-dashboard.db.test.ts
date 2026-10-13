@@ -13,7 +13,7 @@ const { evalSuites, evalCases, evalRuns, evalResults } = await import('@mymind/c
 const { setBusNs } = await import('@mymind/core/lib/bus/ns')
 const { subscribeChanges } = await import('@mymind/core/utils/live-bus')
 const { importSuite, updateCase, setCaseEnabled, EvalCaseConflictError } = await import('@mymind/core/lib/eval/suites')
-const { enqueueEvalRun, cancelEvalRun, EvalRunConflictError, EVAL_RUN_LOCK_NS } = await import('@mymind/core/lib/eval/runs')
+const { enqueueEvalRun, cancelEvalRun, EvalRunConflictError, EVAL_RUN_LOCK_NS, EVAL_RUN_LOCK_KEY } = await import('@mymind/core/lib/eval/runs')
 const { scoringSpecOf } = await import('@mymind/core/lib/eval/scoring-spec')
 const { listSuiteOverviews, getSuiteDetail, getRunView, getAttemptView, getCaseView } = await import('@mymind/core/lib/eval/dashboard')
 type LiveEvent = import('@mymind/core/shared/types/live').LiveEvent
@@ -131,7 +131,7 @@ describe('case writes', () => {
   })
 })
 
-describe('fix round 1: one queued/running run per suite', () => {
+describe('fix round 1 / final fix wave I4: one queued/running eval run at a time — globally', () => {
   const noSend = async () => undefined
   it('concurrent starts: exactly one is queued, the others get EvalRunConflictError naming it; after a cancel a new one starts', async () => {
     const tries = await Promise.allSettled(Array.from({ length: 5 }, () => enqueueEvalRun(suiteId, {}, { send: noSend })))
@@ -141,7 +141,7 @@ describe('fix round 1: one queued/running run per suite', () => {
     expect(refused).toHaveLength(4)
     for (const r of refused) {
       expect(r.reason).toBeInstanceOf(EvalRunConflictError)
-      expect(r.reason).toMatchObject({ runId: ok[0]!.value.id, status: 'queued', message: expect.stringMatching(/already has a queued run/) })
+      expect(r.reason).toMatchObject({ runId: ok[0]!.value.id, status: 'queued', message: expect.stringMatching(/of this suite is already queued/) })
     }
     // Running blocks too.
     await useDb().update(evalRuns).set({ status: 'running' }).where(eq(evalRuns.id, ok[0]!.value.id))
@@ -153,13 +153,26 @@ describe('fix round 1: one queued/running run per suite', () => {
     await useDb().delete(evalRuns).where(eq(evalRuns.suiteId, suiteId))
   })
 
-  it('the check-and-insert holds the per-suite advisory lock: while another session holds it, a start waits', async () => {
+  it('I4: another suite\'s active run refuses a start too (one global run), naming that suite', async () => {
+    const other = await importSuite({ name: `other-${randomUUID().slice(0, 8)}`, cases: [{ slug: 'one', prompt: 'hi' }] })
+    try {
+      const first = await enqueueEvalRun(other.suiteId, {}, { send: noSend })
+      await expect(enqueueEvalRun(suiteId, {}, { send: noSend })).rejects.toMatchObject({ runId: first.id, status: 'queued', message: expect.stringMatching(/suite "other-.*" is already queued — only one eval run at a time/) })
+      expect(await cancelEvalRun(first.id)).toBe(true)
+      expect((await enqueueEvalRun(suiteId, {}, { send: noSend })).status).toBe('queued')
+    } finally {
+      await useDb().delete(evalRuns).where(eq(evalRuns.suiteId, suiteId))
+      await useDb().delete(evalSuites).where(eq(evalSuites.id, other.suiteId))
+    }
+  })
+
+  it('the check-and-insert holds the global advisory lock: while another session holds it, a start waits', async () => {
     const pg = (await import('pg')).default
     const other = new pg.Client({ connectionString: process.env.DATABASE_URL })
     await other.connect()
     try {
       await other.query('begin')
-      await other.query('select pg_advisory_xact_lock($1, hashtext($2))', [EVAL_RUN_LOCK_NS, suiteId])
+      await other.query('select pg_advisory_xact_lock($1, $2)', [EVAL_RUN_LOCK_NS, EVAL_RUN_LOCK_KEY])
       let settled = false
       const p = enqueueEvalRun(suiteId, {}, { send: noSend }).finally(() => { settled = true })
       await new Promise(r => setTimeout(r, 400))

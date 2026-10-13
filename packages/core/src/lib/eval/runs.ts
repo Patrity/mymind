@@ -27,15 +27,18 @@ import { EVAL_RUN_STALE_MS, executeEvalRun, summarizeStored, type EvalRunnerOpti
 
 export class EvalRunError extends Error { override name = 'EvalRunError' }
 
-/** Task 4 fix round 1: the suite already has a queued or running run (at most one at a time). */
+/** An eval run is already queued or running — final fix wave (I4): at most ONE active run globally,
+ *  whatever the suite (each run's worlds, sandboxes, connections and model load are additive). */
 export class EvalRunConflictError extends EvalRunError {
   override name = 'EvalRunConflictError'
   constructor(message: string, readonly runId: string, readonly status: EvalRunStatus) { super(message) }
 }
 
-/** Advisory-lock key space for "one active run per suite" — two-int, disjoint from the tenant locks
- *  (tenant.ts EVAL_LOCK_NS) and from the app's single-int transaction locks. */
+/** Advisory-lock key for "one active run" — two-int, disjoint from the tenant locks (tenant.ts
+ *  EVAL_LOCK_NS) and from the app's single-int transaction locks. Final fix wave (I4): one constant
+ *  key (EVAL_RUN_LOCK_NS, 0), not per suite. */
 export const EVAL_RUN_LOCK_NS = 85_086
+export const EVAL_RUN_LOCK_KEY = 0
 
 /** Validates params against the suite (known slugs, n in 1..20, a reasoning model override). */
 export async function normalizeParams(suiteId: string, p: EvalRunParams): Promise<EvalRunParams> {
@@ -70,16 +73,18 @@ export async function enqueueEvalRun(suiteId: string, params: EvalRunParams = {}
   const [suite] = await useDb().select({ id: evalSuites.id }).from(evalSuites).where(eq(evalSuites.id, suiteId))
   if (!suite) throw new EvalRunError('no such suite')
   const p = await normalizeParams(suiteId, params)
-  // Task 4 fix round 1: at most one queued/running run per suite. The check and the insert run under
-  // a per-suite transaction advisory lock, so two concurrent starts (two tabs, a scripted POST, the
-  // CLI) serialize: the second sees the first's row and is refused. A run a crash left 'running' blocks
-  // until the orphan check fails it (≤ ~3 min) — cancel it to start sooner.
+  // At most one queued/running eval run AT ALL (final fix wave I4; it was per suite). The check and the
+  // insert run under one transaction advisory lock, so two concurrent starts (two tabs, a scripted
+  // POST, the CLI, two suites) serialize: the second sees the first's row and is refused. A run a crash
+  // left 'running' blocks until the orphan check fails it (≤ ~3 min) — cancel it to start sooner.
   const row = await useDb().transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(${EVAL_RUN_LOCK_NS}, hashtext(${suiteId}))`)
-    const [active] = await tx.select({ id: evalRuns.id, status: evalRuns.status }).from(evalRuns)
-      .where(and(eq(evalRuns.suiteId, suiteId), inArray(evalRuns.status, ['queued', 'running']))).limit(1)
+    await tx.execute(sql`select pg_advisory_xact_lock(${EVAL_RUN_LOCK_NS}, ${EVAL_RUN_LOCK_KEY})`)
+    const [active] = await tx.select({ id: evalRuns.id, status: evalRuns.status, suiteId: evalRuns.suiteId, suite: evalSuites.name }).from(evalRuns)
+      .innerJoin(evalSuites, eq(evalSuites.id, evalRuns.suiteId))
+      .where(inArray(evalRuns.status, ['queued', 'running'])).orderBy(desc(evalRuns.startedAt)).limit(1)
     if (active) {
-      throw new EvalRunConflictError(`this suite already has a ${active.status} run — wait for it to finish or cancel it first`, active.id, active.status as EvalRunStatus)
+      const whose = active.suiteId === suiteId ? 'this suite' : `suite "${active.suite}"`
+      throw new EvalRunConflictError(`an eval run of ${whose} is already ${active.status} — only one eval run at a time; wait for it to finish or cancel it first`, active.id, active.status as EvalRunStatus)
     }
     const [r] = await tx.insert(evalRuns).values({ suiteId, status: 'queued', params: p as Record<string, unknown> }).returning()
     return r!
