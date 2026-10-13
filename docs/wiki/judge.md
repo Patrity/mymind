@@ -90,9 +90,14 @@ tier's own hard cap — on expiry the floor becomes `high` / "rule check timed o
 a workstream in `evaluating` forever. `VERDICT_TIMEOUT_MS` (approval.ts) = `JUDGE_TIMEOUT_MS + 5,000`
 = 65,000 ms is the approval judge's own outer bound on the whole verdict seam.
 
-**The semaphore** (final fix wave, I5): `judge/limiter.ts` is a per-process FIFO semaphore,
-`withJudgeSlot(signal, fn)`, wrapping both `judgeVerdict`'s and the guard's model call. At most
-`judge.maxInFlight` calls (setting, default **4**, range 1–16) run at once; the rest queue. A queued
+**The semaphores** (cycle 84 final fix wave I5; split per class in cycle 85's final fix wave, I1):
+`judge/limiter.ts` keeps three per-process FIFO semaphores, `withJudgeSlot(kind, signal, fn)` — one
+per class of call, so a long call of one class never delays another: **`guard`** (the output guard,
+15 s deadline; default **4** in flight), **`approval`** (`judgeVerdict` on a card; default **2**) and
+**`outcome`** (the finish_workstream verifier and the eval rubric judge, 60 s; default **2**). Each
+cap is 1–16 (`judge.maxInFlight: { guard, approval, outcome }`; a stored bare number is the guard cap,
+the cycle-84 shape). Inside an eval world a call first takes the eval run's ONE slot of its class, so
+an eval never holds more than one slot of any class. A queued
 call's **wait counts toward its own deadline** — the caller's signal bounds it — so expiring in the
 queue gives "judge timed out waiting for a slot" (an error verdict → review) or "guard timed out
 waiting for a slot" (fail-closed, run only — see the output guard below). This exists because judge
@@ -148,7 +153,9 @@ under `judge`):
 | `judge.smartApprovals.workstreams` | **`false`** | — | Amended 2026-10-12 (final fix wave, M4): the spec originally shipped this `true`; it now ships off on both surfaces. Tony turns it on **after prod acceptance**. |
 | `judge.smartApprovals.chat` | **`false`** | — | |
 | `judge.confidence` | `0.9` | 0.5–0.99 | Minimum verdict confidence for an auto-approval. |
-| `judge.maxInFlight` | `4` | 1–16 | The judge/guard semaphore's size. **PUT-only — there is no Settings control for it** (the form never sends it; a stored invalid value reads as the default, since it's a capacity knob, not a safety switch). |
+| `judge.maxInFlight` | `{ guard: 4, approval: 2, outcome: 2 }` | each 1–16 | The three judge semaphores' sizes (cycle 85 I1). A bare number (PUT or stored) sets `guard` only. **PUT-only — there is no Settings control for it** (the form never sends it; a stored invalid value reads as that class's default, since it's a capacity knob, not a safety switch). |
+| `eval.concurrency` | `1` in production, `2` elsewhere | 1–4 | Eval attempts run in parallel (cycle 85 final fix wave). PUT-only. |
+| `eval.maxTokensPerRun` | `5,000,000` | 10k–1B | An eval run past it stops as `stopped: budget` (partial results kept). PUT-only. |
 
 A missing `agent_settings` row reads as the full defaults above (judge on, both Smart Approvals
 off). A present-but-corrupt `judge` value or doc reads as **everything off** — a boolean field that
@@ -387,8 +394,8 @@ the settings warning above says explicitly not to enable it until chat gets the 
   `approved`/`tony` with nothing actually run (it fails closed — the tool never executes — but the
   audit label is imprecise). The iMessage path has an explicit pre-abort check and does not have this
   gap.
-- **`judge.maxInFlight` has no Settings control.** It is a PUT-only field; the Settings form never
-  sends it, so raising or lowering the semaphore's size needs a direct API call.
+- **`judge.maxInFlight` (and the `eval.*` knobs) have no Settings control.** They are PUT-only
+  fields; the Settings form never sends them, so resizing a semaphore needs a direct API call.
 - **The coordinator's wake-precheck child-injection cache is in-process, not persisted.** A worker
   restart re-classifies every child's current words once more. A **failed** check (fail-closed) is
   remembered for only 60 s (`UNCHECKED_TTL_MS`) per child, so a withheld child's words can stay

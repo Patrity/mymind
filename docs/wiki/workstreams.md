@@ -411,7 +411,7 @@ once. Jobs still can't start a workstream unattended: `start_workstream`'s headl
 | Tool | Who | Notes |
 |---|---|---|
 | `start_workstream({goal, toolsets?, budget?, treeBudget?})` | Bridget (core toolset) | Not available inside a workstream. In a headless run it becomes a `/review` proposal. `treeBudget` only applies with `toolsets:['coordinator']` — see [Coordinator § Tree budget](#tree-budget). No cap (cycle 83: see [The removed top-level cap](#the-removed-top-level-cap)). Profile-only: **not on MCP**. |
-| `finish_workstream({summary})` | workstream segments only | → `done`. Refused while a non-terminal child remains, unless every remaining one is already `cancelRequested` (cycle 83 M3). |
+| `finish_workstream({summary})` | workstream segments only | → `done`. Refused while a non-terminal child remains, unless every remaining one is already `cancelRequested` (cycle 83 M3). Cycle 85 final fix wave: also refused while Tony has a question (`ask_tony`) or an approval card pending — before verification, and again at the `done` write (which only moves from `running`), so a finish never clears his pending attention. |
 | `ask_tony({question})` | workstream segments only | → `attention {question}`. In a child, this reaches its coordinator first (cycle 83 D8) — see [Coordinator § `ask_tony` routing](#ask_tony-routing-and-escalation). |
 | `answer_workstream({id, text})` | Bridget | Answers a **question** or resumes a **paused** workstream. Refused for running work or an approval card, and inside a workstream. `outbound` (gated after a Google read; a proposal when headless). |
 
