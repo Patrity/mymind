@@ -167,12 +167,12 @@ async function seedChannels(ch: NonNullable<EvalSetup['channels']>): Promise<voi
   })
 }
 
-/** Writes files with the workspace write script, in the world's OFFLINE sandbox (eval worlds never
- *  get a networked container). */
+/** Writes files with the workspace write script, in the world's own workspace (every eval command
+ *  runs confined to the world's scratch dir, offline). */
 export async function sandboxWriteFiles(workspaceId: string, files: Record<string, string>): Promise<void> {
   const [{ workspaceRuntime }, { WRITE_SCRIPT }] = await Promise.all([import('../sandbox/runtime'), import('../sandbox/fs-ops')])
   for (const [path, content] of Object.entries(files)) {
-    const r = await workspaceRuntime().manager.exec(workspaceId, WRITE_SCRIPT, { input: JSON.stringify({ path, content }), timeoutSec: 60, offline: true })
+    const r = await workspaceRuntime().manager.exec(workspaceId, WRITE_SCRIPT, { input: JSON.stringify({ path, content }), timeoutSec: 60 })
     if (r.exitCode !== 0) throw new Error(`setup.files: writing ${path} failed (${oneLine(r.stderr || r.stdout, 200) || `exit ${r.exitCode}`})`)
   }
 }

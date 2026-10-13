@@ -33,11 +33,11 @@ describe('composePrompt — environment self-model', () => {
   for (const speak of [true, false]) {
     it(`states the real runtime topology (speak=${speak})`, () => {
       const p = composePrompt({ ...base, speak })
-      expect(p).toMatch(/LXC 114/)
-      expect(p).toMatch(/mymind-db/)                 // Postgres is this docker container
-      expect(p).toMatch(/not sqlite/i)
-      expect(p).toMatch(/\/opt\/mymind/)             // its own source/docs are readable
+      // Cycle 86: Bridget's own Mac mini (user `bridget`); MyMind runs there, its DB on Tony's Postgres.
+      expect(p).toMatch(/your own Mac \(a Mac mini, macOS; you are the user `bridget`\)/)
+      expect(p).toMatch(/database on Tony's Postgres server/)
       expect(p).toMatch(/harness Tony built/i)
+      expect(p).not.toMatch(/LXC 114|mymind-db|\/opt\/mymind/)
     })
   }
 })

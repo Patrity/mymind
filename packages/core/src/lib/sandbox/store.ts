@@ -11,7 +11,8 @@ export type { WorkspaceRow }
 
 export interface WorkspaceStore {
   get(id: string): Promise<WorkspaceRow | null>
-  /** Record the container (or none) and whether it runs. */
+  /** Record whether the workspace is in use (`running`: used since its last idle/teardown stop).
+   *  `containerId` is cycle 82's; the host runtime always passes null. */
   setContainer(id: string, containerId: string | null, state: WorkspaceRow['state']): Promise<void>
   /** last_used_at = now (every command). */
   touch(id: string): Promise<void>
@@ -22,7 +23,7 @@ export interface WorkspaceStore {
   listRunning(): Promise<WorkspaceRow[]>
   /** Workstream workspaces whose workstream is gone get `deleted_at` (the 30-day clock starts). */
   stampOrphans(): Promise<number>
-  /** Rows whose 30-day clock ran out before `before` (their container + dir go, then the row):
+  /** Rows whose 30-day clock ran out before `before` (their dir goes, then the row):
    *  deleted before it, or (final review I7) the workspace of a workstream that FINISHED (done /
    *  failed / cancelled) before it. A resumed workstream has no finished_at, so it is never swept. */
   listExpired(before: Date): Promise<WorkspaceRow[]>
@@ -38,7 +39,7 @@ export const dbWorkspaceStore: WorkspaceStore = {
     const [r] = await useDb().select().from(workspaces).where(eq(workspaces.id, id)).limit(1)
     return r ?? null
   },
-  // Change-only (Task 3): ensureContainer records the container on EVERY command, and the Files /
+  // Change-only (Task 3): a command may record the state on every call, and the Files /
   // Shells UI refetches on each `workspace` event — an unconditional publish made each UI read
   // trigger the next one (a refetch loop), and spammed the live bus during agent runs.
   async setContainer(id, containerId, state) {

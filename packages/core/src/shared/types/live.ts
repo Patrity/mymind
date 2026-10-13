@@ -25,7 +25,7 @@ export type ResourceName =
   | 'connection'
   /** Cycle 81: a workstream's state / used budget / attention changed (lib/agent/workstreams). */
   | 'workstream'
-  /** Cycle 82: a sandboxed workspace's container state / usage changed (lib/sandbox). */
+  /** Cycle 82: a workspace's state / taint / shells / watches changed (lib/sandbox). */
   | 'workspace'
   /** Cycle 85: an eval suite / case / run / result changed (lib/eval — the /evals pages). */
   | 'eval'

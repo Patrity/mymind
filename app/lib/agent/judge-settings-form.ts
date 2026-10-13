@@ -50,7 +50,8 @@ export type LoadState = 'loading' | 'ok' | 'failed' | 'corrupt'
 
 /** The load state for a GET response. */
 export function loadStateOf(res: { problems?: unknown }): LoadState {
-  return Array.isArray(res.problems) && res.problems.length ? 'corrupt' : 'ok'
+  // Cycle 86: the taint-confinement switch has its own control (and reads a corrupt value as on).
+  return Array.isArray(res.problems) && res.problems.some(p => p !== 'taintConfinement') ? 'corrupt' : 'ok'
 }
 
 /** Save is offered only for a loaded form with a real change and no error, while not already saving. */

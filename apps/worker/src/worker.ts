@@ -41,9 +41,9 @@ export interface WorkerDeps {
   workstreamControl(p: CommandPayloads['workstream-control']): Promise<WorkstreamDTO>
   /** Cycle 82: kill a workspace's tainted runs, then clear its taint (lib/sandbox/manager.ts). */
   workspaceReenableNetwork(p: CommandPayloads['workspace-reenable-network']): Promise<{ id: string; tainted: boolean }>
-  /** Cycle 82 Task 2: a workspace text file, read in the sandbox (export_to_document replayed in the web). */
+  /** Cycle 82 Task 2: a workspace text file, read here (export_to_document replayed in the web). */
   workspaceReadText(p: CommandPayloads['workspace-read-text']): Promise<CommandResults['workspace-read-text']>
-  /** Cycle 82 Task 3: the Files / Shells UI's reads, run in the sandbox (lib/sandbox/view.ts). */
+  /** Cycle 82 Task 3: the Files / Shells UI's reads, run here (lib/sandbox/view.ts). */
   workspaceView(p: CommandPayloads['workspace-view']): Promise<unknown>
   /** Cycle 82 Task 3: Tony's Kill on the Shells tab. */
   workspaceKillShell(p: CommandPayloads['workspace-kill-shell']): Promise<CommandResults['workspace-kill-shell']>
@@ -53,8 +53,9 @@ export interface WorkerDeps {
   evalCancel(p: CommandPayloads['eval:cancel']): Promise<CommandResults['eval:cancel']>
   startSchedule(): () => void
   startRecorderFlush(): () => void
-  /** Cycle 82: sandbox housekeeping — boot reconcile, then idle-stop + quota every minute and the
-   *  daily deletion sweep (lib/sandbox/manager.ts startSandboxHousekeeping). Never throws. */
+  /** Cycle 82/86: workspace housekeeping — shell re-attach at start, then teardown / shell refresh /
+   *  idle stop every minute, the daily deletion sweep and the low-disk alarm
+   *  (lib/sandbox/manager.ts startSandboxHousekeeping). Never throws. */
   startSandbox(): () => void
   flushRecorder(): Promise<void>
   /** Heartbeat, carrying the worker-owned status the web shows. */

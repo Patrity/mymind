@@ -54,6 +54,9 @@ describe('judge settings form (Task 4 fix round 1, M2/M7)', () => {
   it('M1: a GET naming corrupt fields is the corrupt state', () => {
     expect(loadStateOf({ problems: ['judge.enabled'] })).toBe('corrupt')
     expect(loadStateOf({ problems: [] })).toBe('ok')
+    // Cycle 86: the confinement switch has its own control — its corrupt value doesn't lock the judge form.
+    expect(loadStateOf({ problems: ['taintConfinement'] })).toBe('ok')
+    expect(loadStateOf({ problems: ['taintConfinement', 'judge.enabled'] })).toBe('corrupt')
     expect(loadStateOf({})).toBe('ok')
   })
 })

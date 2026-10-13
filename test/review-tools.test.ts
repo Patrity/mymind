@@ -76,10 +76,8 @@ describe('decide_review exposure', () => {
     expect(bridgetProfile.tools).toContain(decideReviewTool)
   })
 
-  it('is not allowlistable (confirmed every call); exec still is', async () => {
-    const { execTool } = await import('@mymind/core/lib/agent/tools/exec')
+  it('is not allowlistable (confirmed every call)', async () => {
     expect(decideReviewTool.allowlistable).not.toBe(true)
-    expect(execTool.allowlistable).toBe(true)
     const requestApproval = vi.fn().mockResolvedValue({ approved: false })
     const set = buildAiTools([decideReviewTool], { signal: ctx.signal, onEvent: () => {}, requestApproval })
     await (set.decide_review as { execute: (i: unknown) => Promise<unknown> }).execute({ id: IMPROVEMENT_ID, choice: 'approve' })

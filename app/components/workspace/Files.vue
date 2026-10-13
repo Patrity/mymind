@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * Cycle 82 Task 3 (spec §7): a workspace's files — the tree (sizes, ≤ 500 entries), a viewer and
- * download. Everything is read INSIDE the sandbox by the agent worker; nothing here touches a host
+ * download. Everything is read by the agent worker, on the Mac that holds the workspace; nothing here touches a host
  * path. Workspace content is untrusted (model- or internet-written): markdown and code render only
  * through the hardened MessageResponse (agentMarkdownProps: no raw HTML, previewers off), anything
  * else as escaped text.
@@ -10,7 +10,7 @@ import type { TreeItem } from '@nuxt/ui'
 import { MessageResponse } from '@/components/ai-elements/message'
 import { buildTree, fenced, formatBytes, viewKind, type FileNode } from '~/lib/workspace/display'
 
-const props = defineProps<{ workspaceId: string; /** The sandbox's last known state (a stopped one starts on the first read). */ sandboxState?: 'stopped' | 'running' }>()
+const props = defineProps<{ workspaceId: string; /** The workspace's last known state (cycle 86: informational only — nothing is started on a read). */ sandboxState?: 'stopped' | 'running' }>()
 const toast = useToast()
 
 /** Above this, markdown/code is shown as plain text (rendering a megabyte through shiki stalls the tab). */
@@ -68,7 +68,7 @@ async function download() {
     downloading.value = false
   }
 }
-const loadingText = computed(() => (props.sandboxState === 'stopped' ? 'Starting the sandbox… (the first read after it was stopped takes a few seconds)' : 'Loading…'))
+const loadingText = computed(() => 'Loading…')
 </script>
 
 <template>

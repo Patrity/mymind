@@ -1,12 +1,11 @@
-// Cycle 82 Task 3 — the Files / Shells UI reads and sandbox secrets against REAL Docker + the dev DB.
-// Skipped when Docker is not running. Containers carry mymind.test=<RUN>; rows and the temp dir are
-// removed in afterAll. The secret store is faked here (the dev DB's real exec secrets are never
-// touched); everything else — the manager, the scripts, the container — is real.
+// Cycle 82 Task 3 / cycle 86 — the Files / Shells UI reads and workspace secrets on the HOST runtime +
+// the dev DB. Rows, processes and the temp dir are removed in afterAll. The secret store is faked here
+// (the dev DB's real exec secrets are never touched); everything else — the manager, the scripts, the
+// processes — is real. The confined part needs macOS sandbox-exec.
 process.loadEnvFile('.env')
 import { createHash } from 'node:crypto'
-import { spawnSync } from 'node:child_process'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
@@ -36,20 +35,15 @@ import { killShellFromUi, readChunk, shellTail, viewFile, viewTree, VIEW_SCRIPT,
 import { workspaceTools } from '@mymind/core/lib/agent/tools/workspace'
 import type { ToolContext } from '@mymind/core/lib/agent/types'
 
-const IMAGE = process.env.SANDBOX_TEST_IMAGE || 'mymind-sandbox:current'
 const RUN = `wsv-${process.pid}-${Date.now().toString(36)}`
 // Final fix wave: every workspace row of this file is in its own bus namespace — a dev worker on the
 // shared DB never scans it, and afterAll removes every row of it (no orphans).
 const NS = RUN.replace(/[^A-Za-z0-9_-]/g, '_')
 
-function docker(...args: string[]): { code: number; out: string } {
-  const r = spawnSync('docker', args, { encoding: 'utf8', timeout: 120_000 })
-  return { code: r.status ?? -1, out: r.stdout ?? '' }
-}
-const dockerUp = docker('version', '--format', '{{.Server.Version}}').code === 0 && docker('image', 'inspect', IMAGE).code === 0
+const darwin = process.platform === 'darwin'
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)', () => {
+describe('workspace UI reads + workspace secrets (host runtime)', () => {
   const rowIds: string[] = []
   let root = ''
   let m: SandboxManager
@@ -63,7 +57,7 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
   beforeAll(async () => {
     setBusNs(NS)
     root = realpathSync(mkdtempSync(path.join(tmpdir(), 'mm-wsv-')))
-    m = createSandboxManager({ labels: { 'mymind.test': RUN }, settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
+    m = createSandboxManager({ settings: { workspacesDir: root }, taintConfinement: async () => true, record: () => {}, log: { info: () => {}, warn: () => {}, error: () => {} } })
     const [r] = await useDb().insert(workspaces).values({ kind: 'workstream', ns: NS }).returning()
     rowIds.push(r!.id)
     ws = r!.id
@@ -87,9 +81,10 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
   }, 180_000)
 
   afterAll(async () => {
+    for (const r of await useDb().select().from(workspaceShells).where(eq(workspaceShells.workspaceId, ws))) {
+      if (r.state === 'running') await rt.shells.kill(ws, r.id).catch(() => {})
+    }
     setWorkspaceRuntime(null)
-    const ids = docker('ps', '-aq', '--filter', `label=mymind.test=${RUN}`).out.split('\n').filter(Boolean)
-    if (ids.length) docker('rm', '-f', ...ids)
     if (rowIds.length) await useDb().delete(workspaces).where(inArray(workspaces.id, rowIds))
     await useDb().delete(workspaces).where(eq(workspaces.ns, NS))
     setBusNs(null)
@@ -144,7 +139,7 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
     expect(await viewFile(ws, 'bin.dat')).toEqual({ path: 'bin.dat', binary: true, bytes: 5 })
   }, 60_000)
 
-  it('path safety: the read is resolved INSIDE the container — symlinks out of /workspace are refused', async () => {
+  it('path safety: the read is resolved by the script (realpath) — symlinks out of the workspace are refused', async () => {
     await expect(viewFile(ws, 'passwd-link')).rejects.toMatchObject({ code: 'outside' })
     await expect(viewFile(ws, 'rootlink/etc/passwd')).rejects.toMatchObject({ code: 'outside' })
     await expect(readChunk(ws, 'rootlink/etc/passwd', 0, 10)).rejects.toMatchObject({ code: 'outside' })
@@ -152,7 +147,7 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
     await expect(viewFile(ws, 'src')).rejects.toMatchObject({ code: 'not_a_file' })
     // Rejected before any exec (the JS check) …
     for (const p of ['/etc/passwd', '../x', 'src/../../etc/passwd']) await expect(viewFile(ws, p)).rejects.toMatchObject({ code: 'bad_path' })
-    // … and the in-container check holds on its own (the script given a bad path directly).
+    // … and the script's own check holds on its own (given a bad path directly).
     for (const p of ['/etc/passwd', '../etc/passwd', 'a/../../etc/passwd']) {
       const r = await m.exec(ws, VIEW_SCRIPT, { input: JSON.stringify({ path: p }) })
       expect(JSON.parse(r.stdout.split('\n')[0]!)).toMatchObject({ error: 'bad_path' })
@@ -185,7 +180,7 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
       parts.push(Buffer.from(c.data, 'base64'))
     }
     const got = Buffer.concat(parts)
-    const want = (await sh('sha256sum blob.bin')).stdout.split(' ')[0]
+    const want = (await sh('(sha256sum blob.bin 2>/dev/null || shasum -a 256 blob.bin)')).stdout.split(' ')[0]
     expect(createHash('sha256').update(got).digest('hex')).toBe(want)
   }, 120_000)
 
@@ -216,7 +211,8 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
     expect(k).toMatchObject({ state: 'killed', alreadyEnded: false })
     const [after] = await useDb().select().from(workspaceShells).where(eq(workspaceShells.id, s.shellId))
     expect(after!.reason).toMatch(/stopped by Tony/)
-    expect((await sh('ps -eo args | grep -c "[t]ick" || true')).stdout.trim()).toBe('0')
+    await sleep(300)
+    expect((await sh(`kill -0 -${s.pid} 2>/dev/null && echo alive || echo none`)).stdout.trim()).toBe('none')
     expect((await killShellFromUi(ws, s.shellId)).alreadyEnded).toBe(true)
   }, 60_000)
 
@@ -240,7 +236,7 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
       expect(r.stdout).toContain('MM_TEST_SECRET=«redacted»')
       expect(JSON.stringify(r)).not.toContain(SECRET)
       expect(r.stdout).not.toContain('DOCKER_HOST')
-      expect(r.stdout).toMatch(/^HOME=\/home\/agent$/m)
+      expect(r.stdout).toContain(`\nHOME=${homedir()}\n`)
       // The value really is there (proved without printing it).
       expect((await bash('[ "$MM_TEST_SECRET" = "' + SECRET + '" ] && echo same')).stdout.trim()).toBe('same')
       // A background shell gets it too.
@@ -248,15 +244,16 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
       let tl = await shellTail(ws, bg.shellId)
       for (let i = 0; i < 40 && tl.state === 'running'; i++) { await sleep(250); tl = await shellTail(ws, bg.shellId) }
       expect(tl.output).toBe('MM_TEST_SECRET=«redacted»\n')
+      if (!darwin) return // confinement needs macOS sandbox-exec
       tainted = true
       const t = await bash('env')
-      expect(t.networkOff).toBe(true)
+      expect(t.confined).toMatchObject({ reason: 'tainted-run' })
       expect(t.stdout).not.toContain('MM_TEST_SECRET')
-      // The workspace is now tainted: an UNTAINTED run gets none either (and no network).
+      // The workspace is now tainted: an UNTAINTED run gets none either (and runs confined).
       tainted = false
       const u = await bash('env')
       expect(u.stdout).not.toContain('MM_TEST_SECRET')
-      expect(u.networkOff).toBe(true)
+      expect(u.confined).toMatchObject({ reason: 'tainted-workspace' })
     } finally {
       secretStore.opted = {}
       tainted = false

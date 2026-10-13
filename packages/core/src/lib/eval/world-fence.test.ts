@@ -1,7 +1,8 @@
-// Cycle 85 Task 2 fix round 1 — the fences around a world that a JS fetch guard cannot see:
-// child processes (host exec, the docker CLI), the workspace sandbox (offline, eval-labelled, no
-// secrets), sockets and DNS (net / tls / dns), process caches, the pump kick, the capture cap, and
-// research_web's nested tools. No database: the world's pool fails the test if anything reaches it.
+// Cycle 85 Task 2 fix round 1 / cycle 86 — the fences around a world that a JS fetch guard cannot see:
+// child processes (no host exec tool; every workspace command confined to the world's scratch dir —
+// the host spawn fence that replaced cycle 85's docker allow-list), the workspace runtime (the world's
+// own, no secrets), sockets and DNS (net / tls / dns), process caches, the pump kick, the capture cap,
+// and research_web's nested tools. No database: the world's pool fails the test if anything reaches it.
 //
 // Every "real" primitive (spawn, execFile, net.connect, tls.connect, dns.lookup …) is replaced by a
 // spy BEFORE the guard wraps it — the spies stand for the host / the network: a fenced call must
@@ -11,7 +12,11 @@ import https from 'node:https'
 import net from 'node:net'
 import tls from 'node:tls'
 import dns from 'node:dns'
+import { mkdtemp, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import type { HostCommand } from '../sandbox/host/spawn'
 
 const spawned: { file: string; args: string[] }[] = []
 let stdoutNext = ''
@@ -59,10 +64,10 @@ set(dns.promises.Resolver.prototype, 'resolve4', vi.fn(async (h: string) => { re
 const { buildEvalWorld, installNetworkGuard } = await import('./world')
 const { parseEvalSetup } = await import('./setup')
 const { EvalNetworkBlockedError, processCache, runInEvalScope, currentEvalScope } = await import('./context')
-const { execTool } = await import('../agent/tools/exec')
-const { runConstrained, ExecDisabledError } = await import('../exec/run')
-const { createDockerCli, createArgs, taintedRunArgs, limitsProbeArgs, execArgs, killExecArgs, registerEvalSandbox, evalContainerPrefix, LABEL_EVAL_RUN, LABEL_EVAL_WORLD } = await import('../sandbox/docker')
-const { sandboxManager, _evalSandboxHooksFor } = await import('../sandbox/manager')
+const { bridgetProfile, workstreamProfile } = await import('../agent/profile')
+const { runHost, registerEvalScratch, unregisterEvalScratch } = await import('../sandbox/host/spawn')
+const { SANDBOX_EXEC } = await import('../sandbox/host/profile')
+const { sandboxManager, createEvalSandboxManager, _evalSandboxHooksFor } = await import('../sandbox/manager')
 const { workspaceRuntime } = await import('../sandbox/runtime')
 const { sandboxSecretEnv } = await import('../sandbox/secrets')
 const { getDecryptedSecrets, getSandboxOptedSecrets } = await import('../exec/secrets')
@@ -86,128 +91,88 @@ const world = (allowNetwork?: (u: string) => boolean, setup: unknown = {}) =>
 const ctx = { signal: new AbortController().signal }
 
 describe('C1: no host process from a world', () => {
-  it('exec: the tool refuses (never reading secrets), runConstrained refuses, nothing is spawned', async () => {
-    const w = world()
-    const r = await w.run(() => execTool.handler({ command: 'psql $DATABASE_URL -c "select 1"' }, ctx))
-    expect(r.result).toEqual({ ok: false, disabled: true, error: 'exec unavailable in eval' })
-    await expect(w.run(() => runConstrained('curl https://example.com'))).rejects.toBeInstanceOf(ExecDisabledError)
-    await expect(w.run(() => runConstrained('id'))).rejects.toThrow('exec unavailable in eval')
-    expect(spawned).toEqual([])
-  })
-
-  it('exec always asks in a world (the scripted approver answers the card)', async () => {
-    const w = world()
-    expect(await w.run(() => execTool.autoApprove!({ command: 'ls' }, ctx as never))).toBe(false)
+  it('there is no host exec tool at all (cycle 86): no `exec`, no `admin` toolset, in any profile', () => {
+    for (const p of [bridgetProfile, workstreamProfile]) {
+      expect(p.tools.map(t => t.name)).not.toContain('exec')
+      expect(p.tools.filter(t => (t.toolset as string) === 'admin')).toEqual([])
+    }
   })
 })
 
-describe('C1 / N1 / B1: the docker CLI only touches the world\'s own offline containers', () => {
-  const prefix = evalContainerPrefix(SCHEMA)
-  const WSDIR = `/srv/ws/.eval/${SCHEMA}`
-  const WS = '11111111-1111-1111-1111-111111111111'
-  const spec = { name: `${prefix}ws-${WS}`, image: 'mymind-sandbox:current', workspaceId: WS, hostDir: `${WSDIR}/${WS}` }
-  const labels = { [LABEL_EVAL_RUN]: RUN, [LABEL_EVAL_WORLD]: SCHEMA }
-  const TONY = 'mymind-ws-22222222-2222-2222-2222-222222222222' // shaped like a real workspace container
-  beforeAll(() => registerEvalSandbox(SCHEMA, { workspacesDir: WSDIR, image: 'mymind-sandbox:current' }))
-  const good = () => createArgs({ ...spec, network: 'none', dns: [], labels })
-  /** `good()` with one flag pair inserted before the image. */
-  const withFlag = (...extra: string[]) => { const a = good(); const i = a.indexOf('mymind-sandbox:current'); a.splice(i, 0, ...extra); return a }
-
-  it('the manager\'s own argv passes: create, taintedRun, probe, exec, start/stop/rm/kill/restart, inspect, ps', async () => {
-    const w = world()
-    const cli = createDockerCli()
-    const ok = [
-      good(),
-      taintedRunArgs({ ...spec, name: `${prefix}wst-11111111-abc`, network: 'none', labels, command: 'ls', execId: 'abc', timeoutSec: 10 }),
-      limitsProbeArgs({ ...spec, name: `${prefix}wsprobe-01020304`, hostDir: `${WSDIR}/.limits-probe`, labels, probe: true }),
-      ['run', '--rm', '--network', 'none', '--user', '10001:10001', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--label', `mymind.workspace=${WS}`, '--label', `${LABEL_EVAL_RUN}=${RUN}`, '--label', `${LABEL_EVAL_WORLD}=${SCHEMA}`, '--mount', `type=bind,src=${WSDIR}/${WS},dst=/workspace`, 'mymind-sandbox:current', 'find', '/workspace', '-mindepth', '1', '-delete'],
-      execArgs({ container: spec.name, command: 'ls', execId: 'abc', timeoutSec: 10 }),
-      killExecArgs(spec.name, 'abc'),
-      ['exec', '--user', '10001:10001', '--workdir', '/workspace', spec.name, '/bin/sh', '-c', 'du'],
-      ['start', '-a', spec.name], ['start', spec.name], ['stop', '-t', '3', spec.name], ['restart', '-t', '0', spec.name], ['rm', '-f', spec.name], ['kill', spec.name],
-      ['container', 'inspect', spec.name], ['container', 'inspect', '--format', '{{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}', spec.name],
-      ['image', 'inspect', '--format', '{{.Id}}', 'mymind-sandbox:current'],
-      ['ps', '-aq', '--no-trunc', '--filter', 'label=mymind.workspace', '--filter', `label=${LABEL_EVAL_WORLD}=${SCHEMA}`],
-      ['version', '--format', '{{.Server.Version}}']
-    ]
-    for (const args of ok) await w.run(() => cli(args))
-    expect(spawned).toHaveLength(ok.length)
+describe('C1 / N1 / B1: a world\'s host commands are confined to its own scratch dir (the spawn fence)', () => {
+  const home = os.homedir()
+  const ROOT = `/srv/scratch/${SCHEMA}`
+  const WS = `${ROOT}/11111111-1111-1111-1111-111111111111`
+  beforeAll(() => registerEvalScratch(SCHEMA, ROOT))
+  afterAll(() => unregisterEvalScratch(SCHEMA))
+  const good = (): HostCommand => ({
+    command: 'ls', cwd: WS, timeoutMs: 1000, capBytes: 1024,
+    env: { HOME: `${ROOT}/.home`, PATH: '/usr/bin:/bin', LANG: 'C', TMPDIR: `${ROOT}/.tmp/mm-1`, USER: 'b', LOGNAME: 'b', SHELL: '/bin/bash', TERM: 'dumb' },
+    confine: { writable: [WS, `${ROOT}/.tmp/mm-1`], denyReadUnder: home, readable: [ROOT] }
   })
 
-  it('refuses every reviewer probe (and more) before spawning', async () => {
+  it('the manager\'s own shape runs — under sandbox-exec, with a profile denying the network and every write outside the world', async () => {
     const w = world()
-    const cli = createDockerCli()
-    const refused: string[][] = [
-      // networks / labels / names / images
-      createArgs({ ...spec, dns: [], labels }),                                              // default network
-      createArgs({ ...spec, network: 'none', dns: [] }),                                     // no eval labels
-      createArgs({ ...spec, network: 'none', dns: [], labels: { ...labels, [LABEL_EVAL_RUN]: 'other' } }),
-      createArgs({ ...spec, name: TONY, network: 'none', dns: [], labels }),                 // foreign --name
-      good().map(x => x === '--name' ? `--name=${TONY}` : x).filter(x => x !== spec.name),   // --name= inline form
-      good().map(x => x === 'mymind-sandbox:current' ? 'alpine' : x),                        // another image
-      // B1 probes: mounts and host access
-      withFlag('-v', '/var/run/docker.sock:/s'),
-      withFlag('--volume', '/:/host'),
-      withFlag('--mount', 'type=bind,src=/var/run/docker.sock,dst=/s'),
-      good().map(x => x.startsWith('type=bind,src=') ? 'type=bind,src=/opt/mymind,dst=/workspace' : x),            // another host path
-      good().map(x => x.startsWith('type=bind,src=') ? `type=bind,src=${WSDIR}/../../x,dst=/workspace` : x),        // escape the world dir
-      good().map(x => x.startsWith('type=bind,src=') ? `type=bind,src=/srv/ws/.eval/eval_00000000000040008000000000000bad_0badcafe/${WS},dst=/workspace` : x), // another world's dir
-      good().map(x => x.startsWith('type=bind,src=') ? `type=bind,src=${WSDIR}/${WS},dst=/etc` : x),
-      withFlag('--pid', 'host'), withFlag('--cap-add', 'SYS_ADMIN'), withFlag('--device', '/dev/sda'), withFlag('--privileged'),
-      withFlag('--security-opt', 'seccomp=unconfined'), withFlag('--user', '0:0', '--group-add', 'docker'), withFlag('--user', 'root'), withFlag('--user', '1000'),
-      (() => { const a = good(); const i = a.indexOf('--network'); a.splice(i, 2); return a })(),     // no --network at all (docker's default bridge)
-      withFlag('--network=none'),
-      // B1 probes: env passthrough
-      withFlag('--env', 'DATABASE_URL'), withFlag('--env=DATABASE_URL'), withFlag('-e', 'DATABASE_URL'),
-      withFlag('--env-file', '/opt/mymind/.env.native'), withFlag('--env', 'DATABASE_URL=postgres://x'),
-      ['exec', '--env=DATABASE_URL', spec.name, 'env'],
-      ['exec', '--env-file', '/opt/mymind/.env.native', spec.name, 'env'],
-      ['exec', '-i', '--env', 'GITHUB_TOKEN', spec.name, 'env'],
-      ['exec', '-it', spec.name, 'sh'], ['exec', '--privileged', spec.name, 'id'], ['exec', '--user', '0:0', spec.name, 'id'],
-      // B1 probes: value flags swallowing a foreign target
-      ['container', 'inspect', '-s', TONY, spec.name],
-      ['inspect', '-s', TONY, spec.name],
-      ['logs', '-t', TONY, spec.name],
-      ['stop', '-t', TONY, spec.name],
-      ['container', 'inspect', '--format', TONY, spec.name],
-      // N1: foreign / missing targets, other subcommands
-      ['rm', '-f', TONY], ['kill', TONY], ['stop', '-t', '3', TONY], ['start', TONY],
-      ['exec', '-i', '--user', '10001:10001', TONY, '/bin/sh', '-c', 'id'],
-      ['container', 'rm', '-f', TONY], ['rm', '-f', spec.name, TONY], ['rm', '-f', 'a'.repeat(64)], ['rm', '-f'],
-      ['cp', `${TONY}:/workspace/x`, '/tmp/x'], ['cp', `${spec.name}:/workspace/x`, `${prefix}x`],
-      ['image', 'inspect', 'alpine'], ['ps', '-a', TONY],
-      ['network', 'connect', 'bridge', spec.name], ['volume', 'rm', 'x'], ['system', 'prune', '-af'], ['build', '.'], ['pull', 'alpine']
-    ]
-    for (const args of refused) await expect(w.run(() => cli(args)), args.join(' ')).rejects.toThrow(/refused in an eval world/)
-    await expect(w.run(() => cli(['exec', spec.name, 'env'], { env: { GITHUB_TOKEN: 'x' } }))).rejects.toThrow(/secrets are never/)
-    expect(spawned).toEqual([])
-    spawned.length = 0
-    await cli(['rm', '-f', TONY]) // outside any world: untouched
+    await w.run(() => runHost(good()))
     expect(spawned).toHaveLength(1)
+    const [{ file, args }] = spawned as [{ file: string; args: string[] }]
+    expect(file).toBe(SANDBOX_EXEC)
+    expect(args.slice(0, 1)).toEqual(['-p'])
+    expect(args[1]).toContain('(deny network*)')
+    expect(args[1]).toContain(`(allow file-write* (subpath "${WS}")`)
+    expect(args[1]).toContain(`(deny file-read* (subpath "${home}"))`)
+    expect(args.slice(2)).toEqual(['/bin/bash', '-c', 'ls'])
   })
 
-  it('a world with no registered sandbox can mount nothing', async () => {
+  it('refuses every escape before spawning anything', async () => {
+    const w = world()
+    const probes: Array<[string, (c: HostCommand) => HostCommand]> = [
+      ['unconfined (a plain host process)', ({ confine: _c, ...c }) => c],
+      ['Tony\'s own workspaces dir', c => ({ ...c, cwd: '/Users/bridget/mymind/workspaces/11111111-1111-1111-1111-111111111111' })],
+      ['escape the world dir with ..', c => ({ ...c, cwd: `${ROOT}/../../x` })],
+      ['another world\'s dir', c => ({ ...c, cwd: `/srv/scratch/eval_00000000000040008000000000000bad_0badcafe/w` })],
+      ['write the app dir', c => ({ ...c, confine: { ...c.confine!, writable: [...c.confine!.writable, '/Users/bridget/mymind/app'] } })],
+      ['write everything', c => ({ ...c, confine: { ...c.confine!, writable: ['/'] } })],
+      ['read the home dir', c => ({ ...c, confine: { ...c.confine!, denyReadUnder: undefined } })],
+      ['read Tony\'s workspaces', c => ({ ...c, confine: { ...c.confine!, readable: [ROOT, '/Users/bridget/mymind'] } })],
+      ['a secret in the env', c => ({ ...c, env: { ...c.env, GITHUB_TOKEN: 'ghp_x' } })],
+      ['the database URL', c => ({ ...c, env: { ...c.env, DATABASE_URL: 'postgres://x' } })],
+      ['the ssh agent', c => ({ ...c, env: { ...c.env, SSH_AUTH_SOCK: '/tmp/agent' } })],
+      ['HOME outside the world', c => ({ ...c, env: { ...c.env, HOME: home } })],
+      ['TMPDIR outside the world', c => ({ ...c, env: { ...c.env, TMPDIR: '/tmp' } })]
+    ]
+    for (const [why, f] of probes) await expect(w.run(() => runHost(f(good()))), why).rejects.toThrow(/refused in an eval world/)
+    expect(spawned).toEqual([])
+    // Outside any world: a plain host process runs as before.
+    const { confine: _c, ...plain } = good()
+    await runHost(plain)
+    expect(spawned).toHaveLength(1)
+    expect(spawned[0]!.file).toBe('/bin/bash')
+  })
+
+  it('a world with no registered scratch dir runs nothing (a disposed world, or one that never made its dir)', async () => {
     const other = buildEvalWorld({ runId: RUN, schema: 'eval_000000000000400080000000000000aa_00000003', pool: deadPool, setup: parseEvalSetup({}) })
-    await expect(other.run(() => createDockerCli()(createArgs({ ...spec, name: `${evalContainerPrefix('eval_000000000000400080000000000000aa_00000003')}ws-${WS}`, network: 'none', dns: [], labels: { [LABEL_EVAL_RUN]: RUN, [LABEL_EVAL_WORLD]: 'eval_000000000000400080000000000000aa_00000003' } })))).rejects.toThrow(/--mount/)
+    await expect(other.run(() => runHost(good()))).rejects.toThrow(/no scratch dir registered/)
     expect(spawned).toEqual([])
   })
 
-  it('ids: one returned by an in-world create / own-label ps is allowed; another world\'s is not', async () => {
+  it('through the world\'s manager: confined whatever the switch, or (off macOS) refused — never a plain process', async () => {
     const w = world()
-    const other = buildEvalWorld({ runId: RUN, schema: 'eval_000000000000400080000000000000aa_00000002', pool: deadPool, setup: parseEvalSetup({}) })
-    const id = 'c'.repeat(64)
-    stdoutNext = `${id}\n`
-    const cli = createDockerCli()
-    await w.run(() => cli(good()))
-    await w.run(() => cli(['start', id]))
-    await expect(other.run(() => cli(['start', id]))).rejects.toThrow(/not this world's container/)
-    const listed = 'd'.repeat(64)
-    stdoutNext = `${listed}\n`
-    await w.run(() => cli(['ps', '-aq', '--no-trunc', '--filter', 'label=mymind.workspace', '--filter', `label=mymind.eval.world=${SCHEMA}`]))
-    await w.run(() => cli(['rm', '-f', listed]))
-    stdoutNext = `${'e'.repeat(64)}\n`
-    await w.run(() => cli(['ps', '-aq', '--filter', 'label=mymind.workspace'])) // not filtered by the world: not adopted
-    await expect(w.run(() => cli(['rm', '-f', 'e'.repeat(64)]))).rejects.toThrow(/not this world's container/)
+    const scratch = await mkdtemp(path.join(os.tmpdir(), 'mm-fence-'))
+    try {
+      const store = { get: async (id: string) => ({ id, tainted: false, deletedAt: null, state: 'running' }), touch: async () => {}, setContainer: async () => {}, setTainted: async () => {} }
+      const m = createEvalSandboxManager({ runId: RUN, worldId: SCHEMA }, { store: store as never, taintConfinement: async () => false, settings: { evalScratchDir: scratch }, record: () => {} })
+      const run = w.run(() => m.exec('11111111-1111-4111-8111-111111111111', 'curl https://example.com'))
+      if (process.platform === 'darwin') {
+        await run
+        expect(spawned).toHaveLength(1)
+        expect(spawned[0]!.file).toBe(SANDBOX_EXEC)
+        expect(spawned[0]!.args[1]).toContain('(deny network*)')
+      } else {
+        await expect(run).rejects.toThrow(/needs macOS sandbox-exec/)
+        expect(spawned).toEqual([])
+      }
+    } finally { await rm(scratch, { recursive: true, force: true }) }
   })
 })
 
@@ -232,17 +197,17 @@ describe('C1: the workspace sandbox in a world', () => {
     expect(cancel).toHaveBeenCalled()
   })
 
-  it('sandboxManager() / workspaceRuntime() are the world\'s own: offline, eval-labelled, own dir', async () => {
+  it('sandboxManager() / workspaceRuntime() are the world\'s own: confined, its own scratch dir', async () => {
     const w = world()
     const m = await w.run(() => sandboxManager())
     expect(m.offline).toBe(true)
-    expect(m.labels).toEqual({ [LABEL_EVAL_RUN]: RUN, [LABEL_EVAL_WORLD]: SCHEMA })
-    expect(m.settings.workspacesDir).toEqual(expect.stringMatching(new RegExp(`/\\.eval/${SCHEMA}$`)))
+    expect(m.evalWorld).toBe(SCHEMA)
+    expect(m.settings.workspacesDir).toEqual(expect.stringMatching(new RegExp(`/evals-scratch/${SCHEMA}$`)))
     expect(await w.run(() => sandboxManager())).toBe(m) // one per world
     const real = sandboxManager()
     expect(real).not.toBe(m)
     expect(real.offline).toBe(false)
-    expect(real.labels).toEqual({})
+    expect(real.evalWorld).toBeNull()
     const rt = await w.run(() => workspaceRuntime())
     expect(rt.manager).toBe(m)
     expect(workspaceRuntime()).not.toBe(rt)

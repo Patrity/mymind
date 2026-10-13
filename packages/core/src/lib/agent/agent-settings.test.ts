@@ -7,7 +7,7 @@ const EVAL = { concurrency: 2, maxTokensPerRun: 5_000_000 } // NODE_ENV is 'test
 
 describe('agent settings — judge fields', () => {
   it('defaults (final fix wave M4): judge on, Smart Approvals OFF on both surfaces, confidence 0.9, 4 in flight', () => {
-    expect(defaultAgentSettings()).toEqual({ judge: { enabled: true, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9, maxInFlight: CAPS }, eval: EVAL })
+    expect(defaultAgentSettings()).toEqual({ judge: { enabled: true, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9, maxInFlight: CAPS }, eval: EVAL, taintConfinement: true })
     expect(readAgentSettings(undefined)).toEqual(defaultAgentSettings())
     expect(readAgentSettings(null)).toEqual(defaultAgentSettings())
     expect(readAgentSettings({ other: 1 })).toEqual(defaultAgentSettings())
@@ -22,7 +22,7 @@ describe('agent settings — judge fields', () => {
 
   it('reads stored values; a missing field reads as its default', () => {
     expect(readAgentSettings({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: true }, confidence: 0.75 } }))
-      .toEqual({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: true }, confidence: 0.75, maxInFlight: CAPS }, eval: EVAL })
+      .toEqual({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: true }, confidence: 0.75, maxInFlight: CAPS }, eval: EVAL, taintConfinement: true })
     expect(readAgentSettings({ judge: { smartApprovals: { workstreams: true } } }).judge.smartApprovals).toEqual({ workstreams: true, chat: false })
     expect(readAgentSettings({ judge: {} })).toEqual(defaultAgentSettings())
     expect(readAgentSettings({ judge: { smartApprovals: {} } })).toEqual(defaultAgentSettings())
@@ -36,7 +36,7 @@ describe('agent settings — judge fields', () => {
   })
 
   it.each([['a string', 'corrupt'], ['an array', []], ['a number', 7]])('a corrupt row (%s) reads as everything off', (_n, raw) => {
-    expect(readAgentSettings(raw)).toEqual({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.99, maxInFlight: CAPS }, eval: EVAL })
+    expect(readAgentSettings(raw)).toEqual({ judge: { enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.99, maxInFlight: CAPS }, eval: EVAL, taintConfinement: true })
   })
 
   it.each([['a string', 'x'], ['null', null], ['an array', [1]]])('a corrupt judge value (%s) reads as everything off', (_n, j) => {
@@ -100,11 +100,29 @@ describe('agent settings — judge fields', () => {
   it('a patch merges onto the current settings, leaving the rest alone', () => {
     const cur = defaultAgentSettings()
     const patch = agentSettingsPatchSchema.parse({ judge: { smartApprovals: { chat: true } } })
-    expect(mergeAgentSettings(cur, patch)).toEqual({ judge: { enabled: true, smartApprovals: { workstreams: false, chat: true }, confidence: 0.9, maxInFlight: CAPS }, eval: EVAL })
+    expect(mergeAgentSettings(cur, patch)).toEqual({ judge: { enabled: true, smartApprovals: { workstreams: false, chat: true }, confidence: 0.9, maxInFlight: CAPS }, eval: EVAL, taintConfinement: true })
     expect(mergeAgentSettings(cur, agentSettingsPatchSchema.parse({ judge: { maxInFlight: 8 } })).judge.maxInFlight).toEqual({ ...CAPS, guard: 8 })
     expect(mergeAgentSettings(cur, agentSettingsPatchSchema.parse({ judge: { maxInFlight: { outcome: 3 } } })).judge.maxInFlight).toEqual({ ...CAPS, outcome: 3 })
     expect(mergeAgentSettings(cur, agentSettingsPatchSchema.parse({ eval: { concurrency: 1 } })).eval).toEqual({ ...EVAL, concurrency: 1 })
     expect(mergeAgentSettings(cur, agentSettingsPatchSchema.parse({}))).toEqual(cur)
+  })
+})
+
+describe('taintConfinement (cycle 86, D6): one switch, default on, fails closed to ON', () => {
+  it('missing → on; stored false → off; anything else (a string, a number, a corrupt row) → on', () => {
+    expect(defaultAgentSettings().taintConfinement).toBe(true)
+    expect(readAgentSettings(undefined).taintConfinement).toBe(true)
+    expect(readAgentSettings({ judge: { enabled: true } }).taintConfinement).toBe(true)
+    expect(readAgentSettings({ taintConfinement: false }).taintConfinement).toBe(false)
+    expect(readAgentSettings({ taintConfinement: false, judge: 'corrupt' }).taintConfinement).toBe(false)
+    for (const raw of ['off', 0, null, 'false', {}]) expect(readAgentSettings({ taintConfinement: raw }).taintConfinement, String(raw)).toBe(true)
+    expect(readAgentSettings('corrupt').taintConfinement).toBe(true)
+  })
+  it('a patch sets it (strictly a boolean) and leaves the rest alone', () => {
+    const cur = defaultAgentSettings()
+    expect(mergeAgentSettings(cur, agentSettingsPatchSchema.parse({ taintConfinement: false }))).toEqual({ ...cur, taintConfinement: false })
+    expect(mergeAgentSettings({ ...cur, taintConfinement: false }, agentSettingsPatchSchema.parse({ judge: { enabled: false } })).taintConfinement).toBe(false)
+    expect(() => agentSettingsPatchSchema.parse({ taintConfinement: 'off' })).toThrow()
   })
 })
 
@@ -116,6 +134,11 @@ describe('agentSettingsProblems (Task 4 fix round 1, M1)', () => {
     expect(agentSettingsProblems({ other: 1 })).toEqual([])
     expect(agentSettingsProblems({ judge: { enabled: false, smartApprovals: { workstreams: true, chat: false }, confidence: 0.95 } })).toEqual([])
     expect(agentSettingsProblems({ judge: { enabled: true } })).toEqual([])
+  })
+  it('cycle 86: a stored taintConfinement that is not a boolean is named', async () => {
+    const { agentSettingsProblems } = await import('./agent-settings')
+    expect(agentSettingsProblems({ taintConfinement: 'off' })).toEqual(['taintConfinement'])
+    expect(agentSettingsProblems({ taintConfinement: false })).toEqual([])
   })
   it('names every field read fail-closed', async () => {
     const { agentSettingsProblems } = await import('./agent-settings')

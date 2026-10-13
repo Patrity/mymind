@@ -43,7 +43,7 @@ const gmailRead: AgentTool = {
   handler: async () => ({ result: { messages: [{ body: 'hi' }] }, summary: 'read' })
 }
 const exec: AgentTool = {
-  name: 'exec', description: 'd', kind: 'destructive', toolset: 'admin', dangerous: true, allowlistable: true, schema: { command: z.string() },
+  name: 'exec', description: 'd', kind: 'destructive', toolset: 'core', dangerous: true, allowlistable: true, schema: { command: z.string() },
   autoApprove: async () => true,
   handler: async () => ({ result: { ok: true }, summary: 'ran' })
 }

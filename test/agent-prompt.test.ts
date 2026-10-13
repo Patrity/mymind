@@ -78,22 +78,18 @@ describe('composePrompt — "About Tony" profile (cycle 76)', () => {
   })
 })
 
-describe('composePrompt SHELL guidance (cycle 82: workspace by default, exec is admin)', () => {
-  it('points at the sandboxed workspace first, and keeps exec as the on-demand admin toolset with its approval rule', () => {
+describe('composePrompt SHELL guidance (cycle 86: the workspace is Bridget\'s own Mac)', () => {
+  it('describes her own Mac — full machine, LAN + internet, her logins, the workspace as default storage — and no host exec', () => {
     const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
     const shell = p.slice(p.indexOf('SHELL —'))
-    expect(shell).toMatch(/^SHELL — your WORKSPACE is a sandboxed Linux container/)
+    expect(shell).toMatch(/^SHELL — you have your own Mac/)
     expect(shell).toMatch(/`workspace` toolset/)
-    expect(shell.indexOf('`workspace` toolset')).toBeLessThan(shell.indexOf('`exec` tool'))
-    expect(shell).toMatch(/`admin` toolset, the `exec` tool\): only to operate the MyMind server/i)
-    expect(shell).toMatch(/approv/i) // the approval requirement
-    expect(shell).toMatch(/catastrophic commands are blocked/i)
-    // The old "work anywhere as root" default is gone.
-    expect(p).not.toContain('you may work anywhere')
-    // Final fix wave: steer hard — workspace bash for any command; host exec only for server ops.
-    expect(shell).toMatch(/Run EVERY command with the workspace `bash`.*Never reach for host `exec` for these\./)
-    expect(shell).toMatch(/`exec` tool\): ONLY to operate the MyMind server itself \(its DB, services, logs\) — nothing else/)
-    expect(shell.indexOf('Run EVERY command')).toBeLessThan(shell.indexOf('HOST ('))
+    expect(shell).toMatch(/the whole filesystem, Tony's LAN and the internet/)
+    expect(shell).toMatch(/your own logins \(gh, git, ssh — already authenticated; never `gh auth login`\)/)
+    expect(shell).toMatch(/Your WORKSPACE dir is your default working and storage dir/)
+    expect(shell).toMatch(/run CONFINED \(no network, writes only inside the workspace/) // the taint trial, stated
+    // Gone: the container, host exec and its admin toolset.
+    expect(shell).not.toMatch(/sandboxed Linux container|`exec`|`admin` toolset|LXC 114/)
   })
 })
 

@@ -13,8 +13,7 @@
 // or third-party-written and fenced untrusted with a per-prompt random fence (fence.ts, as in verdict.ts).
 //
 // Bound (fix round 1): the `verifying` window is NOT just the verifier's 60 s. Evidence comes first:
-// the offline one-off sandbox may wait up to the sandbox slot wait (`slotWaitMs`, 60 s) and then run
-// the diff (30 s cap), then the verifier runs (60 s) — about 150 s worst case. Bounded, never a block.
+// the workspace diff (30 s cap), then the verifier (60 s) — about 90 s worst case. Bounded, never a block.
 //
 // Reuse (cycle 85 Task 3): `buildOutcomeEvidence` works from any conversation (a finished eval attempt
 // too), and `verifyOutcome` takes the evidence alone (a rubric can stand in as the goal).
@@ -355,26 +354,29 @@ export async function conversationCalls(conversationId: string, ns = busNs()): P
   return callsFromRows(rows.reverse())
 }
 
-/** The read-only diff script (cwd /workspace). Never initialises git, never writes the index:
- *  `--stat` + untracked files, then the most-changed files' diffs, the whole thing capped. */
+/** The read-only diff script (cwd: the workspace dir). Never initialises git, never writes the index:
+ *  `--stat` + untracked files, then the most-changed files' diffs, the whole thing capped. Cycle 86:
+ *  it runs on the host, so the workspace's own git config may not run anything — no fsmonitor, no
+ *  external diff, no textconv, no hooks path (a tainted workspace is confined besides). Portable:
+ *  no `find -printf` (BSD find on macOS). */
 export const WORKSPACE_DIFF_SCRIPT = [
-  `g="git -c safe.directory=* -c core.pager=cat -c color.ui=never"`,
+  `g="git -c safe.directory=* -c core.pager=cat -c color.ui=never -c core.fsmonitor=false -c core.hooksPath=/dev/null --no-pager"`,
   'if [ -d .git ] && $g rev-parse -q --verify HEAD >/dev/null 2>&1; then',
   '  echo "## git diff --stat (since the workspace baseline)"',
   '  $g diff --stat HEAD 2>/dev/null | tail -n 60',
   '  echo "## new files (untracked)"',
   '  $g ls-files --others --exclude-standard 2>/dev/null | head -n 60',
   '  echo "## diffs (most-changed first)"',
-  `  $g diff --numstat HEAD 2>/dev/null | awk -F'\\t' '{a=$1; d=$2; if (a=="-") a=0; if (d=="-") d=0; print a+d "\\t" $3}' | sort -rn | head -n 20 | cut -f2- | while IFS= read -r f; do $g diff --no-color HEAD -- "$f"; done | head -c ${OUTCOME_LIMITS.diffBytes}`,
+  `  $g diff --numstat HEAD 2>/dev/null | awk -F'\\t' '{a=$1; d=$2; if (a=="-") a=0; if (d=="-") d=0; print a+d "\\t" $3}' | sort -rn | head -n 20 | cut -f2- | while IFS= read -r f; do $g diff --no-color --no-ext-diff --no-textconv HEAD -- "$f"; done | head -c ${OUTCOME_LIMITS.diffBytes}`,
   'else',
   '  echo "## no git baseline in the workspace — its files (largest first)"',
-  `  find . -path ./.git -prune -o -path ./.mymind -prune -o -type f -printf '%s\\t%P\\n' 2>/dev/null | sort -rn | head -n 60`,
+  `  find . -path ./.git -prune -o -path ./.mymind -prune -o -type f -print 2>/dev/null | head -n 5000 | while IFS= read -r f; do printf '%s\\t%s\\n' "$(wc -c < "$f" | tr -d ' ')" "\${f#./}"; done | sort -rn | head -n 60`,
   'fi'
 ].join('\n')
 
 export interface WorkspaceDiffDeps {
-  /** Run the script in the workspace's sandbox (default: the worker's runtime, OFFLINE — a throwaway
-   *  container with no network and no secrets that never marks the workspace tainted). */
+  /** Run the script in the workspace (default: the worker's runtime — no secrets, never marks the
+   *  workspace tainted; confined when the workspace is tainted and the switch is on). */
   exec: (workspaceId: string, script: string, o: { timeoutSec: number; capBytes: number; signal?: AbortSignal }) => Promise<{ exitCode: number | null; stdout: string; stderr: string }>
   /** Secret values to mask out of the diff (default: the sandbox secret store; throws → withheld). */
   secrets: () => Promise<string[]>
@@ -383,7 +385,7 @@ export interface WorkspaceDiffDeps {
 export const workspaceDiffDeps: WorkspaceDiffDeps = {
   exec: async (workspaceId, script, o) => {
     const { workspaceRuntime } = await import('../../sandbox/runtime')
-    return workspaceRuntime().manager.exec(workspaceId, script, { ...o, offline: true })
+    return workspaceRuntime().manager.exec(workspaceId, script, { ...o, audit: { tool: 'outcome-judge' } })
   },
   secrets: async () => (await import('../../sandbox/secrets')).secretValues()
 }

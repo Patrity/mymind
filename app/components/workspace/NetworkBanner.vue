@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /**
- * Cycle 82 Task 3: a TAINTED workspace (it handled mail/calendar or other untrusted content) runs
- * with no network and no secrets until Tony re-enables it. Re-enable goes to the agent worker (it
- * kills the workspace's tainted commands first, then clears the flag) — session-only, behind a
- * confirmation that says what he is trusting.
+ * Cycle 82 Task 3 / cycle 86: a TAINTED workspace (it handled mail/calendar or other untrusted
+ * content). With taint confinement on (Settings → Bridget) its commands run confined — no network,
+ * writes only inside the workspace, no secrets — until Tony re-enables it. Re-enable goes to the
+ * agent worker (it stops the workspace's tainted commands first, then clears the flag) —
+ * session-only, behind a confirmation that says what he is trusting.
  */
 import type { WorkspaceDTO } from '@mymind/core/shared/types/workspaces'
 
@@ -16,9 +17,9 @@ async function confirm() {
   try {
     await reenable.mutateAsync(props.workspace.id)
     open.value = false
-    toast.add({ color: 'success', title: 'Network re-enabled', description: 'Commands in this workspace have network (and opted-in secrets) again.' })
+    toast.add({ color: 'success', title: 'Workspace re-enabled', description: 'Commands in this workspace run unconfined (network, the whole Mac, exported secrets) again.' })
   } catch (e) {
-    toast.add({ color: 'error', title: 'The network stays off', description: workspaceErrorOf(e) })
+    toast.add({ color: 'error', title: 'The workspace stays confined', description: workspaceErrorOf(e) })
   }
 }
 </script>
@@ -29,8 +30,8 @@ async function confirm() {
     color="warning"
     variant="subtle"
     icon="i-lucide-wifi-off"
-    title="Network disabled (tainted)"
-    :description="`This workspace handled mail, calendar or other untrusted content${workspace.taintedAt ? ` (${new Date(workspace.taintedAt).toLocaleString()})` : ''}, so its commands run with no network and no secrets, and background shells and watches are off.`"
+    title="Confined (tainted)"
+    :description="`This workspace handled mail, calendar or other untrusted content${workspace.taintedAt ? ` (${new Date(workspace.taintedAt).toLocaleString()})` : ''}, so its commands run confined — no network, writes only inside the workspace, no secrets, no background shells or watches (while taint confinement is on in Settings → Bridget).`"
     :actions="[{ label: 'Re-enable network', color: 'warning', variant: 'solid', icon: 'i-lucide-wifi', onClick: () => { open = true } }]"
     class="rounded-none"
     data-testid="workspace-tainted"
@@ -51,8 +52,8 @@ async function confirm() {
           a "helpful" script).
         </p>
         <p>
-          Once re-enabled, its commands get the internet and your opted-in sandbox secrets again — so anything
-          left in it could send what it read out. Look through its files first if you are not sure.
+          Once re-enabled, its commands get the network, the whole Mac and your exported secrets again — so
+          anything left in it could send what it read out. Look through its files first if you are not sure.
         </p>
       </div>
     </template>

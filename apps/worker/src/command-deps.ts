@@ -31,14 +31,14 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
     invalidate: cache => invalidate.invalidateLocalCache(cache),
     // Cancel / resume / steer (spec §3.2, §5.5): acts on this process's segments + the DB, then kicks.
     workstreamControl: p => workstreams.controlWorkstream(p),
-    // Cycle 82: the sandbox lives here — kill the workspace's tainted runs, then clear the taint.
+    // Cycle 82/86: the workspaces live here — stop the workspace's tainted runs, then clear the taint.
     workspaceReenableNetwork: async (p) => {
       const row = await sandboxManager().reenableNetwork(p.workspaceId)
       return { id: row.id, tainted: row.tainted }
     },
-    // Task 2: export_to_document replayed in the web reads its file here, in the sandbox.
+    // Task 2: export_to_document replayed in the web reads its file here, where the workspace is.
     workspaceReadText: p => readWorkspaceText(p.workspaceId, p.path, { tainted: p.tainted === true, offline: p.offline === true }),
-    // Task 3: the Files / Shells UI (lib/sandbox/view.ts) — every read runs in the sandbox.
+    // Task 3: the Files / Shells UI (lib/sandbox/view.ts) — every read runs here, in the workspace.
     workspaceView: async (p) => {
       const o = { noStart: p.noStart === true }
       if (p.op === 'tree') return view.viewTree(p.workspaceId, o)

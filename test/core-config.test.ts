@@ -57,9 +57,6 @@ describe('fromRuntimeConfig', () => {
     expect(cfg.dev).toBe(true)
     const plain = fromRuntimeConfig(rc, { env: {} })
     expect(plain).toMatchObject({ busNs: undefined, dev: false })
-    // Cycle 82 (review M1): the sandbox firewall gate is explicit and never follows NODE_ENV.
-    expect(fromRuntimeConfig(rc, { env: { NODE_ENV: 'development', SANDBOX_REQUIRE_FIREWALL: 'true' } }).sandboxRequireFirewall).toBe(true)
-    expect(fromRuntimeConfig(rc, { env: { NODE_ENV: 'production', SANDBOX_REQUIRE_FIREWALL: 'false' } }).sandboxRequireFirewall).toBe(false)
     // Task 3 removed AGENT_EXECUTOR: the worker is the only executor, there is no flag to read.
     expect('agentExecutor' in fromRuntimeConfig(rc, { env: { AGENT_EXECUTOR: 'web' } })).toBe(false)
   })
@@ -111,11 +108,7 @@ const ENV_ROWS: Array<[string, Record<string, string>, Partial<Record<string, un
   ['S3: plain at build, NUXT_STORAGE_S3_* leaf overrides',
     { ...BASE, STORAGE_DRIVER: 's3', STORAGE_S3_REGION: 'us-east-1', STORAGE_S3_BUCKET: 'plain', NUXT_STORAGE_S3_BUCKET: 'over', NUXT_STORAGE_S3_ACCESS_KEY_ID: 'AK' },
     { storageDriver: 's3', storageS3: { endpoint: undefined, region: 'us-east-1', bucket: 'over', accessKeyId: 'AK', secretAccessKey: undefined } }],
-  ['env-backed: MYMIND_BUS_NS', { ...BASE, MYMIND_BUS_NS: 'w2' }, { busNs: 'w2' }],
-  ['env-backed: SANDBOX_REQUIRE_FIREWALL=false', { ...BASE, SANDBOX_REQUIRE_FIREWALL: 'false' }, { sandboxRequireFirewall: false }],
-  ['env-backed: SANDBOX_REQUIRE_FIREWALL=true', { ...BASE, SANDBOX_REQUIRE_FIREWALL: 'true' }, { sandboxRequireFirewall: true }],
-  ['env-backed: SANDBOX_REQUIRE_LIMITS=false', { ...BASE, SANDBOX_REQUIRE_LIMITS: 'false' }, { sandboxRequireLimits: false }],
-  ['env-backed: SANDBOX_REQUIRE_LIMITS=true', { ...BASE, SANDBOX_REQUIRE_LIMITS: 'true' }, { sandboxRequireLimits: true }]
+  ['env-backed: MYMIND_BUS_NS', { ...BASE, MYMIND_BUS_NS: 'w2' }, { busNs: 'w2' }]
 ]
 
 describe('fromEnv (worker) ≡ fromRuntimeConfig over Nitro runtimeConfig (web)', () => {

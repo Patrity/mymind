@@ -234,7 +234,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
     // the content: the RUN is still tainted and warned, the workspace keeps its network.
     if (t.guard === 'workspace' && workspaceTaintingVerdict(v)) {
       // The run is tainted already, so its next workspace command would taint the workspace anyway;
-      // this does it now (the networked container dies with whatever the content started there).
+      // this does it now (with confinement on, its background shells die with whatever the content started).
       // M6: a failure is never silent — an activity error (the run itself stays tainted: fail closed).
       try { await taintWorkspace(hooks.runId) } catch (err) {
         console.warn(`[guard] tainting the workspace of run ${hooks.runId ?? '-'} failed:`, (err as Error).message)

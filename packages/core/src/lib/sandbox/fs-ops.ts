@@ -1,10 +1,11 @@
-// Cycle 82 Task 2: the commands the workspace tools run INSIDE the sandbox (spec §2 path safety:
-// nothing is ever resolved on the host). Pure builders — the tools hand them to the manager's exec.
+// Cycle 82 Task 2 / cycle 86: the commands the workspace tools run in a workspace (cwd = its dir).
+// Pure builders — the tools hand them to the manager's exec.
 //
 // Data never travels in argv: paths, contents, patterns and old/new strings go in as JSON on stdin
-// (a single argv string is capped at 128 KB, and argv is visible in /proc to every process in the
-// sandbox). The scripts are fixed text; the python ones read `{...}` from stdin and print one JSON
-// object. Relative paths resolve against the command's cwd, which is always /workspace.
+// (argv is capped and visible in `ps` to every process on the machine). The scripts are fixed text;
+// the python ones read `{...}` from stdin and print one JSON object. Relative paths resolve against
+// the command's cwd — the workspace dir; absolute paths go wherever they point (spec D5).
+// Portable (macOS + Linux): no setsid, /proc, GNU stat/base64 flags — the host is Bridget's Mac.
 
 /** POSIX single-quote a string for a shell command line. */
 export function shq(s: string): string {
@@ -158,12 +159,19 @@ export const LIST_SCRIPT = py([
 
 export const GREP_MAX = 200
 
-/** ripgrep, ≤ GREP_MAX matching lines (+1 to know there were more). Exit 0 = matches, 1 = none,
- *  2 = error (bad regex…), 141 = more lines than the cap (head closed the pipe). */
+/** ripgrep (BSD/GNU `grep -rnIE` when rg is not installed), ≤ GREP_MAX matching lines (+1 to know
+ *  there were more). Exit 0 = matches, 1 = none, 2 = error (bad regex…), 141 = more lines than the
+ *  cap (head closed the pipe). */
 export function grepCommand(o: { pattern: string; path?: string; glob?: string }): string {
-  const args = ['rg', '--line-number', '--no-heading', '--color', 'never', '--hidden', '--max-columns', '300', '--max-columns-preview',
+  const rg = ['rg', '--line-number', '--no-heading', '--color', 'never', '--hidden', '--max-columns', '300', '--max-columns-preview',
     ...NOISE.flatMap(n => ['-g', `!${n}`]), ...(o.glob ? ['-g', o.glob] : []), '-e', o.pattern, '--', o.path || '.']
-  return `${args.map(shq).join(' ')} | head -n ${GREP_MAX + 1}; exit "\${PIPESTATUS[0]}"`
+  const grep = ['grep', '-rnIE', ...NOISE.map(n => `--exclude-dir=${n}`), ...(o.glob ? [`--include=${o.glob}`] : []), '-e', o.pattern, '--', o.path || '.']
+  // grep has no --max-columns: long lines are cut by awk with rg's own marker (maskLineCuts trims it).
+  const cut = `awk '{ if (length($0) > 300) print substr($0, 1, 300) " [... omitted end of long line]"; else print }'`
+  return [
+    `if command -v rg >/dev/null 2>&1; then ${rg.map(shq).join(' ')} | head -n ${GREP_MAX + 1}; exit "\${PIPESTATUS[0]}"; fi`,
+    `${grep.map(shq).join(' ')} | ${cut} | head -n ${GREP_MAX + 1}; s="\${PIPESTATUS[0]}"; [ "$s" = 0 ] || [ "$s" = 1 ] || [ "$s" = 141 ] || s=2; exit "$s"`
+  ].join('\n')
 }
 
 // ── diff ───────────────────────────────────────────────────────────────────────────────────────
@@ -180,8 +188,9 @@ export function diffCommand(path?: string): string {
     'set -e',
     `if [ ! -d .git ]; then ${g} init -q; printf '%s\\n' ${shq(`${META_DIR}/`)} >> .git/info/exclude; ${g} add -A; ${g} commit -q --allow-empty -m 'workspace baseline'; echo ${DIFF_INIT_MARK}; fi`,
     `${g} add -A -N 2>/dev/null || true`,
-    `${g} diff --no-color${path ? ` -- ${shq(path)}` : ''} > /tmp/.mm-diff`,
-    `n=$(wc -c < /tmp/.mm-diff); head -c ${DIFF_MAX_BYTES} /tmp/.mm-diff; printf '\\n${DIFF_BYTES_MARK}%s\\n' "$n"`
+    't="${TMPDIR:-/tmp}/.mm-diff.$$"',
+    `${g} diff --no-color${path ? ` -- ${shq(path)}` : ''} > "$t"`,
+    `n=$(wc -c < "$t" | tr -d ' '); head -c ${DIFF_MAX_BYTES} "$t"; rm -f "$t"; printf '\\n${DIFF_BYTES_MARK}%s\\n' "$n"`
   ].join('\n')
 }
 
@@ -205,37 +214,40 @@ export const SHELL_PID_MARK = '__mm_shell_pid__:'
 export const SHELL_STATUS_MARK = '__mm_shell__:'
 
 /**
- * Start a background shell: the command (on stdin) is saved as `<dir>/cmd` and run by a `setsid`
- * session leader (its own process group — kill_shell kills the group) with output to `<dir>/out`
- * and its exit code to `<dir>/exit` (written atomically). The launcher returns at once with the pid.
- * The leader's argv carries the dir, so a reused pid after a restart is never mistaken for it.
+ * Start a background shell: the command (on stdin) is saved as `<dir>/cmd` and run by a session
+ * leader in its own process group (python's os.setsid — portable; kill_shell kills the group) with
+ * output to `<dir>/out` and its exit code to `<dir>/exit` (written atomically). The launcher returns
+ * at once with the pid. The leader's argv carries the dir, so a reused pid after a restart is never
+ * mistaken for it.
  */
 export function shellStartCommand(id: string): string {
   const d = shellDir(id)
   const leader = 'echo $$ > "$1/pid"; /bin/bash "$1/cmd" > "$1/out" 2>&1 < /dev/null; echo $? > "$1/exit.tmp"; mv "$1/exit.tmp" "$1/exit"'
+  const setsid = 'import os, sys; os.setsid(); os.execv("/bin/sh", ["/bin/sh", "-c", sys.argv[1], "mm-shell", sys.argv[2]])'
   return [
     `d="$PWD/${d}"; mkdir -p "$d"; cat > "$d/cmd"`,
-    `setsid /bin/sh -c ${shq(leader)} mm-shell "$d" > /dev/null 2>&1 < /dev/null &`,
+    `python3 -I -c ${shq(setsid)} ${shq(leader)} "$d" > /dev/null 2>&1 < /dev/null &`,
     'i=0; while [ ! -s "$d/pid" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i+1)); done',
     `printf '${SHELL_PID_MARK}%s\\n' "$(cat "$d/pid" 2>/dev/null)"`
   ].join('\n')
 }
 
-/** Is the shell's leader alive (pid + argv check), exited (code), or gone (no exit code)? */
+/** Is the shell's leader alive (pid + argv check via ps), exited (code), or gone (no exit code)? */
 function shellStatusLines(d: string): string[] {
   return [
     `d="$PWD/${d}"`,
     'st=missing; p=$(cat "$d/pid" 2>/dev/null || true)',
-    'if [ -n "$p" ] && tr "\\0" " " < "/proc/$p/cmdline" 2>/dev/null | grep -qF "mm-shell $d"; then st=running',
+    'case "$p" in ""|*[!0-9]*) p="" ;; esac',
+    'if [ -n "$p" ] && ps -ww -o args= -p "$p" 2>/dev/null | grep -qF "mm-shell $d"; then st=running',
     'elif [ -f "$d/exit" ]; then st="exit:$(cat "$d/exit")"',
     'elif [ -d "$d" ]; then st=gone; fi',
-    'sz=$(stat -c %s "$d/out" 2>/dev/null || echo 0)'
+    'sz=$(wc -c < "$d/out" 2>/dev/null | tr -d " "); [ -n "$sz" ] || sz=0'
   ]
 }
 
-/** Status + the output from byte `offset` on (at most `max` bytes), BASE64 (Task 3 fix round 2:
- *  bash_output cuts its window in exact bytes — never inside a UTF-8 code point or a secret — which
- *  needs the bytes themselves, not a lossy UTF-8 decode of them). */
+/** Status + the output from byte `offset` on (at most `max` bytes), BASE64 (bash_output cuts its
+ *  window in exact bytes — never inside a UTF-8 code point or a secret — which needs the bytes
+ *  themselves, not a lossy UTF-8 decode of them). */
 export function shellOutputCommand(id: string, offset: number, max: number): string {
   const off = Math.max(0, Math.floor(offset))
   const m = Math.max(1, Math.floor(max))
@@ -243,7 +255,7 @@ export function shellOutputCommand(id: string, offset: number, max: number): str
     ...shellStatusLines(shellDir(id)),
     `n=$((sz - ${off})); [ "$n" -gt ${m} ] && n=${m}; [ "$n" -lt 0 ] && n=0`,
     `printf '${SHELL_STATUS_MARK}%s:%s:%s\\n' "$st" "$sz" "$n"`,
-    `[ "$n" -gt 0 ] && tail -c +${off + 1} "$d/out" | head -c "$n" | base64 -w0; exit 0`
+    `[ "$n" -gt 0 ] && tail -c +${off + 1} "$d/out" | head -c "$n" | base64 | tr -d '\\n'; exit 0`
   ].join('\n')
 }
 
@@ -252,7 +264,7 @@ export function shellStatusCommand(id: string): string {
   return [...shellStatusLines(shellDir(id)), `printf '${SHELL_STATUS_MARK}%s:%s:0\\n' "$st" "$sz"`].join('\n')
 }
 
-/** Status + the LAST `max` bytes of the output (the Shells UI, Task 3) — never moves bash_output's offset. */
+/** Status + the LAST `max` bytes of the output (the Shells UI) — never moves bash_output's offset. */
 export function shellTailCommand(id: string, max: number): string {
   const m = Math.max(1, Math.floor(max))
   return [

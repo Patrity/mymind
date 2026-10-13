@@ -1,12 +1,12 @@
-// Cycle 82 Task 2: the workspace tools' POLICY against a fake runtime (no Docker, no DB): which
-// workspace, the run's taint on every command, tainted-run refusals, over-quota rules, untrusted
-// results, stdin-only payloads, the headless gate, and taint flowing from a tainted workspace back
-// into the run (ai-tools). What the scripts do inside a real container: test/workspace-tools.db.test.ts.
+// Cycle 82 Task 2 / cycle 86: the workspace tools' POLICY against a fake runtime (no processes, no DB):
+// which workspace, the run's taint on every command, confinement (chip + refusals), path semantics,
+// untrusted results, stdin-only payloads, the headless gate, and taint flowing from a tainted
+// workspace back into the run (ai-tools). What the scripts do on the host: test/workspace-tools.db.test.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { workspaceTools } from './workspace'
 import { setWorkspaceRuntime, type WorkspaceRuntime } from '../../sandbox/runtime'
-import { SandboxQuotaError, type ExecOptions, type SandboxExecResult } from '../../sandbox/manager'
+import type { ExecOptions, SandboxExecResult } from '../../sandbox/manager'
 import { DELETE_SCRIPT, READ_TEXT_SCRIPT, WRITE_SCRIPT } from '../../sandbox/fs-ops'
 import { headlessTools } from '../runtime/gate'
 import { bridgetProfile } from '../profile'
@@ -34,7 +34,8 @@ const res = (o: Partial<SandboxExecResult> = {}): SandboxExecResult => ({ exitCo
 
 interface Call { command: string; o: ExecOptions }
 let calls: Call[]
-let over: boolean
+/** agent.taintConfinement as the fake manager sees it. */
+let switchOn: boolean
 let execResult: (command: string, o: ExecOptions) => SandboxExecResult
 let started: string[]
 let armed: unknown[]
@@ -45,7 +46,9 @@ const shellOpts: Array<ExecOptions | undefined> = []
 function install(ref: { workstreamId?: string | null; conversationId?: string | null } = {}) {
   const manager = {
     exec: vi.fn(async (_id: string, command: string, o: ExecOptions = {}) => { calls.push({ command, o }); return execResult(command, o) }),
-    checkQuota: vi.fn(async () => { if (over) throw new SandboxQuotaError(6e9, 5e9, 10, 200_000) })
+    // What the real manager decides (manager.ts reasonFor), against this file's switch and taint.
+    confinementFor: vi.fn(async (_id: string, o: { tainted?: boolean; offline?: boolean } = {}) =>
+      !switchOn ? null : o.tainted ? 'tainted-run' : wsTainted ? 'tainted-workspace' : o.offline ? 'unverified' : null)
   }
   const rt = {
     manager,
@@ -65,12 +68,16 @@ function install(ref: { workstreamId?: string | null; conversationId?: string | 
 
 beforeEach(() => {
   secretStore.opted = {}; secretStore.all = {}; secretStore.broken = false
-  calls = []; started = []; armed = []; over = false; wsTainted = false; paused.length = 0; shellOpts.length = 0
+  calls = []; started = []; armed = []; switchOn = true; wsTainted = false; paused.length = 0; shellOpts.length = 0
   watchReply = () => ({ id: 'w1', createdAt: new Date(0), deadlineAt: new Date(30 * 60_000) })
   execResult = (command, o) => {
-    if (command === WRITE_SCRIPT) return res({ stdout: JSON.stringify({ ok: true, path: '/workspace/a', bytes: 1, created: true }), tainted: !!o.tainted })
-    if (command.startsWith('python3 -I -c')) return res({ stdout: JSON.stringify({ content: '     1\tx', lines: 1, totalLines: 1, truncated: false }), tainted: !!o.tainted })
-    return res({ stdout: 'ok\n', tainted: !!o.tainted, ...(o.offline ? { offline: true } : {}) })
+    // As the manager answers: tainted = the run or the workspace; confined when the switch is on.
+    const tainted = !!o.tainted || wsTainted
+    const reason = !switchOn || o.internal ? null : o.tainted ? 'tainted-run' : wsTainted ? 'tainted-workspace' : o.offline ? 'unverified' : null
+    const extra = { tainted, ...(o.offline && !tainted ? { offline: true } : {}), ...(reason ? { confined: { reason } as const } : {}) }
+    if (command === WRITE_SCRIPT) return res({ stdout: JSON.stringify({ ok: true, path: '/Users/bridget/mymind/workspaces/x/a', bytes: 1, created: true }), ...extra })
+    if (command.startsWith('python3 -I -c')) return res({ stdout: JSON.stringify({ content: '     1\tx', lines: 1, totalLines: 1, truncated: false }), ...extra })
+    return res({ stdout: 'ok\n', ...extra })
   }
   install()
 })
@@ -94,16 +101,22 @@ describe('workspace tools — the run\'s taint reaches every command', () => {
   })
 })
 
-describe('tainted runs (spec D5 + carry-over)', () => {
-  it('bash runs network-off and says so; the result leads with workspaceTainted', async () => {
+describe('taint confinement (cycle 86, D6): the chip, the refusals, the switch', () => {
+  it('a tainted run\'s bash is confined: workspaceTainted FIRST, then `confined` (the chip) with why', async () => {
     const r = await run('bash', { command: 'curl example.com' }, ctx(true))
-    expect(Object.keys(r)[0]).toBe('workspaceTainted')
-    expect(r).toMatchObject({ workspaceTainted: true, networkOff: true })
-    expect(String(r.networkNote)).toMatch(/read Tony's mail, calendar or contacts/)
+    expect(Object.keys(r).slice(0, 2)).toEqual(['workspaceTainted', 'confined'])
+    expect(r.confined).toEqual({ reason: 'tainted-run', note: expect.stringMatching(/read Tony's mail, calendar or contacts.*no network, writes only inside the workspace, no secrets/) })
+    expect(r).not.toHaveProperty('networkOff')
+    expect((await tool('bash').handler({ command: 'ls' }, ctx(true))).summary).toMatch(/\(confined\)$/)
+    expect(calls.at(-1)!.o.audit).toEqual({ tool: 'bash' })
   })
-  it('run_in_background is refused with a clear message — nothing starts', async () => {
+  it('every tool carries the chip when its command ran confined (read_file here)', async () => {
+    expect((await run('read_file', { path: 'a' }, ctx(true))).confined).toMatchObject({ reason: 'tainted-run' })
+  })
+  it('run_in_background is refused with a clear message — nothing starts — and the refusal shows the chip', async () => {
     const r = await run('bash', { command: 'npm run dev', run_in_background: true }, ctx(true))
     expect(r.error).toMatch(/background shells are not available/)
+    expect(r.confined).toMatchObject({ reason: 'tainted-run' })
     expect(started).toEqual([])
     expect(calls).toEqual([])
   })
@@ -112,25 +125,39 @@ describe('tainted runs (spec D5 + carry-over)', () => {
     expect(r.error).toMatch(/watches are not available/)
     expect(armed).toEqual([])
   })
-  it('a TAINTED WORKSPACE (persistent) refuses background shells even in an untainted run', async () => {
+  it('a TAINTED WORKSPACE (persistent) confines an untainted run too: background shells refused', async () => {
     wsTainted = true
     const r = await run('bash', { command: 'sleep 9', run_in_background: true })
-    expect(r.error).toMatch(/network is off until Tony re-enables it/)
+    expect(r.error).toMatch(/handled mail\/calendar content.*until Tony re-enables it.*background shells are not available/)
     expect(started).toEqual([])
+    expect((await run('bash', { command: 'ls' })).confined).toMatchObject({ reason: 'tainted-workspace' })
+  })
+  it('switch OFF: a tainted run is not confined — no chip, background shells and watches allowed (still no secrets, still flagged)', async () => {
+    switchOn = false
+    secretStore.opted = { TOKEN: 'sekrit-token-value' }; secretStore.all = { TOKEN: 'sekrit-token-value' }
+    const r = await run('bash', { command: 'ls' }, ctx(true))
+    expect(r).not.toHaveProperty('confined')
+    expect(r).toMatchObject({ workspaceTainted: true })
+    expect(calls.at(-1)!.o.secrets).toBeUndefined()
+    const bg = await run('bash', { command: 'sleep 9', run_in_background: true }, ctx(true))
+    expect(bg).toMatchObject({ state: 'running' })
+    // The start carries the run's taint (the workspace is marked as by any tainted command), no secrets.
+    expect(rtNow.shells.start).toHaveBeenLastCalledWith(WS, 'sleep 9', expect.objectContaining({ tainted: true }))
+    expect((rtNow.shells.start as unknown as ReturnType<typeof vi.fn>).mock.lastCall![2]).not.toHaveProperty('secrets')
+    expect(await run('watch', { command: 'true', until: 'exit0' }, ctx(true))).toMatchObject({ watchId: 'w1' })
   })
 })
 
-describe('final follow-up (I5): a run tainted ONLY `unverified` runs offline without tainting the workspace', () => {
+describe('final follow-up (I5): a run tainted ONLY `unverified` runs confined without tainting the workspace', () => {
   const unverified = (): ToolContext => ({ signal: new AbortController().signal, isTainted: () => true, taint: () => ({ sources: ['unverified'], flags: [] }) })
   const alsoMail = (): ToolContext => ({ signal: new AbortController().signal, isTainted: () => true, taint: () => ({ sources: ['mail', 'unverified'], flags: [] }) })
-  it('bash: exec offline (not tainted), no secrets; the result says no network and does NOT carry workspaceTainted', async () => {
+  it('bash: exec offline (not tainted), no secrets; the result is confined (unverified) and does NOT carry workspaceTainted', async () => {
     secretStore.opted = { TOKEN: 'sekrit-token-value' }; secretStore.all = { TOKEN: 'sekrit-token-value' }
     const r = await run('bash', { command: 'curl example.com' }, unverified())
     expect(calls.map(c => [c.o.tainted, c.o.offline])).toEqual([[false, true]])
     expect(calls[0]!.o.secrets).toBeUndefined()
     expect(r).not.toHaveProperty('workspaceTainted')
-    expect(r).toMatchObject({ networkOff: true })
-    expect(String(r.networkNote)).toMatch(/could not verify.*the workspace itself stays online/)
+    expect(r.confined).toEqual({ reason: 'unverified', note: expect.stringMatching(/could not verify.*the workspace itself is not marked/) })
   })
   it('background shells and watches are refused like in a tainted run', async () => {
     expect((await run('bash', { command: 'npm run dev', run_in_background: true }, unverified())).error).toMatch(/background shells are not available/)
@@ -152,30 +179,27 @@ describe('final follow-up (I5): a run tainted ONLY `unverified` runs offline wit
   })
 })
 
-describe('over quota (fix round 1, I1 ruling: deny by default)', () => {
-  beforeEach(() => { over = true })
-  it('write_file / edit_file are refused with the quota error', async () => {
-    expect((await run('write_file', { path: 'a', content: 'x' })).error).toMatch(/quota/i)
-    expect((await run('edit_file', { path: 'a', old_string: 'x', new_string: 'y' })).error).toMatch(/quota/i)
-    expect(calls).toEqual([])
+describe('paths (cycle 86, D5): relative → the workspace dir, absolute → anywhere', () => {
+  it('a relative or absolute path is passed as is; cycle 82\'s /workspace[/…] still means the workspace dir', async () => {
+    const { workspacePath } = await import('./workspace')
+    expect(workspacePath('notes/a.md')).toBe('notes/a.md')
+    expect(workspacePath('/Users/bridget/Projects/x.py')).toBe('/Users/bridget/Projects/x.py')
+    expect(workspacePath('/workspace/data/s.csv')).toBe('data/s.csv')
+    expect(workspacePath('/workspace')).toBe('.')
+    expect(workspacePath('/workspaces/other')).toBe('/workspaces/other')
+    await run('write_file', { path: '/etc/hosts.bak', content: 'x' })
+    expect(JSON.parse(calls.at(-1)!.o.input!)).toEqual({ path: '/etc/hosts.bak', content: 'x' })
+    await run('read_file', { path: '/workspace/a.txt' })
+    expect(JSON.parse(calls.at(-1)!.o.input!)).toMatchObject({ path: 'a.txt' })
   })
-  // The review's bypass strings (they passed the old allowlist parser) and the old "recovery" commands:
-  // bash is refused outright now, whatever the command.
-  it.each([
-    'find . -fprint"" big', "find . -'fprint' big", 'find / -fls"" big', 'find . -fprintf"" big %p', "sort -'o' big f",
-    'sort --o=big f', 'sort --outp=big f', 'sort -S1 --compress-program=sh f', 'du -sh * | sort -h', 'rm -rf node_modules', 'pip install numpy'
-  ])('bash %j is refused, nothing runs', async (command) => {
-    const r = await run('bash', { command })
-    expect(r.error).toMatch(/bash is refused until space is freed.*list_files\(\{ largest: true \}\).*delete_files/)
-    expect(calls).toEqual([])
+  it('no quota any more: write_file, bash and background shells run without a usage check', async () => {
+    await run('write_file', { path: 'a', content: 'x' })
+    await run('bash', { command: 'du -sh *' })
+    await run('bash', { command: 'sleep 1', run_in_background: true })
+    expect(calls.map(c => c.command)).toEqual([WRITE_SCRIPT, 'du -sh *'])
+    expect(started).toEqual(['sleep 1'])
   })
-  it('background shells and watches are refused', async () => {
-    expect((await run('bash', { command: 'sleep 1', run_in_background: true })).error).toMatch(/quota/i)
-    expect((await run('watch', { command: 'true', until: 'exit0' })).error).toMatch(/quota/i)
-    expect(started).toEqual([])
-    expect(armed).toEqual([])
-  })
-  it('recovery still works: list_files (largest) and delete_files run over quota; paths go on stdin as an array', async () => {
+  it('list_files (largest) and delete_files: paths go on stdin as an array', async () => {
     execResult = (command) => res({ stdout: command === DELETE_SCRIPT ? JSON.stringify({ deleted: ['node_modules', 'a b; rm -rf /'], missing: [], refused: [] }) : JSON.stringify({ totalBytes: 9, files: 1, largestFiles: [], largestDirs: [] }) })
     expect((await run('list_files', { largest: true })).totalBytes).toBe(9)
     expect(JSON.parse(calls[0]!.o.input!)).toMatchObject({ largest: true })
@@ -184,10 +208,6 @@ describe('over quota (fix round 1, I1 ruling: deny by default)', () => {
     const del = calls.find(c => c.command === DELETE_SCRIPT)!
     expect(del.command).not.toContain('node_modules')
     expect(JSON.parse(del.o.input!)).toEqual({ paths: ['node_modules', 'a b; rm -rf /'] })
-  })
-  it('a tainted run measures the quota without the networked container (M8): checkQuota gets the run\'s taint', async () => {
-    await run('write_file', { path: 'a', content: 'x' }, ctx(true))
-    expect(rtNow.manager.checkQuota).toHaveBeenLastCalledWith(WS, { tainted: true, offline: false })
   })
 })
 
@@ -293,7 +313,7 @@ describe('fix round 1', () => {
     }
   })
   it('M9: export_to_document from a tainted workspace says so (workspaceTainted first) — the exporting run becomes tainted', async () => {
-    execResult = (command) => command === READ_TEXT_SCRIPT ? res({ stdout: JSON.stringify({ content: '# r', bytes: 3, path: '/workspace/r.md' }), tainted: true }) : res()
+    execResult = (command) => command === READ_TEXT_SCRIPT ? res({ stdout: JSON.stringify({ content: '# r', bytes: 3, path: '/Users/bridget/mymind/workspaces/x/r.md' }), tainted: true }) : res()
     const docs = await import('../../../services/documents')
     vi.spyOn(docs, 'findDocByPath').mockResolvedValue(null)
     vi.spyOn(docs, 'createDoc').mockResolvedValue({ id: 'd1', path: '/input/r.md', title: 'r', project: null, type: 'note', contentHash: 'h', content: '# r' } as never)
@@ -301,9 +321,9 @@ describe('fix round 1', () => {
     expect(Object.keys(r)[0]).toBe('workspaceTainted')
     vi.restoreAllMocks()
   })
-  it('M2: watch is refused in a tainted workspace (even in an untainted run)', async () => {
+  it('M2: watch is refused in a tainted workspace (even in an untainted run) while confinement is on', async () => {
     wsTainted = true
-    expect((await run('watch', { command: 'true', until: 'exit0' })).error).toMatch(/network is off until Tony re-enables it/)
+    expect((await run('watch', { command: 'true', until: 'exit0' })).error).toMatch(/until Tony re-enables it.*watches are not available/)
     expect(armed).toEqual([])
   })
   it('I2: a workstream over its watch caps is paused for Tony, and the tool says so; a workspace cap is just refused', async () => {
@@ -332,7 +352,7 @@ describe('fix round 1', () => {
     const docs = await import('../../../services/documents')
     vi.spyOn(docs, 'findDocByPath').mockResolvedValue(null)
     vi.spyOn(docs, 'createDoc').mockResolvedValue({ id: 'd1', path: '/input/r.md', title: 'r', project: null, type: 'note', contentHash: 'h', content: '' } as never)
-    execResult = () => res({ stdout: JSON.stringify({ content: '', bytes: 0, path: '/workspace/r.md' }) })
+    execResult = () => res({ stdout: JSON.stringify({ content: '', bytes: 0, path: '/Users/bridget/mymind/workspaces/x/r.md' }) })
     const reads: string[] = []
     rtNow.manager.exec.mockImplementation(async (id: string, command: string, o: ExecOptions = {}) => { reads.push(id); return execResult(command, o) })
     // Replay: no runId → the pinned workspace.
@@ -383,7 +403,7 @@ describe('Task 3: sandbox secrets (spec §6) — opted in, never tainted, values
     expect(bashCall().o.secrets).toEqual({ GITHUB_TOKEN: VALUE })
     expect(bashCall().o.tainted).toBe(false)
   })
-  it('a TAINTED run gets none (it runs in the one-off --network none container)', async () => {
+  it('a TAINTED run gets none (it runs confined)', async () => {
     await run('bash', { command: 'env' }, ctx(true))
     expect(bashCall().o.tainted).toBe(true)
     expect(bashCall().o.secrets).toBeUndefined()
@@ -401,7 +421,7 @@ describe('Task 3: sandbox secrets (spec §6) — opted in, never tainted, values
   it('a background shell (untainted) gets the opted-in secrets too', async () => {
     await run('bash', { command: 'env; sleep 60', run_in_background: true }, ctx(false))
     const start = rtNow.shells.start as unknown as ReturnType<typeof vi.fn>
-    expect(start).toHaveBeenLastCalledWith(WS, 'env; sleep 60', { secrets: { GITHUB_TOKEN: VALUE } })
+    expect(start).toHaveBeenLastCalledWith(WS, 'env; sleep 60', expect.objectContaining({ secrets: { GITHUB_TOKEN: VALUE }, tainted: false }))
   })
   it('secret VALUES are masked in the result and summary (names stay); every exec secret, opted in or not', async () => {
     execResult = () => res({ stdout: `GITHUB_TOKEN=${VALUE}\nOTHER=not-opted-in-value\n`, stderr: `oops ${VALUE}` })
@@ -515,7 +535,7 @@ describe('final fix wave', () => {
   it('ruling C3: export_to_document masks secret values in the document; an unreadable store refuses the export', async () => {
     const VALUE = 'sk-live-ExportedSecret987'
     secretStore.opted = { API_KEY: VALUE }
-    execResult = command => command === READ_TEXT_SCRIPT ? res({ stdout: JSON.stringify({ content: `key=${VALUE}\n`, bytes: 30, path: '/workspace/r.md' }) }) : res()
+    execResult = command => command === READ_TEXT_SCRIPT ? res({ stdout: JSON.stringify({ content: `key=${VALUE}\n`, bytes: 30, path: '/Users/bridget/mymind/workspaces/x/r.md' }) }) : res()
     const docs = await import('../../../services/documents')
     vi.spyOn(docs, 'findDocByPath').mockResolvedValue(null)
     const created = vi.spyOn(docs, 'createDoc').mockResolvedValue({ id: 'd1', path: '/input/r.md', title: 'r', project: null, type: 'note', contentHash: 'h', content: '' } as never)
@@ -531,7 +551,7 @@ describe('final fix wave', () => {
   })
 })
 
-describe('follow-up 2 (NB3): bash_output / kill_shell always reach the REAL container', () => {
+describe('follow-up 2 (NB3): bash_output / kill_shell always reach the REAL process', () => {
   it('in an `unverified`-only run: bash_output reads the live shell (not marked lost); kill_shell really kills it', async () => {
     const { createShellRegistry } = await import('../../sandbox/shells')
     const { SHELL_STATUS_MARK, shellKillCommand } = await import('../../sandbox/fs-ops')
@@ -541,16 +561,16 @@ describe('follow-up 2 (NB3): bash_output / kill_shell always reach the REAL cont
     const shellCalls: Array<{ command: string; o?: ExecOptions }> = []
     let killedInContainer = false
     const shells = createShellRegistry({
-      // A one-off (offline) container has its own PID namespace: it cannot see the shell (`gone`).
+      // A confined / offline read could not be trusted to see the shell: the registry must run internal.
       exec: async (_id: string, command: string, o?: ExecOptions) => {
         shellCalls.push({ command, o })
-        if (o?.offline) return res({ stdout: `${SHELL_STATUS_MARK}gone:0:0\n` })
+        if (o?.offline || !o?.internal) return res({ stdout: `${SHELL_STATUS_MARK}gone:0:0\n` })
         if (command === shellKillCommand(SH)) { killedInContainer = true; return res({ stdout: `${SHELL_STATUS_MARK}gone:3:0\n` }) }
         return res({ stdout: `${SHELL_STATUS_MARK}running:3:3\n${Buffer.from('abc').toString('base64')}` })
       },
       workspace: async () => ({ id: WS, state: 'running', tainted: false, deletedAt: null }) as never,
       store: {
-        create: async () => null, get: async (id: string) => (rows.get(id) ?? null) as never,
+        create: async () => { throw new Error('unused') }, get: async (id: string) => (rows.get(id) ?? null) as never,
         listRunning: async () => [...rows.values()].filter(r => r.state === 'running') as never, list: async () => [] as never,
         end: async (id: string, p: { state: string; reason?: string | null }) => { const r = rows.get(id)!; if (r.state !== 'running') return false; Object.assign(r, p); return true },
         setOffset: async (id: string, off: number) => { rows.get(id)!.readOffset = off }
@@ -569,6 +589,6 @@ describe('follow-up 2 (NB3): bash_output / kill_shell always reach the REAL cont
     expect(killedInContainer).toBe(true)
     expect(k).toMatchObject({ state: 'killed' })
     expect(k).not.toHaveProperty('alreadyEnded', true)
-    expect(shellCalls.every(c => !c.o?.offline)).toBe(true)
+    expect(shellCalls.every(c => !c.o?.offline && c.o?.internal === true)).toBe(true)
   })
 })

@@ -218,6 +218,32 @@ describe('workspaceChanges — the diff, read-only and masked', () => {
     expect(WORKSPACE_DIFF_SCRIPT).not.toMatch(/\binit\b|\badd\b|\bcommit\b|\breset\b|\bcheckout\b|\bstash\b/)
     expect(WORKSPACE_DIFF_SCRIPT).toContain(`head -c ${OUTCOME_LIMITS.diffBytes}`)
   })
+  it('cycle 86 (real host processes): a hostile repo config runs nothing — no fsmonitor, no external diff, no textconv; the diff still shows', async () => {
+    const { execFileSync } = await import('node:child_process')
+    const { mkdtempSync, writeFileSync, existsSync, rmSync, realpathSync } = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const { runHost } = await import('../../sandbox/host/spawn')
+    const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'mm-oj-')))
+    try {
+      const git = (...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: dir })
+      git('init', '-q'); writeFileSync(path.join(dir, 'a.txt'), 'one\n'); git('add', '-A'); git('commit', '-qm', 'base')
+      writeFileSync(path.join(dir, 'a.txt'), 'two\n')
+      writeFileSync(path.join(dir, '.gitattributes'), 'a.txt diff=evil\n')
+      git('config', 'core.fsmonitor', `touch ${dir}/PWNED-fsmonitor`)
+      git('config', 'diff.external', `sh -c 'touch ${dir}/PWNED-external'`)
+      git('config', 'diff.evil.textconv', `sh -c 'touch ${dir}/PWNED-textconv'`)
+      const r = await runHost({ command: WORKSPACE_DIFF_SCRIPT, cwd: dir, env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', HOME: dir }, timeoutMs: 20_000, capBytes: 64 * 1024 })
+      expect(r.stdout).toContain('-one')
+      expect(r.stdout).toContain('+two')
+      for (const f of ['PWNED-fsmonitor', 'PWNED-external', 'PWNED-textconv']) expect(existsSync(path.join(dir, f)), f).toBe(false)
+      // No git baseline: the BSD-portable file list (size, path), largest first.
+      rmSync(path.join(dir, '.git'), { recursive: true, force: true })
+      writeFileSync(path.join(dir, 'big.bin'), 'x'.repeat(5000))
+      const n = await runHost({ command: WORKSPACE_DIFF_SCRIPT, cwd: dir, env: { PATH: '/usr/bin:/bin', HOME: dir }, timeoutMs: 20_000, capBytes: 64 * 1024 })
+      expect(n.stdout).toMatch(/## no git baseline in the workspace — its files \(largest first\)\n5000\tbig\.bin\n/)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
   it('runs it in the workspace, masks secret values, caps the text', async () => {
     const seen: unknown[] = []
     const out = await workspaceChanges('w1', { deps: deps(`## git diff --stat\n key=hunter2\n${'x'.repeat(20_000)}`, { seen }) })

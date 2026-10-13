@@ -1,6 +1,6 @@
-// Cycle 82 Task 3: the UI path rule and download limits (a leaf module — the worker's payload checks import it without
-// loading the sandbox). Checked in the web route, the worker and again inside the container
-// (view.ts resolves with realpath there and refuses what leaves /workspace).
+// Cycle 82 Task 3: the UI path rule and download limits (a leaf module — the worker's payload checks
+// import it without loading the workspace runtime). Checked in the web route, the worker and again in
+// the UI script (view.ts resolves with realpath there and refuses what leaves the workspace dir).
 const PATH_MAX = 4096
 
 /** On every result (and every wake note) that carries workspace content. */

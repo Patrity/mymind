@@ -5,6 +5,7 @@ import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/componen
 import { toolTitle, isRunning } from '~/lib/agent/render'
 import { startedWorkstream } from '~/lib/workstreams/display'
 import { autoApprovalNote } from '~/lib/agent/judge-display'
+import { confinementOf } from '~/lib/agent/confinement'
 import type { OutputWarningDTO } from '@mymind/core/lib/agent/judge/types'
 
 const props = defineProps<{
@@ -29,6 +30,8 @@ const pendingPart = computed(() => (props.part.state === 'approval-requested' ? 
 const started = computed(() => (envelope.value ? startedWorkstream(props.part.toolName, props.part.input, envelope.value.value) : null))
 // Cycle 84: "⚖ auto-approved (0.94): <reason>" — the judge ran this call without Tony.
 const autoNote = computed(() => autoApprovalNote(envelope.value?.approval))
+// Cycle 86: the command ran under sandbox-exec (taint confinement / an eval world).
+const confinement = computed(() => confinementOf(envelope.value?.value))
 const approvalDetails = computed(() => (
   pendingPart.value ? approvalFor(props.approvals, pendingPart.value.approval.id) : null
 ))
@@ -64,6 +67,10 @@ const approvalDetails = computed(() => (
   >
     {{ autoNote }}
   </p>
+  <AgentConfinedChip
+    v-if="confinement"
+    :confinement="confinement"
+  />
   <AgentOutputWarningChip
     v-if="warning"
     :warning="warning"

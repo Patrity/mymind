@@ -86,8 +86,7 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   // destructive-kind — always proposed
   forget_memory: 'propose', delete_document: 'propose', edit_project: 'propose',
   edit_task: 'propose', delete_task: 'propose', delete_skill: 'propose',
-  // dangerous — excluded outright, never even offered as a proposal
-  exec: 'exclude',
+  // dangerous — excluded outright, never even offered as a proposal (cycle 86: host exec is gone)
   // decide_review (cycle 76): dangerous — refused outright in a headless run, never proposed
   // (approving a proposal via a proposal is circular)
   decide_review: 'exclude',

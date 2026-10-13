@@ -55,7 +55,7 @@ const worker = createWorkerProcess({
   boot: async (stopped) => {
     const r = await bootAgentRuntime(undefined, { ...DEFAULT_BOOT_RETRY, stopped })
     // Cycle 85 (fix round 1, I2): eval tenants / sandboxes / dirs left by a crash or redeploy —
-    // in the background (docker can be slow), never a live run's young world. Never throws.
+    // in the background, never a live run's young world. Never throws.
     // Task 3: first an eval run a crash left 'running' is marked failed (partial results kept), so the
     // sweep drops its worlds; then the built-in suites (evals/*.json) are seeded.
     // Fix round 1 (I2): then every minute, the stale-heartbeat check (a run whose worker died elsewhere).
@@ -68,12 +68,12 @@ const worker = createWorkerProcess({
   ...await coreCommandDeps(),
   startSchedule: () => startAgentSchedule(),
   startRecorderFlush: () => { record.startRecorderFlushLoop(); return () => {} },
-  // Cycle 82: reconcile sandbox containers, then idle-stop / quota every minute, deletion sweep daily.
-  // The 5s free-space watchdog records + texts Tony once per low-disk episode (review I2).
-  // Task 2: the workspace runtime — manager hooks now; background shells re-attached and watches
-  // re-armed once the container reconcile has run.
+  // Cycle 82/86: the workspace runtime (host processes on this Mac) — manager hooks now; background
+  // shells re-attached and watches re-armed on the first housekeeping tick; then every minute the
+  // finished-workstream teardown, shell refresh and idle stop, the deletion sweep daily. The 5s
+  // low-disk alarm (< 5 GB) records + texts Tony once per episode and pauses new workspace work.
   // Final review M3: started BEFORE the worker handles commands or claims runs (worker.ts), so the
-  // runtime hooks are in place for the very first workspace command. I6: the preflight result rides
+  // runtime hooks are in place for the very first workspace command. I6: the health result rides
   // on the heartbeat (beatStatus) — the web shows it, CD warns on it.
   startSandbox: () => {
     const rt = startWorkspaceRuntime()
@@ -83,8 +83,8 @@ const worker = createWorkerProcess({
       onHealth: (h) => { sandboxHealth = h },
       onLowDisk: async (r) => {
         const gb = (r.freeBytes / 1024 ** 3).toFixed(1)
-        const msg = `MyMind server low on disk: ${gb} GB free — stopped ${r.stopped.length} workspace sandbox(es); workspace commands are refused until space is freed.`
-        record.recordEvent({ kind: 'job', name: 'sandbox:low-disk', status: 'error', severity: 'error', error: { message: msg }, meta: { freeBytes: r.freeBytes, stopped: r.stopped } })
+        const msg = `Bridget's Mac is low on disk: ${gb} GB free — new workspace work is paused until it is back above 8 GB.`
+        record.recordEvent({ kind: 'job', name: 'sandbox:low-disk', status: 'error', severity: 'error', error: { message: msg }, meta: { freeBytes: r.freeBytes } })
         await workstreamNotifyDeps.text(msg, null).catch(err => console.error('[sandbox] low-disk text failed:', err))
       }
     })

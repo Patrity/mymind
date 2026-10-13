@@ -1,10 +1,10 @@
-// Cycle 82 Task 2 — the `workspace` tools against REAL Docker + the dev DB (spec §4, §8).
-// Skipped when Docker is not running. Every container carries mymind.test=<RUN>; rows, docs and the
-// temp dir are tracked and removed in afterAll. The tools run exactly as Bridget calls them
-// (tool.handler with a ToolContext); only the workspace selection is pinned to this file's rows.
+// Cycle 82 Task 2 / cycle 86 — the `workspace` tools on the HOST runtime (real processes) + the dev DB.
+// Rows, docs, processes and the temp dir are tracked and removed in afterAll. The tools run exactly as
+// Bridget calls them (tool.handler with a ToolContext); only the workspace selection is pinned to this
+// file's rows. The confinement part (the last test) needs macOS sandbox-exec.
 process.loadEnvFile('.env')
-import { spawnSync } from 'node:child_process'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import net from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -19,19 +19,12 @@ import { workspaceTools } from '@mymind/core/lib/agent/tools/workspace'
 import type { ToolContext } from '@mymind/core/lib/agent/types'
 import type { WorkspaceWatchRow } from '@mymind/core/lib/sandbox/watches'
 
-const IMAGE = process.env.SANDBOX_TEST_IMAGE || 'mymind-sandbox:current'
 const RUN = `wst-${process.pid}-${Date.now().toString(36)}`
+const darwin = process.platform === 'darwin'
 // Final fix wave: every workspace row of this file is in its own bus namespace — a dev worker on the
 // shared DB never scans it, and afterAll removes every row of it (no orphans).
 const NS = RUN.replace(/[^A-Za-z0-9_-]/g, '_')
-const LABELS = { 'mymind.test': RUN }
 const tool = (name: string) => workspaceTools.find(t => t.name === name)!
-
-function docker(...args: string[]): { code: number; out: string } {
-  const r = spawnSync('docker', args, { encoding: 'utf8', timeout: 120_000 })
-  return { code: r.status ?? -1, out: r.stdout ?? '' }
-}
-const dockerUp = docker('version', '--format', '{{.Server.Version}}').code === 0 && docker('image', 'inspect', IMAGE).code === 0
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 async function until<T>(fn: () => Promise<T | null | undefined | false>, ms = 30_000): Promise<T> {
@@ -44,7 +37,7 @@ async function until<T>(fn: () => Promise<T | null | undefined | false>, ms = 30
   }
 }
 
-describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
+describe('workspace tools (host runtime)', () => {
   const rowIds: string[] = []
   const docIds: string[] = []
   let root = ''
@@ -61,10 +54,11 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
     rowIds.push(r!.id)
     return r!.id
   }
-  const mkManager = (settings: Parameters<typeof createSandboxManager>[0]['settings'] = {}) => createSandboxManager({
-    labels: LABELS, settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 10, dns: [], ...settings },
+  const mkManager = () => createSandboxManager({
+    settings: { workspacesDir: root }, taintConfinement: async () => true, record: () => {},
     log: { info: () => {}, warn: () => {}, error: () => {} }
   })
+  const wsDir = (id = current) => path.join(root, id)
   const mkRuntime = (mgr: SandboxManager) => createWorkspaceRuntime(mgr, {
     // A chat run: watch notes would go to this conversation (captured by `deliver` here).
     resolve: async () => ({ workspaceId: current, kind: 'home', workstreamId: null, conversationId: '00000000-0000-4000-8000-000000000082' }),
@@ -82,9 +76,13 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
 
   afterAll(async () => {
     rt?.watches.stop()
+    // Kill what this file left running (its shells are its own process groups).
+    if (rowIds.length) {
+      for (const r of await useDb().select().from(workspaceShells).where(inArray(workspaceShells.workspaceId, rowIds))) {
+        if (r.state === 'running') await rt.shells.kill(r.workspaceId, r.id).catch(() => {})
+      }
+    }
     setWorkspaceRuntime(null)
-    const ids = docker('ps', '-aq', '--filter', `label=mymind.test=${RUN}`).out.split('\n').filter(Boolean)
-    if (ids.length) docker('rm', '-f', ...ids)
     if (docIds.length) await useDb().delete(documents).where(inArray(documents.id, docIds))
     if (rowIds.length) await useDb().delete(workspaces).where(inArray(workspaces.id, rowIds))
     await useDb().delete(workspaces).where(eq(workspaces.ns, NS))
@@ -94,7 +92,7 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
 
   it('write_file → read_file: dirs created, line numbers, a 300 KB file travels on stdin (not argv)', async () => {
     const w = await call('write_file', { path: 'src/deep/a.txt', content: 'alpha\nbeta\ngamma\n' })
-    expect(w).toMatchObject({ ok: true, path: '/workspace/src/deep/a.txt', bytes: 17, created: true })
+    expect(w).toMatchObject({ ok: true, path: `${wsDir()}/src/deep/a.txt`, bytes: 17, created: true })
     expect(JSON.stringify(w)).not.toContain('alpha') // a receipt, never the content
     const r = await call('read_file', { path: 'src/deep/a.txt' })
     expect(r.content).toBe('     1\talpha\n     2\tbeta\n     3\tgamma')
@@ -193,34 +191,34 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
     await sleep(800)
     expect((await call('kill_shell', { shellId: k.shellId })).state).toBe('killed')
     // The whole process group is gone (the loop's text is in a file, not argv: check by group id).
+    await sleep(300)
     const after = (await m.exec(current, `kill -0 -${k.pid} 2>/dev/null && echo alive || echo none`)).stdout
     expect(after.trim()).toBe('none')
     expect((await call('kill_shell', { shellId: k.shellId })).alreadyEnded).toBe(true)
   }, 120_000)
 
-  it('a worker restart re-attaches a running shell; a restarted sandbox marks it lost', async () => {
+  it('a worker restart re-attaches a running shell; one whose process died without an exit code is lost', async () => {
     const s = await call('bash', { command: 'sleep 300', run_in_background: true })
-    // A new worker: fresh manager + runtime over the same rows and container.
+    // A new worker: fresh manager + runtime over the same rows — the process outlived the old one.
     const rt2 = mkRuntime(mkManager())
     const r1 = await rt2.shells.reconcile()
     expect(r1.reattached).toBeGreaterThanOrEqual(1)
     const [row] = await useDb().select().from(workspaceShells).where(eq(workspaceShells.id, s.shellId))
     expect(row!.state).toBe('running')
-    // The container is recreated (e.g. a new image): its processes are gone without an exit code.
-    docker('restart', '-t', '0', `mymind-ws-${current}`)
+    // Killed outside MyMind (or the Mac restarted): gone without an exit code.
+    process.kill(-s.pid, 'SIGKILL')
+    await sleep(300)
     await rt2.shells.reconcile()
     const [lost] = await useDb().select().from(workspaceShells).where(eq(workspaceShells.id, s.shellId))
     expect(lost!.state).toBe('lost')
-    expect(lost!.reason).toMatch(/went away|stopped/)
+    expect(lost!.reason).toMatch(/went away/)
   }, 120_000)
 
-  it('final review I2: a running shell protects its sandbox from eviction but not from the idle stop; the tick\'s refresh records one that exited unread', async () => {
+  it("final review I2: a running shell does not hold off the idle stop; the tick's refresh records one that exited unread", async () => {
     const hooks = runtimeHooks(rt)
     const s = await call('bash', { command: 'sleep 60', run_in_background: true })
     expect(await hooks.isBusy(current)).toBe(false) // shells are for jobs, not servers
-    expect(await hooks.hasLiveShell(current)).toBe(true)
     await call('kill_shell', { shellId: s.shellId })
-    expect(await hooks.hasLiveShell(current)).toBe(false)
     // A job that exits while nobody reads its output: the refresh (peek — no use, no start) settles it.
     const quick = await call('bash', { command: 'echo done', run_in_background: true })
     await new Promise(r => setTimeout(r, 1500))
@@ -281,7 +279,7 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
     const e1 = await tool('export_to_document').handler({ path: 'report.md', docPath }, ctx())
     const r1 = e1.result as Record<string, any>
     docIds.push(r1.id)
-    expect(r1).toMatchObject({ ok: true, path: docPath, from: '/workspace/report.md' })
+    expect(r1).toMatchObject({ ok: true, path: docPath, from: `${wsDir()}/report.md` })
     expect((await getDoc(r1.id))!.content).toBe('# Report\n\nv1\n')
     await call('write_file', { path: 'report.md', content: '# Report\n\nv2\n' })
     const e2 = await tool('export_to_document').handler({ path: 'report.md', docPath }, ctx())
@@ -293,53 +291,40 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
     expect((await call('export_to_document', { path: 'bin.dat', docPath: `/input/wst-${RUN}-bin.md` })).ok).toBe(false)
   }, 120_000)
 
-  it('over quota: writes and bash refused (the review\'s bypass strings included); list_files largest + delete_files recover', async () => {
-    const id = await newWorkspace()
-    const prev = current
-    current = id
-    const small = mkManager({ quotaInodes: 50 })
-    const q = mkRuntime(small)
-    setWorkspaceRuntime(q)
-    try {
-      await call('bash', { command: 'mkdir -p junk keep && for i in $(seq 1 80); do head -c 5000 /dev/zero > junk/$i; done; echo k > keep/k' })
-      // The quota is measured at most once a minute: force a fresh measurement.
-      await small.measure(id)
-      expect((await call('write_file', { path: 'x.txt', content: 'x' })).error).toMatch(/quota/i)
-      for (const command of ['touch y.txt', 'find . -fprint"" big', 'sort --o=big keep/k', 'sort -S1 --compress-program=sh keep/k', 'du -s .', 'rm -rf junk']) {
-        expect((await call('bash', { command })).error, command).toMatch(/bash is refused until space is freed/)
-      }
-      expect((await call('bash', { command: 'ls' })).error).toMatch(/refused/)
-      const big = await call('list_files', { largest: true })
-      expect(big.files).toBe(81)
-      expect(big.largestDirs[0]).toMatchObject({ path: 'junk/' })
-      expect(big.largestDirs[0].bytes).toBeGreaterThan(big.largestDirs.find((d: { path: string }) => d.path === 'keep/').bytes)
-      // Final fix wave: one bad path refuses the WHOLE batch before anything is deleted.
-      const bad = await call('delete_files', { paths: ['junk', 'nope', '../etc', '/etc/passwd', '.', 'keep/../..'] })
-      expect(bad).toMatchObject({ ok: false, error: 'invalid_paths' })
-      expect(bad.message).toMatch(/nothing was deleted — 4 path\(s\) refused/)
-      expect((await call('bash', { command: 'ls' })).error).toMatch(/refused/) // still over: junk is still there
-      const d = await call('delete_files', { paths: ['junk', 'nope'] })
-      expect(d.deleted).toEqual(['junk'])
-      expect(d.missing).toEqual(['nope'])
-      expect(d.refused).toEqual([])
-      await small.measure(id)
-      expect((await call('write_file', { path: 'x.txt', content: 'x' })).ok).toBe(true)
-      expect((await call('bash', { command: 'ls' })).stdout).toBe('keep\nx.txt\n')
-    } finally {
-      setWorkspaceRuntime(rt)
-      current = prev
-    }
+  it('delete_files: one bad path refuses the WHOLE batch before anything is deleted; then deletes and reports missing', async () => {
+    await call('bash', { command: 'mkdir -p junk keep && for i in $(seq 1 5); do : > junk/$i; done; echo k > keep/k' })
+    const bad = await call('delete_files', { paths: ['junk', 'nope', '../etc', '/etc/passwd', '.', 'keep/../..'] })
+    expect(bad).toMatchObject({ ok: false, error: 'invalid_paths' })
+    expect(bad.message).toMatch(/nothing was deleted — 4 path\(s\) refused/)
+    expect((await call('bash', { command: 'ls -d junk' })).stdout).toBe('junk\n')
+    const d = await call('delete_files', { paths: ['junk', 'nope'] })
+    expect(d.deleted).toEqual(['junk'])
+    expect(d.missing).toEqual(['nope'])
+    expect(d.refused).toEqual([])
+    const big = await call('list_files', { largest: true })
+    expect(big.largestDirs.map((x: { path: string }) => x.path)).toContain('keep/')
+  }, 120_000)
+
+  it("cycle 86: a clean run works on the whole Mac — an absolute path anywhere, its own login env, never MyMind's env", async () => {
+    const outside = path.join(root, `outside-${RUN}`)
+    expect((await call('write_file', { path: `${outside}/abs.txt`, content: 'anywhere' })).ok).toBe(true)
+    expect((await call('read_file', { path: `${outside}/abs.txt` })).content).toBe('     1\tanywhere')
+    const env = await call('bash', { command: 'echo "home=$HOME db=[$DATABASE_URL] pwd=$(pwd)"' })
+    expect(env.stdout).toBe(`home=${process.env.HOME} db=[] pwd=${wsDir()}\n`)
+    // cycle 82's container path still means the workspace dir
+    expect((await call('read_file', { path: '/workspace/keep/k' })).content).toBe('     1\tk')
   }, 120_000)
 
   it('delete_files never follows a symlinked parent out of the workspace; a symlink itself is removed, not its target', async () => {
-    await call('bash', { command: 'mkdir -p /tmp/outside && echo keep > /tmp/outside/f && ln -sfn /tmp/outside escape && echo t > real.txt && ln -sf real.txt link.txt' })
+    const outside = path.join(root, `del-outside-${RUN}`)
+    await call('bash', { command: `mkdir -p ${outside} && echo keep > ${outside}/f && ln -sfn ${outside} escape && echo t > real.txt && ln -sf real.txt link.txt` })
     const refused = await call('delete_files', { paths: ['link.txt', 'escape/f'] })
     expect(refused).toMatchObject({ ok: false, error: 'invalid_paths' })
     expect(refused.message).toMatch(/escape\/f \(outside the workspace/)
     expect((await call('bash', { command: 'ls link.txt' })).stdout).toBe('link.txt\n') // nothing was deleted
     const d = await call('delete_files', { paths: ['link.txt'] })
     expect(d.deleted).toEqual(['link.txt'])
-    expect((await call('bash', { command: 'cat /tmp/outside/f real.txt' })).stdout).toBe('keep\nt\n')
+    expect((await call('bash', { command: `cat ${outside}/f real.txt` })).stdout).toBe('keep\nt\n')
   }, 120_000)
 
   it('final fix wave: a NUL anywhere in the batch, or .mymind (even via a symlink), refuses the batch up front', async () => {
@@ -355,37 +340,57 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
   }, 120_000)
 
   // LAST (it taints its own workspace for good).
-  it('a tainted run: bash runs with no network (and taints the workspace); background and watch are refused', async () => {
+  it.runIf(darwin)('a tainted run (confinement on): bash runs confined — no loopback listener, no write outside — and taints the workspace; background and watch are refused', async () => {
     const id = await newWorkspace()
     const prev = current
     current = id
+    let accepted = 0
+    const server = net.createServer((sock) => { accepted++; sock.end('x') })
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()))
+    const port = (server.address() as net.AddressInfo).port
+    const outside = path.join(root, `taint-outside-${RUN}`)
     try {
       await call('write_file', { path: 'pre.txt', content: 'before' })
+      const probe = `python3 -I -c 'import socket,sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), 3); print("connected")' ${port}`
+      expect((await call('bash', { command: probe })).stdout).toBe('connected\n') // clean: loopback / LAN reachable
       tainted = true
-      const r = await call('bash', { command: "cat pre.txt; awk 'NR>1' /proc/net/route | wc -l" })
-      expect(Object.keys(r)[0]).toBe('workspaceTainted') // first key: survives a capped preview
-      expect(r).toMatchObject({ workspaceTainted: true, networkOff: true, exitCode: 0 })
-      expect(r.stdout).toBe('before0\n')
+      const r = await call('bash', { command: `cat pre.txt; echo; ${probe}; mkdir -p ${outside} && echo leak > ${outside}/x; echo in > inside.txt` })
+      expect(Object.keys(r).slice(0, 2)).toEqual(['workspaceTainted', 'confined']) // first keys: survive a capped preview
+      expect(r).toMatchObject({ workspaceTainted: true, confined: { reason: 'tainted-run' } })
+      expect(r.stdout).toBe('before\n')
+      expect(r.stderr).toMatch(/Operation not permitted/)
+      expect(accepted).toBe(1)
+      tainted = false
+      expect((await m.exec(id, `test -e ${outside}/x && echo LEAKED || echo none`, { internal: true })).stdout).toBe('none\n')
+      tainted = true
+      expect((await call('read_file', { path: 'inside.txt' })).content).toBe('     1\tin')
       const bg = await call('bash', { command: 'sleep 1', run_in_background: true })
       expect(bg.error).toMatch(/background shells are not available/)
       const w = await call('watch', { command: 'true', until: 'exit0' })
       expect(w.error).toMatch(/watches are not available/)
       expect((await useDb().select().from(workspaceShells).where(eq(workspaceShells.workspaceId, id))).length).toBe(0)
       // The run is untainted again, but the WORKSPACE stays tainted: reads say so (and would taint the
-      // reader); background shells stay refused until Tony re-enables the network.
+      // reader); commands stay confined until Tony re-enables it.
       tainted = false
       const rd = await call('read_file', { path: 'pre.txt' })
       expect(rd.workspaceTainted).toBe(true)
-      expect((await call('bash', { command: 'sleep 1', run_in_background: true })).error).toMatch(/network is off until Tony re-enables it/)
-      expect((await call('watch', { command: 'true', until: 'exit0' })).error).toMatch(/network is off until Tony re-enables it/)
+      expect((await call('bash', { command: probe })).confined).toMatchObject({ reason: 'tainted-workspace' })
+      expect(accepted).toBe(1)
+      expect((await call('bash', { command: 'sleep 1', run_in_background: true })).error).toMatch(/until Tony re-enables it.*background shells are not available/)
+      expect((await call('watch', { command: 'true', until: 'exit0' })).error).toMatch(/until Tony re-enables it.*watches are not available/)
       // An export from it marks the result (the exporting run becomes tainted).
       const docPath = `/input/wst-${RUN}-tainted.md`
       const e = await call('export_to_document', { path: 'pre.txt', docPath })
       docIds.push(e.id)
       expect(Object.keys(e)[0]).toBe('workspaceTainted')
+      // Re-enabled: clean again — the listener is reachable.
+      await m.reenableNetwork(id)
+      expect((await call('bash', { command: probe })).stdout).toBe('connected\n')
+      expect(accepted).toBe(2)
     } finally {
       tainted = false
       current = prev
+      await new Promise(r => server.close(r))
     }
   }, 120_000)
 })
