@@ -3,6 +3,8 @@ title: Eval substrate (suites, fake world, scoring, /evals dashboard)
 status: shipped
 cycle: 85
 updated: 2026-10-13
+mymind_id: 0c72b9c7-d2ff-4943-8b63-2faf8feb09b9
+mymind_hash: 1465e8f83f5b01f271ff71fb9b01f3f3b0a4d88590e45d3666a33b9129a1966a
 ---
 
 # Eval substrate (cycle 85 — harness step 6a)
