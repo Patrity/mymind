@@ -120,8 +120,15 @@ export const finishWorkstreamTool: AgentTool = {
       if ('refused' in checked) return { result: { ok: false, error: checked.refused }, summary: `finish_workstream: ${checked.summary}` }
       if ('sendBack' in checked) return { result: { ok: false, notDone: true, error: checked.sendBack }, summary: checked.summary }
       const verification = checked.verification
-      const ws = await patchWorkstream(seg.workstreamId, { state: 'done', summary, attention: null, finishedAt: new Date(), stateDetail: null, verification }, ['running', 'attention'])
-      if (!ws) return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'finish_workstream: not running' }
+      // Cycle 85 final fix wave: only from `running` — a question (ask_tony) or an approval card that
+      // landed while the outcome was being checked keeps the workstream waiting on Tony; finishing here
+      // would clear his pending attention without a trace.
+      const ws = await patchWorkstream(seg.workstreamId, { state: 'done', summary, attention: null, finishedAt: new Date(), stateDetail: null, verification }, ['running'])
+      if (!ws) {
+        const now = await getWorkstream(seg.workstreamId)
+        if (now?.state === 'attention' || seg.stop === 'attention') return { result: { ok: false, error: pendingAttentionRefusal(now?.attention) }, summary: 'finish_workstream: waiting on Tony' }
+        return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'finish_workstream: not running' }
+      }
       seg.stop = 'finished'
       record(ws.id, verification, verification.outcome)
       const { flagLine } = await outcome()
@@ -154,11 +161,19 @@ type Checked =
  * while running) BEFORE the agent is told, so it survives segments and restarts and two racing
  * verifications never both count.
  */
+/** Cycle 85 final fix wave: finish_workstream while Tony has a question or approval card pending. */
+function pendingAttentionRefusal(attention: unknown): string {
+  const kind = (attention as { kind?: string } | null | undefined)?.kind === 'question' ? 'question' : 'approval'
+  return `Tony has a pending ${kind} in this workstream — it cannot finish until he answers. Stop here: you resume when he does, then finish.`
+}
+
 async function verifyFinish(seg: Seg, summary: string, signal: AbortSignal): Promise<Checked> {
   const o = await outcome()
   const row = await getWorkstream(seg.workstreamId)
-  // The same states the send-back CAS accepts (running, or attention with a parallel card parked).
-  if (!row || !['running', 'attention'].includes(row.state)) return { refused: `the workstream is ${row?.state ?? 'gone'}, not running — it cannot finish now`, summary: 'not running' }
+  // Final fix wave: a question / approval pending (ask_tony or a card in this same step) — refused
+  // before any verification; finishing would drop Tony's pending attention.
+  if (row?.state === 'attention' || seg.stop === 'attention') return { refused: pendingAttentionRefusal(row?.attention), summary: 'waiting on Tony' }
+  if (!row || row.state !== 'running') return { refused: `the workstream is ${row?.state ?? 'gone'}, not running — it cannot finish now`, summary: 'not running' }
   let enabled = true
   try { enabled = await o.outcomeDeps.enabled() } catch { /* unreadable settings: verify anyway */ }
   if (!enabled) return { verification: o.toVerification(o.outcomeError('the judge is switched off', 0), 'skipped', row.sendBacks) }
@@ -194,7 +209,10 @@ async function verifyFinish(seg: Seg, summary: string, signal: AbortSignal): Pro
     }
     // The CAS missed. Re-read to say why — never count twice.
     const now = await getWorkstream(row.id)
-    if (!now || !['running', 'attention'].includes(now.state) || now.cancelRequested) return { refused: `the workstream is ${now?.cancelRequested ? 'being cancelled' : now?.state ?? 'gone'} — it has not finished`, summary: 'not running' }
+    // Task 1 N1: one accurate sentence per case (it read "the workstream is done — it has not finished").
+    if (!now) return { refused: 'the workstream is gone', summary: 'not running' }
+    if (now.cancelRequested) return { refused: 'the workstream is being cancelled — it has not finished', summary: 'not running' }
+    if (!['running', 'attention'].includes(now.state)) return { refused: `the workstream already ended (${now.state})`, summary: 'not running' }
     if (now.currentRunId !== seg.runId) return { refused: 'this segment no longer owns the workstream (it was recovered elsewhere) — stop here', summary: 'superseded' }
     // C4: another verification of the same work (a parallel finish_workstream in this step) counted
     // the send-back already — the same answer, without counting it again.

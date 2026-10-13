@@ -300,6 +300,37 @@ describe('outcome judge — while verifying', () => {
     expect(texts.join('\n')).not.toMatch(/Workstream done/)
   })
 
+  it('final fix wave: a finish in the same step as ask_tony never drops Tony\'s question — refused before or after the verifier', async () => {
+    const tool = (ctx: RunAgentCtx, name: string) => ctx.profile!.tools.find(x => x.name === name)!
+    const ask = async (ctx: RunAgentCtx) => tool(ctx, 'ask_tony').handler({ question: 'Which NAS budget?' }, { signal: ctx.signal, runId: ctx.runId }) as Promise<{ result: Record<string, unknown> }>
+    // (a) ask_tony lands first: the finish is refused at once, never verified.
+    let out: Awaited<ReturnType<typeof finish>> | undefined
+    const a = harness(async function* (ctx) { step(ctx); await ask(ctx); out = await finish(ctx, 'S-A'); yield { type: 'done' } })
+    const wa = await newWorkstream('ask-then-finish')
+    await a.drive(wa.ws.conversationId, 1)
+    expect(out).toMatchObject({ result: { ok: false, error: expect.stringMatching(/^Tony has a pending question in this workstream — it cannot finish until he answers/) } })
+    expect(verifyCalls).toBe(0)
+    expect(await getWorkstream(wa.ws.id)).toMatchObject({ state: 'attention', attention: { kind: 'question', text: 'Which NAS budget?' }, summary: null })
+    // (b) the question lands WHILE the finish is being verified (met): the done write is refused.
+    const g = gate()
+    script = [async () => { await g.p; return V() }]
+    let outB: Awaited<ReturnType<typeof finish>> | undefined
+    const b = harness(async function* (ctx) {
+      step(ctx)
+      const f = finish(ctx, 'S-B')
+      await until(async () => verifyCalls > 0)
+      await ask(ctx)
+      g.open()
+      outB = await f
+      yield { type: 'done' }
+    })
+    const wb = await newWorkstream('finish-while-asking')
+    await b.drive(wb.ws.conversationId, 1)
+    expect(outB).toMatchObject({ result: { ok: false, error: expect.stringMatching(/^Tony has a pending question/) } })
+    expect(await getWorkstream(wb.ws.id)).toMatchObject({ state: 'attention', attention: { kind: 'question' }, summary: null, finishedAt: null })
+    expect(texts.join('\n')).not.toMatch(/Workstream done/)
+  })
+
   it('a restart mid-verification never double-finishes: the recovered segment finishes once; the dead one\'s late verdict changes nothing', async () => {
     const g = gate()
     script = [async () => { await g.p; return PARTIAL }, V({ confidence: 0.99 })]
@@ -324,7 +355,7 @@ describe('outcome judge — while verifying', () => {
     // Now the dead segment's verifier answers (partial): no send-back, no second finish, no second note.
     g.open()
     expect(await waitForInFlight(10_000)).toBe(true)
-    expect(lateResult).toMatchObject({ result: { ok: false, error: 'the workstream is done — it has not finished' } })
+    expect(lateResult).toMatchObject({ result: { ok: false, error: 'the workstream already ended (done)' } }) // Task 1 N1
     const row = (await getWorkstream(ws.id))!
     expect(row).toMatchObject({ state: 'done', summary: 'SUMMARY-SEG1', sendBacks: 0, verification: { verdict: 'met', confidence: 0.99, outcome: 'finished' } })
     expect((await thread(origin)).filter(m => m.origin === `workstream:${ws.id}`)).toHaveLength(1)
