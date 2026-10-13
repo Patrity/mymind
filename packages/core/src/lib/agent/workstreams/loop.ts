@@ -1441,7 +1441,10 @@ export async function resumeWorkstream(ws: WorkstreamRow, text?: string): Promis
         state: 'running', cancelRequested: false, failures: 0, failureReason: null, lastOutcome: null,
         finishedAt: null, attention: null, summary: null, budget, updatedAt: sql`now()`,
         // Cycle 85 fix round 1: a resumed workstream's finishes get their send-backs back.
-        sendBacks: 0
+        sendBacks: 0,
+        // Cycle 85 final fix wave (Task 1 N2): a crash mid-verify left `verifying` on the row; the
+        // resumed row must not read "Verifying…" until its next segment begins.
+        stateDetail: null
       }).where(and(eq(workstreams.id, ws.id), inArray(workstreams.state, ['failed', 'cancelled']))).returning()
       return r ?? null
     })

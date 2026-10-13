@@ -300,6 +300,13 @@ describe('outcome judge — while verifying', () => {
     expect(texts.join('\n')).not.toMatch(/Workstream done/)
   })
 
+  it('final fix wave (Task 1 N2): resuming a failed workstream clears a stale `verifying` detail at once', async () => {
+    const { ws } = await newWorkstream('resume-detail')
+    await useDb().update(workstreams).set({ state: 'failed', stateDetail: 'verifying', finishedAt: new Date() }).where(eq(workstreams.id, ws.id))
+    await controlWorkstream({ workstreamId: ws.id, action: 'resume' })
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'running', stateDetail: null })
+  })
+
   it('final fix wave: a finish in the same step as ask_tony never drops Tony\'s question — refused before or after the verifier', async () => {
     const tool = (ctx: RunAgentCtx, name: string) => ctx.profile!.tools.find(x => x.name === name)!
     const ask = async (ctx: RunAgentCtx) => tool(ctx, 'ask_tony').handler({ question: 'Which NAS budget?' }, { signal: ctx.signal, runId: ctx.runId }) as Promise<{ result: Record<string, unknown> }>
