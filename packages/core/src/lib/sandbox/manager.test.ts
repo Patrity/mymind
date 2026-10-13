@@ -992,6 +992,32 @@ describe('eval sandbox manager (cycle 85)', () => {
     expect(d.calls.some(c => c[0] === 'network')).toBe(false)
   })
 
+  it('final fix wave M3: eval managers share the image check + limits probe per image tag — one probe for many worlds', async () => {
+    const d = fakeDocker()
+    const run: DockerRunner = async (args, o) => {
+      if (args[0] === 'container' && args[1] === 'inspect' && args[2] === '--format') return ok('2147483648 512\n')
+      if (args[0] === 'start' && args[1] === '-a') return ok('memory=2147483648 pids=512\n')
+      return d.run(args, o)
+    }
+    const cache = new Map()
+    const quiet = { info: () => {}, warn: () => {}, error: () => {} }
+    const mk = (world: string, image?: string) => createEvalSandboxManager({ runId: RUN, worldId: world }, { docker: run, store: memStore(), uid: 1000, platform: 'linux', log: quiet, probeCache: cache, settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'enforce', maxRunning: 10, dns: [], ...(image ? { image } : {}) } })
+    const worlds = ['eval_000000000000400080000000000000bb_00000001', 'eval_000000000000400080000000000000bb_00000002', 'eval_000000000000400080000000000000bb_00000003']
+    for (const w of worlds) await mk(w).exec(WS, 'true')
+    const probes = () => d.calls.filter(c => c[0] === 'create' && /wsprobe-/.test(c[2] ?? '')).length
+    const inspects = () => d.calls.filter(c => c[0] === 'image' && c[1] === 'inspect').length
+    expect(probes()).toBe(1)
+    expect(inspects()).toBe(1)
+    // Another image tag is checked on its own.
+    await mk('eval_000000000000400080000000000000bb_00000004', 'mymind-sandbox:other').exec(WS, 'true')
+    expect(probes()).toBe(2)
+    expect(inspects()).toBe(2)
+    // Tony's own manager never reads the eval cache.
+    const real = createSandboxManager({ docker: run, store: memStore(), uid: 1000, platform: 'linux', log: quiet, settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'enforce', maxRunning: 10, dns: [] } })
+    await real.exec(WS, 'true')
+    expect(probes()).toBe(3)
+  })
+
   it('refuses a command with secrets (fail closed), before docker exec', async () => {
     const d = fakeDocker()
     const m = createEvalSandboxManager({ runId: RUN, worldId: WORLD }, { docker: d.run, store: memStore(), uid: 1000, platform: 'darwin', log: { info: () => {}, warn: () => {}, error: () => {} }, settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] } })

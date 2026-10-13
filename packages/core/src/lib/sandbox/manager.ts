@@ -221,7 +221,16 @@ export interface SandboxManagerOptions {
   /** Fix round 2 (N1): every container name starts with this (an eval world's own prefix) instead of
    *  `mymind-`. */
   namePrefix?: string
+  /** Cycle 85 final fix wave (M3): an offline manager's preflight results shared across managers, per
+   *  image tag — every eval world gets a fresh manager, and each would otherwise re-inspect the image
+   *  and re-run the limits probe container. Only successes are shared. */
+  probeCache?: Map<string, SandboxProbe>
 }
+
+/** M3: what an offline (eval) manager's preflight established for one image tag. */
+export interface SandboxProbe { imageId: string; at: number; limitsOk: boolean }
+/** M3: how long a shared probe result is trusted before a manager looks again. */
+export const SHARED_PROBE_TTL_MS = 10 * 60_000
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const PREFLIGHT_TTL_MS = 60_000
@@ -347,6 +356,14 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   async function preflight(wantNetwork: boolean): Promise<void> {
     const needNetwork = wantNetwork && !offline
     if (preflightOk && now() - preflightOk.at < PREFLIGHT_TTL_MS && (preflightOk.network || !needNetwork)) return
+    // M3: another (eval) manager already checked this image (and its limits) a moment ago.
+    const shared = !needNetwork ? opts.probeCache?.get(s.image) : undefined
+    if (shared && now() - shared.at < SHARED_PROBE_TTL_MS && (shared.limitsOk || s.limits !== 'enforce')) {
+      imageId = shared.imageId
+      if (shared.limitsOk) limitsOk = true
+      preflightOk = { at: now(), network: preflightOk?.network ?? false }
+      return
+    }
     if (!await dockerAvailable(docker)) throw new SandboxUnavailableError('the workspace sandbox is unavailable: Docker is not running on this host')
     const img = await docker(['image', 'inspect', '--format', '{{.Id}}', s.image], { timeoutMs: 15_000 })
     if (img.code !== 0) throw new SandboxUnavailableError(`the workspace sandbox is unavailable: image ${s.image} is missing (build it with deploy/sandbox/build-image.sh)`)
@@ -363,6 +380,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     }
     if (s.limits === 'enforce' && !limitsOk) await verifyLimits()
     preflightOk = { at: now(), network: needNetwork || (preflightOk?.network ?? false) }
+    if (!needNetwork && imageId) opts.probeCache?.set(s.image, { imageId, at: now(), limitsOk })
   }
 
   /**
@@ -1231,6 +1249,9 @@ export function evalSandboxLabels(scope: Pick<EvalScope, 'runId' | 'worldId'>): 
   return { [LABEL_EVAL_RUN]: scope.runId, [LABEL_EVAL_WORLD]: scope.worldId }
 }
 
+/** M3: the eval managers' shared preflight results (process-wide, per image tag). */
+const evalProbeCache = new Map<string, SandboxProbe>()
+
 /** An eval world's manager: offline, labelled with the run + world, its own dir and slots. */
 export function createEvalSandboxManager(scope: Pick<EvalScope, 'runId' | 'worldId'>, opts: SandboxManagerOptions = {}): SandboxManager {
   const h = () => evalHooks.get(scope) ?? {}
@@ -1243,6 +1264,7 @@ export function createEvalSandboxManager(scope: Pick<EvalScope, 'runId' | 'world
     refresh: id => h().refresh?.(id),
     onOverQuota: (id, usage) => h().onOverQuota?.(id, usage),
     onTainted: id => h().onTainted?.(id),
+    probeCache: evalProbeCache,
     ...opts,
     namePrefix: evalContainerPrefix(scope.worldId),
     offline: true,
