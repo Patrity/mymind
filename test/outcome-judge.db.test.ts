@@ -185,6 +185,11 @@ describe('outcome judge — finish_workstream', () => {
     expect(note.content).toContain('⚠ verifier: partial — no prices for the third box')
     expect(texts.join('\n')).toContain('⚠ verifier: partial')
     expect((await outcomeEvents(ws.id)).map(e => (e.meta as { outcome: string }).outcome)).toEqual(['sent-back', 'sent-back', 'flagged'])
+    // Each send-back is a thread note, written once its segment ended (never mid-run).
+    expect((await thread(ws.conversationId)).filter(m => m.origin === 'judge:outcome').map(m => m.content)).toEqual([
+      '⚖ Verifier sent this back (1/2): no prices for the third box — next: look up the TS-464 price',
+      '⚖ Verifier sent this back (2/2): no prices for the third box — next: look up the TS-464 price'
+    ])
   })
 
   it('the send-back counter lives on the row: a workstream already sent back twice (an earlier worker life) finishes flagged at once', async () => {

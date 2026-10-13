@@ -249,6 +249,9 @@ describe('cycle 85: the outcome verifier in the UI', () => {
     expect(verifierBadge({ state: 'running', verification: v({ outcome: 'sent-back' }) })).toBeNull()
     expect(verifierBadge({ state: 'done', verification: null })).toBeNull()
   })
+  it('a send-back thread note is a divider with the gaps as plain text', () => {
+    expect(eventDisplay('judge:outcome', '⚖ Verifier sent this back (1/2): no prices — next: add them')).toEqual({ kind: 'divider', label: '⚖ Verifier sent this back (1/2): no prices — next: add them', icon: 'i-lucide-undo-2' })
+  })
   it('the verdict panel', () => {
     expect(verificationView(null, 0)).toBeNull()
     expect(verificationView(v({ verdict: 'met', confidence: 0.92, outcome: 'finished' }), 1)).toMatchObject({ color: 'success', title: 'Verified: met (0.92) after 1 send-back' })

@@ -67,6 +67,9 @@ export const NUDGE_EVERY_MS = 2 * 60 * 60 * 1000
 export const MAX_NUDGES = 3
 /** Two consecutive segments with no tool call and no finish_workstream → ask Tony (review M3). */
 
+/** Cycle 85: the origin of a verifier send-back note in a workstream's thread. */
+export const OUTCOME_NOTE_ORIGIN = 'judge:outcome'
+
 /** Model steps per segment (spec §5.2). */
 export const SEGMENT_MAX_STEPS = 40
 /** Consecutive failed segments that end the workstream. */
@@ -157,6 +160,9 @@ export interface Segment {
   verifying(on: boolean): Promise<void>
   /** Cycle 85: aborts an in-flight verification (cancelWorkstream) — the finish is then refused. */
   verifyAbort: AbortController | null
+  /** Cycle 85: thread notes ("⚖ Verifier sent this back …") written when the segment ENDS — an event
+   *  row appended while its run is active would hang off a branch the turn then leaves behind. */
+  notes: string[]
 }
 
 /** Who Tony sees a workstream as, and where its notes go (cycle 83): a child is shown as
@@ -361,6 +367,7 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
     },
     taintSettled: () => taintChain,
     verifyAbort: null,
+    notes: [],
     async verifying(on) {
       if (on) {
         pause()
@@ -811,6 +818,11 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   // S1: a coordinator's child lifecycle notes that waited for this segment to end land now — before
   // anything below queues the next segment.
   const leftover = ws ? await appendLeftoverReports(run, ws) : { n: 0, childIds: [] }
+  // Cycle 85: the verifier's send-backs this segment, as thread notes (no run is active now).
+  if (ws && seg?.notes.length) {
+    for (const note of seg.notes.splice(0)) await appendEvent(ws.conversationId, note, OUTCOME_NOTE_ORIGIN).catch(err => console.error('[workstreams] verifier note failed:', err))
+    publishChange({ resource: 'conversation', action: 'updated', id: ws.conversationId })
+  }
   if (ws?.treeBudget) await (await coordinator()).flushChildNotes(ws.id).catch(err => console.error('[workstreams] child notes failed:', err))
   if (!ws || isTerminal(ws.state) || seg?.skip) {
     if (ws && seg?.skip && ws.cancelRequested) await cancelNow(ws)

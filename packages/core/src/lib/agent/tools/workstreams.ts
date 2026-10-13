@@ -193,6 +193,7 @@ async function verifyFinish(seg: Seg, summary: string, signal: AbortSignal): Pro
     if (sent) {
       await seg.verifying(false)
       record(row.id, verification, 'sent-back')
+      seg.notes.push(`⚖ Verifier sent this back (${seen + 1}/${o.MAX_SEND_BACKS}): ${v!.gaps.join('; ') || (v!.verdict === 'met' ? 'not confident the goal is met' : 'the goal is not yet met')}${v!.nextStep ? ` — next: ${v!.nextStep}` : ''}`)
       const first = v!.gaps[0] ?? (v!.verdict === 'met' ? 'low confidence' : 'goal not yet met')
       return { sendBack: o.sendBackText(v!, seen + 1), summary: `⚖ verifier sent this back (${seen + 1}/${o.MAX_SEND_BACKS}): ${first.length > 120 ? `${first.slice(0, 119)}…` : first}` }
     }

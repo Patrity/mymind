@@ -208,6 +208,8 @@ export function eventDisplay(origin: string | null | undefined, text: string): E
     const s = SEGMENT_LABELS[detail]
     return s ? { kind: 'divider', label: s.label, icon: s.icon } : { kind: 'divider', label: `segment · ${detail}`, icon: 'i-lucide-step-forward' }
   }
+  // Cycle 85: the outcome verifier sent a finish back (its gaps are model output: plain text only).
+  if (kind === 'judge' && detail === 'outcome') return { kind: 'divider', label: clip(text.replace(/\s+/g, ' ').trim(), 200), icon: 'i-lucide-undo-2' }
   if (kind === 'runtime' && detail === 'restart') return { kind: 'divider', label: 'Interrupted by a restart', icon: 'i-lucide-rotate-cw' }
   const head = kind === 'wake' ? `woken · ${detail}` : kind === 'review' ? `review · ${detail}` : kind === 'runtime' ? 'runtime' : 'note'
   return { kind: 'divider', label: `${head}: ${clip(text)}`, icon: 'i-lucide-alarm-clock' }
