@@ -195,6 +195,18 @@ describe('the seed suite', () => {
     expect((await seedSuite({ ...seedJson, name })).added).toBe(1)
   })
 
+  it('a built-in case the file no longer has is disabled when untouched, kept when Tony edited it', async () => {
+    const name = `${SUITE}-retire`
+    const v1 = { name, cases: [{ slug: 'stays', prompt: 'a' }, { slug: 'retired', prompt: 'b' }, { slug: 'edited', prompt: 'c' }] }
+    const first = await seedSuite(v1)
+    await db().update(evalCases).set({ prompt: 'edited by Tony' }).where(sql`${evalCases.suiteId} = ${first.suiteId} and ${evalCases.slug} = 'edited'`)
+    const r = await seedSuite({ name, cases: [{ slug: 'stays', prompt: 'a' }] })
+    expect(r.updated).toBe(1)
+    expect((await caseRow(first.suiteId, 'retired')).enabled).toBe(false)
+    expect((await caseRow(first.suiteId, 'edited')).enabled).toBe(true)
+    expect((await caseRow(first.suiteId, 'stays')).enabled).toBe(true)
+  })
+
   it('importSuite publishes the eval resource after its commit', async () => {
     events.length = 0
     const { suiteId } = await importSuite({ name: `${SUITE}-import`, cases: [{ slug: 'one', prompt: 'hi' }] })

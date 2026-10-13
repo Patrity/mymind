@@ -83,8 +83,9 @@ export interface SeedResult { suiteId: string; added: number; updated: number; k
  * definition hashes to its `builtin_hash` — or, for a row seeded before the hash existed, it was never
  * touched since its insert) when the file's definition changed — so a revised built-in reaches an
  * already-seeded DB. A case Tony edited is never overwritten: it is `kept`, and shows as differing
- * from the built-in. `enabled` is always Tony's. Idempotent. A deleted built-in case comes back on the
- * next seed: retire one by disabling it.
+ * from the built-in. `enabled` is Tony's — except that a built-in case the file no longer has is
+ * disabled while it is still exactly as seeded. Idempotent. A deleted built-in case comes back on the
+ * next seed (disable it to retire it).
  */
 export async function seedSuite(raw: unknown): Promise<SeedResult> {
   const suite = EvalSuiteJsonSchema.parse(raw)
@@ -120,6 +121,15 @@ export async function seedSuite(raw: unknown): Promise<SeedResult> {
       }
       const { enabled: _keepTonys, ...values } = caseValues(c)
       await tx.update(evalCases).set({ ...values, builtinHash: fileHash, updatedAt: new Date() }).where(eq(evalCases.id, row.id))
+      updated++
+    }
+    // A built-in case the file no longer has (renamed or replaced): disable it — only while it is still
+    // exactly as seeded, so a case Tony edited (or one that was never built-in) is left alone.
+    const fileSlugs = new Set(suite.cases.map(c => c.slug))
+    for (const row of rows.values()) {
+      if (fileSlugs.has(row.slug) || !row.builtinHash || !row.enabled) continue
+      if (caseDefinitionHash(caseJsonOf(row)) !== row.builtinHash) continue
+      await tx.update(evalCases).set({ enabled: false, updatedAt: new Date() }).where(eq(evalCases.id, row.id))
       updated++
     }
     return { suiteId, added, updated, kept }

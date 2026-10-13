@@ -134,7 +134,7 @@ describe('composePrompt — workstream block', () => {
     expect(p).toContain('280 of 400 steps, 90 of 120 min left')
     expect(p).toMatch(/ask_tony.*ONLY when you are truly blocked/)
     expect(p).toMatch(/finish_workstream.*summary/)
-    expect(p).not.toMatch(/CONFIRM with Tony first/)
+    expect(p).not.toMatch(/DELETES are different/)
   })
   it('the final step says it is stopping and has no tools', () => {
     const p = composePrompt({ ...base, speak: false, workstream: { ...w, final: { reason: 'step budget used up (400 of 400 steps)' } } })

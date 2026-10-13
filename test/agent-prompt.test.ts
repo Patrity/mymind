@@ -105,8 +105,9 @@ describe('wake mode', () => {
     expect(p).toContain('reply with exactly NO_REPLY')
   })
   it('drops the confirm-before-editing rule, which cannot be honoured with nobody there', () => {
-    expect(composePrompt({ ...opts, wake: { reason: 'x' } })).not.toContain('CONFIRM with Tony first')
-    expect(composePrompt(opts)).toContain('CONFIRM with Tony first')
+    expect(composePrompt({ ...opts, wake: { reason: 'x' } })).not.toContain('DELETES are different')
+    expect(composePrompt(opts)).toContain('DELETES are different: CONFIRM with Tony first')
+    expect(composePrompt(opts)).toContain('just do it and say what changed')
   })
 })
 

@@ -143,7 +143,9 @@ export function composePrompt(opts: { persona: string; speak: boolean; toneLine:
   // Wake-mode runs are unattended: nobody is there to say yes, so the confirm-first rule
   // cannot be honoured and would just stall the turn. See the wake block above for the
   // background-safe replacement (edits/deletes are queued for /review instead).
-  if (!opts.wake && !opts.workstream) lines.push('- Before ANY change that edits or deletes existing data (edit_task, edit_project), CONFIRM with Tony first and only act after he says yes.')
+  // 2026-10-13 (Tony: "that rule is far too strict" — more autonomy): a clear request for a specific edit
+  // is done, not re-confirmed (edits are undoable); only an ambiguous target or a DELETE asks first.
+  if (!opts.wake && !opts.workstream) lines.push('- EDITS: when Tony clearly asks for a specific change to existing data ("mark the plumber task done", "rename project X to Y"), just do it and say what changed — do not ask "shall I?". If the target is ambiguous (several plausible matches, or no clear referent), ask which one first. DELETES are different: CONFIRM with Tony first and only delete after he says yes.')
   lines.push(
     "- After acting, state the result briefly (don't surface raw IDs).",
     '- If a search returns nothing, say so plainly and suggest a next step.',
