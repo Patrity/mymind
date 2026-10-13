@@ -200,6 +200,9 @@ export interface EvalCaseListItem {
   nRuns: number
   hasRubric: boolean
   updatedAt: string
+  /** Final fix wave (SEED): a built-in case Tony edited — kept as he left it, the seed no longer
+   *  updates it. */
+  differsFromBuiltin: boolean
 }
 
 export interface EvalSuiteDetail {

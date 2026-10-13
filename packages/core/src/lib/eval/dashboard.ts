@@ -9,7 +9,7 @@ import type {
   EvalRunView, EvalSuiteDetail, EvalSuiteOverview, EvalTrendPoint
 } from '../../shared/types/eval'
 import { evalResultDTO, evalRunDTO, listEvalRuns } from './runs'
-import { caseJsonOf } from './suites'
+import { caseDiffersFromBuiltin, caseJsonOf } from './suites'
 import { sameScoringSpec, scoringSpecOf } from './scoring-spec'
 import { attemptHitForbidden } from './score'
 
@@ -51,7 +51,8 @@ export async function getSuiteDetail(suiteId: string, runLimit = 50): Promise<Ev
   const rows = await db.select().from(evalCases).where(eq(evalCases.suiteId, suiteId)).orderBy(asc(evalCases.slug))
   const cases: EvalCaseListItem[] = rows.map(r => ({
     id: r.id, slug: r.slug, surface: r.surface as 'chat' | 'workstream', prompt: r.prompt, matchMode: r.matchMode as EvalMatchMode,
-    holdout: r.holdout, enabled: r.enabled, nRuns: r.nRuns, hasRubric: !!r.rubric, updatedAt: r.updatedAt.toISOString()
+    holdout: r.holdout, enabled: r.enabled, nRuns: r.nRuns, hasRubric: !!r.rubric, updatedAt: r.updatedAt.toISOString(),
+    differsFromBuiltin: caseDiffersFromBuiltin(r)
   }))
   return {
     suite: { id: s.id, name: s.name, description: s.description, updatedAt: s.updatedAt.toISOString() },

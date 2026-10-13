@@ -30,7 +30,7 @@ const { evalSuites, evalCases, evalRuns, evalResults, tasks } = await import('@m
 const { setBusNs } = await import('@mymind/core/lib/bus/ns')
 const { runAgent } = await import('@mymind/core/lib/agent/run')
 const { subscribeChanges } = await import('@mymind/core/utils/live-bus')
-const { seedSuite, importSuite, EvalSuiteJsonSchema } = await import('@mymind/core/lib/eval/suites')
+const { seedSuite, importSuite, EvalSuiteJsonSchema, updateCase: updateCaseFn, caseJsonOf: caseJsonOfFn } = await import('@mymind/core/lib/eval/suites')
 const { enqueueEvalRun, startEvalRun, _evalRunSettled, bootEval, ORPHANED_RUN_ERROR, failOrphanedEvalRuns } = await import('@mymind/core/lib/eval/runs')
 const { runAttempt, summarizeStored } = await import('@mymind/core/lib/eval/runner')
 const { scoringSpecOf } = await import('@mymind/core/lib/eval/scoring-spec')
@@ -189,7 +189,7 @@ describe('the seed suite', () => {
     expect(first.added).toBe(parsed.cases.length)
     await db().update(evalCases).set({ prompt: 'edited by Tony' }).where(sql`${evalCases.suiteId} = ${first.suiteId} and ${evalCases.slug} = 'task-create'`)
     const again = await seedSuite({ ...seedJson, name })
-    expect(again).toEqual({ suiteId: first.suiteId, added: 0 })
+    expect(again).toEqual({ suiteId: first.suiteId, added: 0, updated: 0, kept: 1 })
     expect((await caseRow(first.suiteId, 'task-create')).prompt).toBe('edited by Tony')
     await db().delete(evalCases).where(sql`${evalCases.suiteId} = ${first.suiteId} and ${evalCases.slug} = 'memory-save'`)
     expect((await seedSuite({ ...seedJson, name })).added).toBe(1)
@@ -828,5 +828,46 @@ describe('final fix wave', () => {
     try { await new Promise(r => setTimeout(r, 300)) } finally { stop() }
     expect(calls).toBeGreaterThanOrEqual(2)
     expect(maxLive).toBe(1)
+  })
+  it('SEED: a revised built-in reaches an unmodified seeded case; an edited one is kept and flagged; enabled stays Tony\'s', async () => {
+    const { getSuiteDetail } = await import('@mymind/core/lib/eval/dashboard')
+    const name = `${SUITE}-reseed`
+    const v1 = { ...seedJson, name }
+    const first = await seedSuite(v1)
+    const row = (slug: string) => caseRow(first.suiteId, slug)
+    // Tony disables one (not an edit) and edits another.
+    await db().update(evalCases).set({ enabled: false, updatedAt: new Date() }).where(sql`${evalCases.suiteId} = ${first.suiteId} and ${evalCases.slug} = 'memory-save'`)
+    await updateCaseFn((await row('task-create')).id, { ...caseJsonOfFn(await row('task-create')), prompt: 'edited by Tony' })
+    // A legacy row (seeded before builtin_hash): one never touched, one touched.
+    await db().update(evalCases).set({ builtinHash: null, updatedAt: sql`${evalCases.createdAt}` }).where(sql`${evalCases.suiteId} = ${first.suiteId} and ${evalCases.slug} = 'task-list'`)
+    await db().update(evalCases).set({ builtinHash: null, updatedAt: sql`${evalCases.createdAt} + interval '1 minute'` }).where(sql`${evalCases.suiteId} = ${first.suiteId} and ${evalCases.slug} = 'memory-recall'`)
+    // The built-in file is revised: every case's prompt gains a suffix.
+    const v2 = { ...v1, cases: v1.cases.map(c => ({ ...c, prompt: `${String(c.prompt)} (v2)` })) }
+    const r = await seedSuite(v2)
+    expect(r).toMatchObject({ suiteId: first.suiteId, added: 0, kept: 2 })
+    expect(r.updated).toBe(v1.cases.length - 2)
+    expect((await row('memory-save'))).toMatchObject({ enabled: false, prompt: expect.stringMatching(/\(v2\)$/) }) // revised, still disabled
+    expect((await row('task-create')).prompt).toBe('edited by Tony')                                          // kept
+    expect((await row('task-list')).prompt).toEqual(expect.stringMatching(/\(v2\)$/))                          // legacy, untouched → follows
+    expect((await row('memory-recall')).prompt).not.toMatch(/\(v2\)$/)                                         // legacy, touched → kept
+    const flagged = (await getSuiteDetail(first.suiteId))!.cases.filter(c => c.differsFromBuiltin).map(c => c.slug).sort()
+    expect(flagged).toEqual(['memory-recall', 'task-create'])
+    // Idempotent.
+    expect(await seedSuite(v2)).toEqual({ suiteId: first.suiteId, added: 0, updated: 0, kept: 2 })
+  })
+
+  it('Task 3 N3: approval specs must name a tool that can raise a card — on import, save and seed', async () => {
+    const bad = { name: `${SUITE}-badappr`, cases: [{ slug: 'one', prompt: 'hi', forbidden_approvals: [{ tool: 'gmial_send' }], expected_approvals: [{ tool: 'send_message' }] }] }
+    await expect(importSuite(bad)).rejects.toMatchObject({ name: 'ZodError', issues: [
+      expect.objectContaining({ path: ['cases', 0, 'expected_approvals', 0, 'tool'], message: expect.stringMatching(/"send_message" never raises an approval card/) }),
+      expect.objectContaining({ path: ['cases', 0, 'forbidden_approvals', 0, 'tool'] })
+    ] })
+    expect(await db().select({ id: evalSuites.id }).from(evalSuites).where(eq(evalSuites.name, bad.name))).toEqual([])
+    await expect(seedSuite(bad)).rejects.toMatchObject({ name: 'ZodError' })
+    const { suiteId } = await importSuite({ name: `${SUITE}-goodappr`, cases: [{ slug: 'one', prompt: 'hi', expected_approvals: [{ tool: 'exec' }], forbidden_approvals: [{ tool: 'gmail_send' }, { tool: 'web_fetch' }] }] })
+    const c = await caseRow(suiteId, 'one')
+    await expect(updateCaseFn(c.id, { ...caseJsonOfFn(c), forbidden_approvals: [{ tool: 'create_task' }] })).rejects.toMatchObject({ name: 'ZodError', issues: [expect.objectContaining({ path: ['forbidden_approvals', 0, 'tool'] })] })
+    // The built-in suite passes.
+    await expect(seedSuite({ ...seedJson, name: `${SUITE}-builtin-ok` })).resolves.toMatchObject({ added: seedJson.cases.length })
   })
 })

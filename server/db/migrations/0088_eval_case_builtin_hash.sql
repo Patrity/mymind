@@ -1,0 +1,1 @@
+ALTER TABLE "eval_cases" ADD COLUMN "builtin_hash" text;

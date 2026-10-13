@@ -308,6 +308,16 @@ async function exportJson() {
                 class="font-medium text-highlighted hover:underline"
                 :class="row.original.enabled ? '' : 'opacity-60'"
               >{{ row.original.slug }}</NuxtLink>
+              <UBadge
+                v-if="row.original.differsFromBuiltin"
+                class="ms-2"
+                color="warning"
+                variant="subtle"
+                size="xs"
+                label="differs from built-in"
+                title="You edited this built-in case, so new built-in versions no longer update it."
+                :data-testid="`eval-case-differs-${row.original.slug}`"
+              />
               <p class="max-w-lg truncate text-xs text-muted">
                 {{ row.original.prompt }}
               </p>

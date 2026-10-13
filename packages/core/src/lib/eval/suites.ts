@@ -1,6 +1,7 @@
 // Cycle 85 (spec §3.1, D5): suites as JSON — the import/export format (and the seed suite's file
 // format, Task 3). Field names follow the spec (snake_case). Import upserts the suite by name and
 // each case by (suite, slug); `replace` also deletes the suite's cases the JSON no longer has.
+import { createHash } from 'node:crypto'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { and, asc, eq, notInArray } from 'drizzle-orm'
@@ -8,6 +9,7 @@ import { useDb } from '../../db'
 import { evalCases, evalSuites, type EvalCaseRow } from '../../db/schema'
 import { publishChange } from '../../utils/live-bus'
 import { EvalCaseJsonSchema, EvalSuiteJsonSchema, type EvalCaseJson, type EvalSuiteJson } from './case-schema'
+import { assertApprovalTools } from './approval-tools'
 
 export { MATCH_MODES, EvalActionSpecSchema, EvalApprovalSpecSchema, EvalCaseJsonSchema, EvalSuiteJsonSchema, type EvalCaseJson, type EvalSuiteJson } from './case-schema'
 
@@ -27,6 +29,7 @@ export interface ImportResult { suiteId: string; created: number; updated: numbe
 /** Validates and upserts a suite. Throws a ZodError on invalid JSON (nothing is written). */
 export async function importSuite(raw: unknown, opts: { replace?: boolean } = {}): Promise<ImportResult> {
   const suite = EvalSuiteJsonSchema.parse(raw)
+  await assertApprovalTools(suite.cases)
   const r = await useDb().transaction(async (tx) => {
     const now = new Date()
     const [s] = await tx.insert(evalSuites).values({ name: suite.name, description: suite.description })
@@ -58,26 +61,70 @@ export async function importSuite(raw: unknown, opts: { replace?: boolean } = {}
   return r
 }
 
+/** Final fix wave (SEED): a case definition's hash — stable key order, `enabled` left out (Tony's
+ *  enable toggle is not an edit of the definition). */
+export function caseDefinitionHash(c: EvalCaseJson): string {
+  const { enabled: _enabled, ...def } = EvalCaseJsonSchema.parse(c)
+  const stable = (v: unknown): unknown => Array.isArray(v) ? v.map(stable)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v as object).sort().map(k => [k, stable((v as Record<string, unknown>)[k])])) : v
+  return createHash('sha256').update(JSON.stringify(stable(def))).digest('hex')
+}
+
+/** Whether a stored case was edited away from the built-in definition it was seeded from. */
+export function caseDiffersFromBuiltin(r: EvalCaseRow): boolean {
+  return !!r.builtinHash && caseDefinitionHash(caseJsonOf(r)) !== r.builtinHash
+}
+
+export interface SeedResult { suiteId: string; added: number; updated: number; kept: number }
+
 /**
- * Seeds a built-in suite (Task 3): creates the suite when it is missing and inserts each case whose
- * slug it does not have yet — idempotent, and it never overwrites a case Tony edited in the UI. A
- * deleted built-in case comes back on the next seed: retire one by disabling it. Returns the suite id
- * and how many cases were added.
+ * Seeds a built-in suite (Task 3; final fix wave SEED): creates the suite when it is missing, inserts
+ * each case whose slug it does not have yet, and UPDATES a case still exactly as it was seeded (its
+ * definition hashes to its `builtin_hash` — or, for a row seeded before the hash existed, it was never
+ * touched since its insert) when the file's definition changed — so a revised built-in reaches an
+ * already-seeded DB. A case Tony edited is never overwritten: it is `kept`, and shows as differing
+ * from the built-in. `enabled` is always Tony's. Idempotent. A deleted built-in case comes back on the
+ * next seed: retire one by disabling it.
  */
-export async function seedSuite(raw: unknown): Promise<{ suiteId: string; added: number }> {
+export async function seedSuite(raw: unknown): Promise<SeedResult> {
   const suite = EvalSuiteJsonSchema.parse(raw)
+  await assertApprovalTools(suite.cases)
   const r = await useDb().transaction(async (tx) => {
     await tx.insert(evalSuites).values({ name: suite.name, description: suite.description }).onConflictDoNothing({ target: evalSuites.name })
     const [s] = await tx.select({ id: evalSuites.id }).from(evalSuites).where(eq(evalSuites.name, suite.name))
     const suiteId = s!.id
+    const rows = new Map((await tx.select().from(evalCases).where(eq(evalCases.suiteId, suiteId))).map(x => [x.slug, x]))
     let added = 0
+    let updated = 0
+    let kept = 0
     for (const c of suite.cases) {
-      const rows = await tx.insert(evalCases).values({ suiteId, slug: c.slug, ...caseValues(c) }).onConflictDoNothing({ target: [evalCases.suiteId, evalCases.slug] }).returning({ id: evalCases.id })
-      added += rows.length
+      const fileHash = caseDefinitionHash(c)
+      const row = rows.get(c.slug)
+      if (!row) {
+        const ins = await tx.insert(evalCases).values({ suiteId, slug: c.slug, ...caseValues(c), builtinHash: fileHash })
+          .onConflictDoNothing({ target: [evalCases.suiteId, evalCases.slug] }).returning({ id: evalCases.id })
+        added += ins.length
+        continue
+      }
+      const rowHash = caseDefinitionHash(caseJsonOf(row))
+      const unmodified = row.builtinHash ? rowHash === row.builtinHash : row.updatedAt.getTime() === row.createdAt.getTime()
+      if (!unmodified) {
+        // Edited by Tony: kept. A legacy row adopts the file's hash so it shows as differing from it.
+        if (!row.builtinHash) await tx.update(evalCases).set({ builtinHash: fileHash }).where(eq(evalCases.id, row.id))
+        kept++
+        continue
+      }
+      if (rowHash === fileHash) {
+        if (row.builtinHash !== fileHash) await tx.update(evalCases).set({ builtinHash: fileHash }).where(eq(evalCases.id, row.id))
+        continue
+      }
+      const { enabled: _keepTonys, ...values } = caseValues(c)
+      await tx.update(evalCases).set({ ...values, builtinHash: fileHash, updatedAt: new Date() }).where(eq(evalCases.id, row.id))
+      updated++
     }
-    return { suiteId, added }
+    return { suiteId, added, updated, kept }
   })
-  if (r.added) publishChange({ resource: 'eval', action: 'updated', id: r.suiteId })
+  if (r.added || r.updated) publishChange({ resource: 'eval', action: 'updated', id: r.suiteId })
   return r
 }
 
@@ -87,10 +134,10 @@ export function builtinSuitesDir(): string {
 }
 
 /** Seeds every built-in suite (`evals/*.json`). Never throws: a bad file is reported and skipped. */
-export async function seedBuiltinSuites(dir = builtinSuitesDir()): Promise<Array<{ file: string; suiteId?: string; added?: number; error?: string }>> {
+export async function seedBuiltinSuites(dir = builtinSuitesDir()): Promise<Array<{ file: string; error?: string } & Partial<SeedResult>>> {
   let files: string[]
   try { files = (await readdir(dir)).filter(f => f.endsWith('.json')).sort() } catch { return [] }
-  const out: Array<{ file: string; suiteId?: string; added?: number; error?: string }> = []
+  const out: Array<{ file: string; error?: string } & Partial<SeedResult>> = []
   for (const file of files) {
     try {
       out.push({ file, ...await seedSuite(JSON.parse(await readFile(join(dir, file), 'utf8'))) })
@@ -136,6 +183,7 @@ export class EvalCaseConflictError extends Error { override name = 'EvalCaseConf
  *  JSON (nothing written) and EvalCaseConflictError on a duplicate slug; null when the case is gone. */
 export async function updateCase(caseId: string, raw: unknown): Promise<EvalCaseRow | null> {
   const c = EvalCaseJsonSchema.parse(raw)
+  await assertApprovalTools([c], [])
   try {
     const [row] = await useDb().update(evalCases).set({ slug: c.slug, ...caseValues(c), updatedAt: new Date() })
       .where(eq(evalCases.id, caseId)).returning()

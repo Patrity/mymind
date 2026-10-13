@@ -617,6 +617,13 @@
       "when": 1791875103295,
       "tag": "0087_eval_case_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1791888021695,
+      "tag": "0088_eval_case_builtin_hash",
+      "breakpoints": true
     }
   ]
 }

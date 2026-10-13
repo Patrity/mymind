@@ -49,6 +49,11 @@ export const evalCases = pgTable('eval_cases', {
   forbiddenApprovals: jsonb('forbidden_approvals').$type<EvalApprovalSpec[]>().notNull().default([]),
   /** Fix round 1 (M3): denied / errored calls satisfy expected actions only when this is set. */
   countFailed: boolean('count_failed').notNull().default(false),
+  /** Final fix wave (SEED): the hash of the built-in definition (evals/*.json, `enabled` aside) this row
+   *  was last seeded from — null for a case that is not built in (or seeded before it existed). A row
+   *  whose own definition still hashes to it is unmodified and follows the file; one that does not was
+   *  edited by Tony and is kept (and shown as differing from the built-in). */
+  builtinHash: text('builtin_hash'),
   enabled: boolean('enabled').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
