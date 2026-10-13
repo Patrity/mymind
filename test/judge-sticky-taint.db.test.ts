@@ -566,4 +566,22 @@ describe('follow-up 2 (NB2): reading a tainted child\'s output persists `child` 
     // A row-tainted child's view carries the same `child` marker.
     expect(await childrenResult([(await getWorkstream(children[0]!.id))!])).toMatchObject({ workspaceTainted: true, childTaint: ['child'] })
   }, 60_000)
+
+  it('NB5: a shared child seen through the coordinator\'s own tainted workspace taints the read but persists nothing', async () => {
+    const { childrenResult } = await import('@mymind/core/lib/agent/workstreams/coordinator')
+    const { ensureWorkstreamWorkspace } = await import('@mymind/core/lib/sandbox/store')
+    const coord = await newWorkstream('NB5 coordinator')
+    await ensureWorkstreamWorkspace(coord.id)
+    const { children } = await spawnChildren(coord.id, [{ goal: 'judge-sticky NB5 shared child', workspace: 'shared' }], { labels: [], kick: false })
+    for (const k of children) convIds.push(k.conversationId)
+    await useDb().update(workspaces).set({ tainted: true }).where(eq(workspaces.workstreamId, coord.id))
+    const kid = (await getWorkstream(children[0]!.id))!
+    expect(kid.workspaceMode).toBe('shared')
+    const r = await childrenResult([kid])
+    expect(r).toMatchObject({ workspaceTainted: true })
+    expect(r).not.toHaveProperty('childTaint')
+    // Once the shared child's own row is tainted, `child` is persisted again.
+    await addWorkstreamTaint(kid.id, ['mail'])
+    expect(await childrenResult([(await getWorkstream(kid.id))!])).toMatchObject({ childTaint: ['child'] })
+  }, 60_000)
 })

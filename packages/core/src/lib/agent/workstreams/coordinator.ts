@@ -291,10 +291,19 @@ function fitReport<T>(kids: WorkstreamRow[], full: T[], short: (i: number) => T,
  *  first when any is tainted (that taints the reading run). `o.full`: read_workstream's one child. */
 export async function childrenResult(kids: WorkstreamRow[], extra: Record<string, unknown> = {}, o: { full?: boolean } = {}): Promise<Record<string, unknown>> {
   let tainted = false
-  for (const k of kids) if (await childTainted(k)) tainted = true
-  // Follow-up 2 (NB2): reading a tainted child's output (its row OR its workspace is tainted) gives the
-  // reading run the persisted `child` source — sticky for the coordinator's life, inherited by its work.
-  const head = { ...(tainted ? { workspaceTainted: true, childTaint: ['child'] } : {}), ok: true, note: CHILD_UNTRUSTED_NOTE, ...extra }
+  let persist = false
+  for (const k of kids) {
+    if (!(await childTainted(k))) continue
+    tainted = true
+    // Final re-review 3 (NB5): a `shared` child's workspace IS the coordinator's — its taint is derived
+    // live each segment, so only the child's own row (or its own workspace) may persist `child`.
+    // Otherwise a re-enabled coordinator workspace would be re-tainted from the row forever.
+    if (k.tainted || k.workspaceMode === 'own') persist = true
+  }
+  // Follow-up 2 (NB2): reading a tainted child's output (its row OR its own workspace is tainted) gives
+  // the reading run the persisted `child` source — sticky for the coordinator's life, inherited by its
+  // work. It REPLACES the child's own sources (the judge sees "child", not the child's mail/flagged).
+  const head = { ...(tainted ? { workspaceTainted: true, ...(persist ? { childTaint: ['child'] } : {}) } : {}), ok: true, note: CHILD_UNTRUSTED_NOTE, ...extra }
   const views: Array<ChildView | Record<string, unknown>> = kids.map(k => childView(k, false, o))
   const children = o.full ? views : fitReport(kids, views,
     i => ({ id: kids[i]!.id, goal: clipGoal(kids[i]!.goal), state: kids[i]!.state, note: 'Not shown here (the result is too long) — read_workstream for the full text.' }),
