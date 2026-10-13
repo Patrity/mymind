@@ -237,7 +237,7 @@ describe.runIf(darwin)('fix round 1: what a confined command can no longer reach
     await writeFile(lookup, ['import ctypes, sys', 'lib = ctypes.CDLL("/usr/lib/libSystem.dylib")', 'bp = ctypes.c_uint.in_dll(lib, "bootstrap_port")',
       'for n in sys.argv[1:]:', '    port = ctypes.c_uint(0)', '    print(n, lib.bootstrap_look_up(bp, n.encode(), ctypes.byref(port)))'].join('\n'))
     const names = ['com.apple.coreservices.launchservicesd', 'com.apple.dnssd.service', 'com.apple.nsurlsessiond', 'com.apple.pasteboard.1', 'com.apple.SecurityServer',
-      'com.apple.securityd.xpc', 'com.apple.imagent.desktop.auth', 'com.apple.imtransferservices.IMTransferAgent', 'com.apple.sharingd', 'com.apple.shortcuts']
+      'com.apple.securityd.xpc', 'com.apple.imagent.desktop.auth', 'com.apple.imtransferservices.IMTransferAgent', 'com.apple.sharingd', 'com.apple.shortcuts.systemshortcutservice.runner', 'com.apple.siriactionsd.xpc']
     const parse = (out: string) => Object.fromEntries(out.trim().split('\n').map(l => l.split(' ')).map(([n, r]) => [n, Number(r)]))
     const clean = parse((await run(`python3 -I ${lookup} ${names.join(' ')}`, false)).stdout)
     const present = names.filter(n => clean[n] === 0) // a service this Mac does not run proves nothing
