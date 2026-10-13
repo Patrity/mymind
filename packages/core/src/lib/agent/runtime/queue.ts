@@ -289,14 +289,6 @@ async function execute(run: AgentRun, runFn: RunFn, rekick: boolean, wallClockMs
   }
 }
 
-/** Test seam (cycle 81 worker child fixtures): execute a run the caller has ALREADY claimed for
- *  this boot (status 'running', owner BOOT_ID), through the same path a pump uses — so abort's
- *  settle-wait, finishRun and steer requeue behave as in the worker — without pumping the shared
- *  dev DB. Resolves when the run has fully unwound. */
-export function _executeClaimedForTests(run: AgentRun, runFn: RunFn): Promise<void> {
-  return execute(run, runFn, false)
-}
-
 /** Cycle 85: the eval runner (lib/eval/runner.ts) drives an attempt's runs itself, inside its
  *  world — never the process pump or the tick. It claims each run with claimNextRun and executes it
  *  here, through the same path a pump uses (finishRun, the workstream successor, steer requeue,
@@ -304,6 +296,12 @@ export function _executeClaimedForTests(run: AgentRun, runFn: RunFn): Promise<vo
 export function executeClaimedRun(run: AgentRun, runFn: RunFn): Promise<void> {
   return execute(run, runFn, false)
 }
+
+/** Test seam (cycle 81 worker child fixtures): execute a run the caller has ALREADY claimed for
+ *  this boot (status 'running', owner BOOT_ID), through the same path a pump uses — so abort's
+ *  settle-wait, finishRun and steer requeue behave as in the worker — without pumping the shared
+ *  dev DB. Resolves when the run has fully unwound. */
+export const _executeClaimedForTests = executeClaimedRun
 
 /** Claim and START everything currently runnable; returns how many were started. */
 /** `rekick: false` + `onlyConversations` is the test seam: the dev DB is shared, and an unscoped

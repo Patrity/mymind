@@ -73,7 +73,7 @@ export interface CommandPayloads {
    *  snapshot after the channel config changed. */
   'imessage-health': { action: 'check' | 'reset' }
   /** Cycle 85: start a queued eval run (lib/eval/runs.ts) — the worker job `eval:run-suite`. */
-  'eval-run': { runId: string }
+  'eval:run-suite': { runId: string }
 }
 export type CommandType = keyof CommandPayloads
 
@@ -93,7 +93,7 @@ export interface CommandResults {
   'workspace-kill-shell': { shellId: string; state: string; alreadyEnded: boolean }
   'imessage-health': ImessageHealth
   /** False when the run was not queued any more (already claimed, cancelled or gone). */
-  'eval-run': { started: boolean }
+  'eval:run-suite': { started: boolean }
 }
 
 /** What the worker publishes with every heartbeat (worker_heartbeat.status). */

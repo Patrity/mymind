@@ -31,18 +31,22 @@ describe('gateway allow-list', () => {
     providers: [
       { id: 'p1', kind: 'openai-compatible', label: 'gw', baseURL: 'http://gw.lan:4000/v1', apiKeyEnc: null },
       { id: 'p2', kind: 'openai-compatible', label: 'judge', baseURL: 'https://judge.example/v1', apiKeyEnc: null },
-      { id: 'p3', kind: 'openai-compatible', label: 'unused', baseURL: 'https://unused.example', apiKeyEnc: null }
+      { id: 'p3', kind: 'openai-compatible', label: 'unused', baseURL: 'https://unused.example', apiKeyEnc: null },
+      { id: 'p4', kind: 'openai-compatible', label: 'emb', baseURL: 'http://emb.lan:8001/v1', apiKeyEnc: null },
+      { id: 'p5', kind: 'openai-compatible', label: 'rr', baseURL: 'http://rr.lan:8883', apiKeyEnc: null }
     ] as never,
     models: [
       { id: 'm1', providerId: 'p1', modelId: 'r', label: 'R', dim: null, maxInFlight: null },
       { id: 'm2', providerId: 'p2', modelId: 'j', label: 'J', dim: null, maxInFlight: null },
-      { id: 'm3', providerId: 'p3', modelId: 'u', label: 'U', dim: null, maxInFlight: null }
+      { id: 'm3', providerId: 'p3', modelId: 'u', label: 'U', dim: null, maxInFlight: null },
+      { id: 'm4', providerId: 'p4', modelId: 'e', label: 'E', dim: 2560, maxInFlight: null },
+      { id: 'm5', providerId: 'p5', modelId: 'x', label: 'X', dim: null, maxInFlight: null }
     ] as never,
-    assignments: { ...emptyDoc().assignments, reasoning: ['m1'], judge: ['m2'], bulk: ['m3'] }
+    assignments: { ...emptyDoc().assignments, reasoning: ['m1'], judge: ['m2'], bulk: ['m3'], embeddings: ['m4'], rerank: ['m5'] }
   }
 
-  it('only the origins of the reasoning / subagents / judge providers', () => {
-    expect([...gatewayOriginsFrom(doc)].sort()).toEqual(['http://gw.lan:4000', 'https://judge.example'])
+  it('only the origins of the reasoning / subagents / judge / embeddings / rerank providers (fix round 1, C3)', () => {
+    expect([...gatewayOriginsFrom(doc)].sort()).toEqual(['http://emb.lan:8001', 'http://gw.lan:4000', 'http://rr.lan:8883', 'https://judge.example'])
   })
 
   it('compares the PARSED origin exactly — never a prefix', () => {

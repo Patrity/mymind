@@ -22,6 +22,8 @@ export const EvalActionSpecSchema = z.object({
   args_pattern: z.record(z.string(), regexString).optional()
 })
 
+export const EvalApprovalSpecSchema = z.object({ tool: z.string().min(1) })
+
 export const EvalCaseJsonSchema = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/, 'lower-case letters, digits and dashes'),
   prompt: z.string().min(1),
@@ -35,7 +37,16 @@ export const EvalCaseJsonSchema = z.object({
   n_runs: z.number().int().min(1).max(20).default(3),
   max_steps: z.number().int().min(1).max(200).default(40),
   holdout: z.boolean().default(false),
-  enabled: z.boolean().default(true)
+  enabled: z.boolean().default(true),
+  /** Fix round 1 (S1): a matched call's result must carry a REAL output-guard flag (not the
+   *  fail-closed `unverified`); and/or the run must end tainted. */
+  expect_flagged: z.boolean().default(false),
+  expect_tainted: z.boolean().default(false),
+  /** Fix round 1 (S2): approval cards the scripted approver must / must not have been asked for. */
+  expected_approvals: z.array(EvalApprovalSpecSchema).default([]),
+  forbidden_approvals: z.array(EvalApprovalSpecSchema).default([]),
+  /** Fix round 1 (M3): denied / errored calls satisfy expected actions only with this set. */
+  count_failed: z.boolean().default(false)
 })
 
 export const EvalSuiteJsonSchema = z.object({
@@ -52,6 +63,17 @@ export const EvalSuiteJsonSchema = z.object({
 })
 
 export type EvalCaseJson = z.infer<typeof EvalCaseJsonSchema>
+
+/** A parsed case's column values (everything but suite and slug). */
+export function caseValues(c: EvalCaseJson) {
+  return {
+    prompt: c.prompt, surface: c.surface, setup: c.setup as Record<string, unknown>,
+    expectedActions: c.expected_actions, forbiddenActions: c.forbidden_actions, expectedContent: c.expected_content,
+    matchMode: c.match_mode, rubric: c.rubric, nRuns: c.n_runs, maxSteps: c.max_steps, holdout: c.holdout, enabled: c.enabled,
+    expectFlagged: c.expect_flagged, expectTainted: c.expect_tainted, expectedApprovals: c.expected_approvals,
+    forbiddenApprovals: c.forbidden_approvals, countFailed: c.count_failed
+  }
+}
 export type EvalSuiteJson = z.infer<typeof EvalSuiteJsonSchema>
 
 export interface ImportResult { suiteId: string; created: number; updated: number; removed: number }
@@ -69,12 +91,7 @@ export async function importSuite(raw: unknown, opts: { replace?: boolean } = {}
     let created = 0
     let updated = 0
     for (const c of suite.cases) {
-      const values = {
-        prompt: c.prompt, surface: c.surface, setup: c.setup as Record<string, unknown>,
-        expectedActions: c.expected_actions, forbiddenActions: c.forbidden_actions, expectedContent: c.expected_content,
-        matchMode: c.match_mode, rubric: c.rubric, nRuns: c.n_runs, maxSteps: c.max_steps, holdout: c.holdout, enabled: c.enabled,
-        updatedAt: now
-      }
+      const values = { ...caseValues(c), updatedAt: now }
       await tx.insert(evalCases).values({ suiteId, slug: c.slug, ...values })
         .onConflictDoUpdate({ target: [evalCases.suiteId, evalCases.slug], set: values })
       if (existing.has(c.slug)) updated++
@@ -109,11 +126,7 @@ export async function seedSuite(raw: unknown): Promise<{ suiteId: string; added:
     const suiteId = s!.id
     let added = 0
     for (const c of suite.cases) {
-      const rows = await tx.insert(evalCases).values({
-        suiteId, slug: c.slug, prompt: c.prompt, surface: c.surface, setup: c.setup as Record<string, unknown>,
-        expectedActions: c.expected_actions, forbiddenActions: c.forbidden_actions, expectedContent: c.expected_content,
-        matchMode: c.match_mode, rubric: c.rubric, nRuns: c.n_runs, maxSteps: c.max_steps, holdout: c.holdout, enabled: c.enabled
-      }).onConflictDoNothing({ target: [evalCases.suiteId, evalCases.slug] }).returning({ id: evalCases.id })
+      const rows = await tx.insert(evalCases).values({ suiteId, slug: c.slug, ...caseValues(c) }).onConflictDoNothing({ target: [evalCases.suiteId, evalCases.slug] }).returning({ id: evalCases.id })
       added += rows.length
     }
     return { suiteId, added }
@@ -157,7 +170,9 @@ export async function exportSuite(suiteId: string): Promise<EvalSuiteJson | null
     cases: rows.map(r => EvalCaseJsonSchema.parse({
       slug: r.slug, prompt: r.prompt, surface: r.surface, setup: r.setup,
       expected_actions: r.expectedActions, forbidden_actions: r.forbiddenActions, expected_content: r.expectedContent,
-      match_mode: r.matchMode, rubric: r.rubric, n_runs: r.nRuns, max_steps: r.maxSteps, holdout: r.holdout, enabled: r.enabled
+      match_mode: r.matchMode, rubric: r.rubric, n_runs: r.nRuns, max_steps: r.maxSteps, holdout: r.holdout, enabled: r.enabled,
+      expect_flagged: r.expectFlagged, expect_tainted: r.expectTainted, expected_approvals: r.expectedApprovals,
+      forbidden_approvals: r.forbiddenApprovals, count_failed: r.countFailed
     }))
   }
 }

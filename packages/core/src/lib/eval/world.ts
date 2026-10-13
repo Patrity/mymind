@@ -290,6 +290,8 @@ export interface EvalWorldOptions {
   embed?: (texts: string[]) => Promise<number[][]>
   /** Clock for Gmail's relative queries (newer_than:). */
   now?: () => number
+  /** Fix round 1 (M2): the eval share for judge / subagent model calls (EvalScope.throttle). */
+  throttle?: EvalScope['throttle']
 }
 
 export interface EvalWorld {
@@ -385,6 +387,7 @@ export function buildEvalWorld(args: { runId: string; schema: string; pool: Pool
     allowSocket: (host, port) => port === null ? sockets.has(`unix:${host}`) : sockets.has(`${host.toLowerCase()}:${port}`),
     permitHost: (host, port) => { if (host) { hosts.add(host.toLowerCase()); sockets.add(`${host.toLowerCase()}:${port}`) } },
     onBlockedNetwork: (url) => { blockedNetwork.push(url) },
+    ...(options.throttle ? { throttle: options.throttle } : {}),
     scriptedApproval: (req) => {
       const a = setup.approve ?? 'none'
       const approved = a === 'all' || (Array.isArray(a) && a.includes(req.tool))

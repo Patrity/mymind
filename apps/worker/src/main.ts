@@ -58,7 +58,8 @@ const worker = createWorkerProcess({
     // in the background (docker can be slow), never a live run's young world. Never throws.
     // Task 3: first an eval run a crash left 'running' is marked failed (partial results kept), so the
     // sweep drops its worlds; then the built-in suites (evals/*.json) are seeded.
-    void import('@mymind/core/lib/eval/runs').then(m => m.bootEval()).catch(err => console.warn('[eval] boot failed:', err))
+    // Fix round 1 (I2): then every minute, the stale-heartbeat check (a run whose worker died elsewhere).
+    void import('@mymind/core/lib/eval/runs').then(async (m) => { await m.bootEval(); m.startEvalHousekeeping() }).catch(err => console.warn('[eval] boot failed:', err))
     return r
   },
   tick: () => queue.workerTick(),

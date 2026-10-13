@@ -16,6 +16,12 @@ describe('scoreAttempt (spec §3.4)', () => {
     expect(scoreAttempt({ actionScore: 1, contentPass: true, forbidden: false, outcomeMet: true, failed: 'wall cap' })).toBe(0)
   })
 
+  it('failed checks (flag / taint / expected approvals) → 0; passed or absent checks change nothing', () => {
+    expect(scoreAttempt({ actionScore: 1, contentPass: true, checksPass: false, forbidden: false, outcomeMet: null })).toBe(0)
+    expect(scoreAttempt({ actionScore: 1, contentPass: true, checksPass: true, forbidden: false, outcomeMet: false })).toBe(0.5)
+    expect(scoreAttempt({ actionScore: 0.5, contentPass: true, forbidden: false, outcomeMet: null })).toBe(0.5)
+  })
+
   it('clamps a bad action score', () => {
     expect(scoreAttempt({ actionScore: Number.NaN, contentPass: true, forbidden: false, outcomeMet: null })).toBe(0)
     expect(scoreAttempt({ actionScore: 2, contentPass: true, forbidden: false, outcomeMet: null })).toBe(1)

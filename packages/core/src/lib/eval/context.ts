@@ -67,6 +67,10 @@ export interface EvalScope {
    *  world (runtime/approvals.ts approvalFor) instead of Tony, a channel or the judge, and records the
    *  card as an `approval.request` capture. `setup.approve`: 'all' | 'none' (default) | tool names. */
   scriptedApproval?(req: { tool: string; title?: string }): boolean
+  /** Fix round 1 (M2): the eval share for model calls an eval run makes OUTSIDE its own turn/segment
+   *  slot — judge + guard + outcome-verifier calls (`judge`) and research subagents (`subagent`). The
+   *  runner holds each class to half its pool (lib/eval/pool.ts). Resolves to the slot's release. */
+  throttle?(kind: 'judge' | 'subagent', signal?: AbortSignal): Promise<() => void>
 }
 
 const als = new AsyncLocalStorage<EvalScope>()

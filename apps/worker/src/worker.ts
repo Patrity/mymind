@@ -48,7 +48,7 @@ export interface WorkerDeps {
   /** Cycle 82 Task 3: Tony's Kill on the Shells tab. */
   workspaceKillShell(p: CommandPayloads['workspace-kill-shell']): Promise<CommandResults['workspace-kill-shell']>
   /** Cycle 85: claim a queued eval run and start it in the background (lib/eval/runs.ts). */
-  evalRun(p: CommandPayloads['eval-run']): Promise<CommandResults['eval-run']>
+  evalRun(p: CommandPayloads['eval:run-suite']): Promise<CommandResults['eval:run-suite']>
   startSchedule(): () => void
   startRecorderFlush(): () => void
   /** Cycle 82: sandbox housekeeping — boot reconcile, then idle-stop + quota every minute and the
@@ -127,8 +127,8 @@ export function commandHandlers(deps: CommandDeps): CommandHandlers {
       if (!p || !isUuid(p.workspaceId) || !isUuid(p.shellId)) throw new Error('workspace-kill-shell: bad payload')
       return deps.workspaceKillShell({ workspaceId: p.workspaceId, shellId: p.shellId })
     },
-    'eval-run': async (p) => {
-      if (!p || !isUuid(p.runId)) throw new Error('eval-run: bad payload')
+    'eval:run-suite': async (p) => {
+      if (!p || !isUuid(p.runId)) throw new Error('eval:run-suite: bad payload')
       return deps.evalRun({ runId: p.runId })
     }
   }

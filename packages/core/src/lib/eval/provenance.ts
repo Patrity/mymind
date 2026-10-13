@@ -8,8 +8,10 @@
 //                The run's prompt_hash is the sha256 of the per-case hashes (sorted by slug).
 //   tools hash:  sha256 of every tool name + description of the chat and workstream registries.
 //   model label: the reasoning chain's head (or the run's override), as the registry labels it.
-//   gateway:     the origins of the providers the run's models talk to — the ONLY network an eval
-//                world may reach (compared as exact parsed origins).
+//   gateway:     the origins of the providers of every registry usage an eval run reaches —
+//                reasoning, judge, subagents, embeddings and rerank (fix round 1, C3) — the ONLY
+//                network an eval world may reach (compared as exact parsed origins). Embeddings are
+//                local inside a world today (world.ts fakeEmbed), so that origin is allowed but unused.
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { loadConfig } from '../ai/registry/store'
@@ -92,13 +94,16 @@ export async function modelLabel(override?: string | null): Promise<string | nul
   return m ? m.label : null
 }
 
-/** Exact origins (scheme://host:port) of every provider the run's models use: reasoning, subagents
- *  (children), judge (the guard, the outcome judge) and the override's provider. */
+/** Exact origins (scheme://host:port) of every provider a run uses: reasoning, subagents (children),
+ *  judge (the guard, the outcome judge), embeddings, rerank, and the override's provider. Nothing else
+ *  (bulk, vision, stt, tts, jev, image endpoints stay blocked). */
 export function gatewayOriginsFrom(doc: AiConfigDoc, override?: string | null): Set<string> {
   const models = [
     ...safe(() => resolveChainFrom(doc, 'reasoning')),
     ...safe(() => resolveSubagentChainFrom(doc, null)),
-    ...safe(() => resolveJudgeChainFrom(doc))
+    ...safe(() => resolveJudgeChainFrom(doc)),
+    ...safe(() => resolveChainFrom(doc, 'embeddings')),
+    ...safe(() => resolveChainFrom(doc, 'rerank'))
   ]
   const urls = models.map(m => m.baseURL)
   if (override) {

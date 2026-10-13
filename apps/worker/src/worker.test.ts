@@ -198,14 +198,14 @@ describe('worker boot', () => {
     expect(deps.workspaceKillShell).toHaveBeenCalledTimes(1)
   })
 
-  it('eval-run (cycle 85) reaches evalRun with the run id and refuses a bad one', async () => {
+  it('eval:run-suite (cycle 85) reaches evalRun with the run id and refuses a bad one', async () => {
     const { deps } = fakeDeps()
     const h = commandHandlers(deps)
     const id = '11111111-2222-4333-8444-555555555555'
-    expect(await h['eval-run']({ runId: id })).toEqual({ started: true })
+    expect(await h['eval:run-suite']({ runId: id })).toEqual({ started: true })
     expect(deps.evalRun).toHaveBeenCalledWith({ runId: id })
-    await expect(h['eval-run']({ runId: '../x' })).rejects.toThrow(/bad payload/)
-    await expect(h['eval-run'](null as never)).rejects.toThrow(/bad payload/)
+    await expect(h['eval:run-suite']({ runId: '../x' })).rejects.toThrow(/bad payload/)
+    await expect(h['eval:run-suite'](null as never)).rejects.toThrow(/bad payload/)
     expect(deps.evalRun).toHaveBeenCalledTimes(1)
   })
 

@@ -1,22 +1,27 @@
 // Cycle 85 (spec §3.3, D8): an eval run's lifecycle — the worker job `eval:run-suite`.
 //
 //   enqueueEvalRun (the web / `pnpm eval`)  → an eval_runs row 'queued' with its params, then the
-//                                             `eval-run` worker command (fire-and-forget; the worker's
+//                                             `eval:run-suite` worker command (fire-and-forget; the worker's
 //                                             command poll picks it up if it was down).
 //   startEvalRun (the worker's handler)     → claims the row (queued → running, owner = this boot) and
 //                                             runs it in the background (runner.ts executeEvalRun);
 //                                             returns at once (the bus handler contract).
 //   cancelEvalRun                           → 'cancelled'; the runner sees it at its next heartbeat.
-//   bootEval (worker boot)                  → a 'running' run whose heartbeat is stale died with a
-//                                             crashed / restarted worker: it is marked 'failed' with
-//                                             its partial results kept, THEN the world sweep drops its
-//                                             tenants (cleanup.ts drops the worlds of finished runs);
-//                                             then the built-in suites are seeded.
+//   bootEval (worker boot)                  → a 'running' run another boot owned died with a crashed /
+//                                             restarted worker: it is marked 'failed' with its partial
+//                                             results kept and its worlds dropped under their locks.
+//                                             In prod (AGENT_RUNTIME_EXCLUSIVE — one worker) EVERY
+//                                             running run of another boot is failed at once, so a
+//                                             restart within RestartSec (5 s, heartbeat still fresh)
+//                                             is caught (fix round 1, I2); on a shared dev DB only a
+//                                             stale heartbeat counts. Then the sweep, then seeding.
+//   startEvalHousekeeping (worker, 1/min)   → the same check for stale heartbeats (> 2 min), so a run
+//                                             whose worker died without a reboot here still ends.
 import { and, desc, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { evalCases, evalResults, evalRuns, evalSuites, type EvalResultRow, type EvalRunRow } from '../../db/schema'
 import { publishChange } from '../../utils/live-bus'
-import { BOOT_ID } from '../agent/runtime/runs'
+import { BOOT_ID, runtimeExclusive } from '../agent/runtime/runs'
 import type { EvalAttemptOutcome, EvalResultDTO, EvalRunDTO, EvalRunParams, EvalRunStatus, EvalRunSummary, EvalToolLogEntry } from '../../shared/types/eval'
 import { EVAL_RUN_STALE_MS, executeEvalRun, summarizeStored, type EvalRunnerOptions } from './runner'
 
@@ -57,9 +62,9 @@ export async function enqueueEvalRun(suiteId: string, params: EvalRunParams = {}
   publishChange({ resource: 'eval', action: 'created', id: row!.id })
   const send = deps.send ?? (async (runId: string) => {
     const { sendCommand } = await import('../bus/commands')
-    return sendCommand('eval-run', { runId })
+    return sendCommand('eval:run-suite', { runId })
   })
-  await send(row!.id).catch(err => console.error('[eval] sending eval-run failed (the worker poll retries it):', err))
+  await send(row!.id).catch(err => console.error('[eval] sending eval:run-suite failed (the worker poll retries it):', err))
   return row!
 }
 
@@ -74,7 +79,7 @@ export async function claimEvalRun(runId: string): Promise<EvalRunRow | null> {
 
 const running = new Map<string, Promise<unknown>>()
 
-/** The worker's `eval-run` handler: claim, then run in the background. */
+/** The worker's `eval:run-suite` handler: claim, then run in the background. */
 export async function startEvalRun(runId: string, opts: EvalRunnerOptions = {}): Promise<{ started: boolean }> {
   const row = await claimEvalRun(runId)
   if (!row) return { started: false }
@@ -97,29 +102,46 @@ export async function cancelEvalRun(runId: string): Promise<boolean> {
 
 export const ORPHANED_RUN_ERROR = 'the worker stopped mid-run (a crash or a restart) — partial results kept'
 
-/** Marks running runs whose heartbeat is stale (and not this boot's) failed, summaries rebuilt from
- *  the results they wrote. Returns their ids. */
-export async function failOrphanedEvalRuns(o: { staleMs?: number } = {}): Promise<string[]> {
+/** Marks running runs of another boot failed — those whose heartbeat is stale, or (`anyOtherBoot`,
+ *  the exclusive prod worker at boot) every one — with summaries rebuilt from the results they wrote,
+ *  then drops their worlds under the tenant locks (a world another process still holds is left).
+ *  Returns their ids. */
+export async function failOrphanedEvalRuns(o: { staleMs?: number; anyOtherBoot?: boolean } = {}): Promise<string[]> {
   const cutoff = new Date(Date.now() - (o.staleMs ?? EVAL_RUN_STALE_MS))
+  const stale = o.anyOtherBoot ? sql`true` : or(isNull(evalRuns.aliveAt), lt(evalRuns.aliveAt, cutoff))
   const rows = await useDb().select({ id: evalRuns.id, startedAt: evalRuns.startedAt, aliveAt: evalRuns.aliveAt }).from(evalRuns)
-    .where(and(eq(evalRuns.status, 'running'), or(isNull(evalRuns.owner), ne(evalRuns.owner, BOOT_ID)), or(isNull(evalRuns.aliveAt), lt(evalRuns.aliveAt, cutoff))))
+    .where(and(eq(evalRuns.status, 'running'), or(isNull(evalRuns.owner), ne(evalRuns.owner, BOOT_ID)), stale))
   const out: string[] = []
   for (const r of rows) {
     const durationMs = Math.max(0, (r.aliveAt ?? r.startedAt).getTime() - r.startedAt.getTime())
     const prev = (await useDb().select({ summary: evalRuns.summary }).from(evalRuns).where(eq(evalRuns.id, r.id)))[0]?.summary as EvalRunSummary | null
     const summary = await summarizeStored(r.id, { durationMs, ...(prev?.planned !== undefined ? { planned: prev.planned } : {}), ...(prev?.promptHashes ? { promptHashes: prev.promptHashes } : {}) })
     const done = await useDb().update(evalRuns).set({ status: 'failed', error: ORPHANED_RUN_ERROR, finishedAt: new Date(), summary: summary as unknown as Record<string, unknown> })
-      .where(and(eq(evalRuns.id, r.id), eq(evalRuns.status, 'running'), or(isNull(evalRuns.aliveAt), lt(evalRuns.aliveAt, cutoff)))).returning({ id: evalRuns.id })
+      .where(and(eq(evalRuns.id, r.id), eq(evalRuns.status, 'running'), or(isNull(evalRuns.owner), ne(evalRuns.owner, BOOT_ID)), stale)).returning({ id: evalRuns.id })
     if (done.length) { out.push(r.id); publishChange({ resource: 'eval', action: 'updated', id: r.id }) }
   }
+  // Its worlds: each dropped only through its lock (world.ts cleanupEvalRun → dropWorldIfFree).
+  const { cleanupEvalRun } = await import('./world')
+  for (const id of out) await cleanupEvalRun(id).catch(err => console.warn(`[eval] cleanup of orphaned run ${id} failed:`, (err as Error).message))
   return out
+}
+
+/** Worker (fix round 1, I2): the stale-heartbeat check every minute. Returns the stop. Never throws. */
+export function startEvalHousekeeping(o: { everyMs?: number; staleMs?: number } = {}): () => void {
+  const timer = setInterval(() => {
+    failOrphanedEvalRuns({ staleMs: o.staleMs })
+      .then(ids => { if (ids.length) console.info(`[eval] marked ${ids.length} orphaned eval run(s) failed`) })
+      .catch(err => console.warn('[eval] orphan check failed:', (err as Error).message))
+  }, o.everyMs ?? 60_000)
+  timer.unref?.()
+  return () => clearInterval(timer)
 }
 
 /** Worker boot: orphaned runs failed, then their worlds swept, then the built-in suites seeded.
  *  Never throws. */
-export async function bootEval(o: { staleMs?: number; sweep?: () => Promise<unknown>; seed?: () => Promise<unknown> } = {}): Promise<{ failed: string[] }> {
+export async function bootEval(o: { staleMs?: number; exclusive?: boolean; sweep?: () => Promise<unknown>; seed?: () => Promise<unknown> } = {}): Promise<{ failed: string[] }> {
   let failed: string[] = []
-  try { failed = await failOrphanedEvalRuns(o) } catch (err) { console.warn('[eval] failing orphaned runs failed:', (err as Error).message) }
+  try { failed = await failOrphanedEvalRuns({ staleMs: o.staleMs, anyOtherBoot: o.exclusive ?? runtimeExclusive() }) } catch (err) { console.warn('[eval] failing orphaned runs failed:', (err as Error).message) }
   try { await (o.sweep ?? (async () => (await import('./world')).bootSweepEval()))() } catch (err) { console.warn('[eval] boot sweep failed:', (err as Error).message) }
   try { await (o.seed ?? (async () => (await import('./suites')).seedBuiltinSuites()))() } catch (err) { console.warn('[eval] seeding built-in suites failed:', (err as Error).message) }
   if (failed.length) console.info(`[eval] marked ${failed.length} orphaned eval run(s) failed`)

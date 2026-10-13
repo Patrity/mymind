@@ -4,8 +4,9 @@
 // A call matches an action spec `{ tool, args?, args_pattern? }` when:
 //   - the tool names are equal;
 //   - every key of `args` is present in the call's args with the SAME STRING VALUE (extra call args
-//     are ignored). Values compare as strings: a string as itself, anything else as its JSON — so
-//     `{ n: 3 }` matches a call's `3` and `"3"`, and an object compares by its JSON;
+//     are ignored). Values compare as strings: a string as itself, anything else as its CANONICAL
+//     JSON (object keys sorted, recursively — fix round 1 M4) — so `{ n: 3 }` matches a call's `3`
+//     and `"3"`, and `{a:1,b:2}` equals `{b:2,a:1}`;
 //   - every key of `args_pattern` is present and its regex finds a match (re.search, not a full
 //     match; case-sensitive) in the call's value, stringified the same way — so a pattern can test a
 //     number, a boolean or an array/object's JSON;
@@ -21,6 +22,9 @@
 //                              satisfying at most ONE expected action (maximum bipartite matching).
 //   contains_any             — 1 when at least one expected action appears, else 0.
 // No expected actions: 1 (exact: 1 only when there were no calls either).
+// Fix round 1 (M3): a call that was DENIED or ERRORED never satisfies an expected action (a
+// create_task that failed validation did not create anything) unless the case sets `count_failed`.
+// Forbidden checks count every call: attempting a forbidden action is the failure.
 //
 // Forbidden actions (spec §3.4): any call matching any forbidden spec is a hit → the attempt scores 0.
 import type { EvalActionSpec } from '../../db/schema/eval'
@@ -31,6 +35,8 @@ export interface EvalToolCall {
   tool: string
   /** The call's arguments as the model sent them (`{ _raw }` when they were not a JSON object). */
   args: Record<string, unknown>
+  /** How the call ended (the tool log's status); absent = ok. */
+  status?: 'ok' | 'error' | 'denied' | 'pending'
 }
 
 export interface MatchResult {
@@ -42,12 +48,24 @@ export interface MatchResult {
   extra: number[]
 }
 
-/** A value as the matcher compares it: a string as itself, anything else as its JSON. */
+/** JSON with object keys sorted at every level — the same value always serialises the same way. */
+export function canonicalJson(v: unknown): string {
+  const norm = (x: unknown): unknown => Array.isArray(x)
+    ? x.map(norm)
+    : x && typeof x === 'object'
+      ? Object.fromEntries(Object.keys(x as object).sort().map(k => [k, norm((x as Record<string, unknown>)[k])]))
+      : x
+  return JSON.stringify(norm(v)) ?? String(v)
+}
+
+/** A value as the matcher compares it: a string as itself, anything else as its canonical JSON. */
 export function argString(v: unknown): string {
   if (typeof v === 'string') return v
   if (v === undefined) return ''
-  try { return JSON.stringify(v) ?? String(v) } catch { return String(v) }
+  try { return canonicalJson(v) } catch { return String(v) }
 }
+
+const failed = (c: EvalToolCall) => c.status === 'error' || c.status === 'denied'
 
 function isRawOnly(args: Record<string, unknown>): boolean {
   const keys = Object.keys(args)
@@ -83,9 +101,9 @@ export function actionMatches(spec: EvalActionSpec, call: EvalToolCall): boolean
   return compile(spec)(call)
 }
 
-export function matchActions(expected: EvalActionSpec[], calls: EvalToolCall[], mode: MatchMode = 'ordered_subset'): MatchResult {
+export function matchActions(expected: EvalActionSpec[], calls: EvalToolCall[], mode: MatchMode = 'ordered_subset', o: { countFailed?: boolean } = {}): MatchResult {
   const preds = expected.map(compile)
-  const m = (e: number, c: number) => preds[e]!(calls[c]!)
+  const m = (e: number, c: number) => (o.countFailed || !failed(calls[c]!)) && preds[e]!(calls[c]!)
   let matched: Array<{ expected: number; call: number }> = []
   if (mode === 'exact') {
     for (let i = 0; i < Math.min(expected.length, calls.length); i++) if (m(i, i)) matched.push({ expected: i, call: i })
@@ -157,6 +175,15 @@ export function forbiddenHits(forbidden: EvalActionSpec[], calls: EvalToolCall[]
     calls.forEach((call, c) => { if (p(call)) out.push({ forbidden: f, call: c }) })
   })
   return out
+}
+
+/** Fix round 1 (S2): approval cards — `expected` tools that were never asked for, and `forbidden`
+ *  tools that were (indexes into `asked`, the scripted approver's log in order). */
+export function approvalChecks(expected: Array<{ tool: string }>, forbidden: Array<{ tool: string }>, asked: Array<{ tool: string }>): { missing: string[]; forbidden: Array<{ forbidden: number; approval: number }> } {
+  const missing = expected.filter(e => !asked.some(a => a.tool === e.tool)).map(e => e.tool)
+  const hits: Array<{ forbidden: number; approval: number }> = []
+  forbidden.forEach((f, i) => asked.forEach((a, j) => { if (a.tool === f.tool) hits.push({ forbidden: i, approval: j }) }))
+  return { missing, forbidden: hits }
 }
 
 /** expected_content: every regex (case-insensitive) must find a match in the final text. */

@@ -1,9 +1,10 @@
-// Cycle 85 (spec §3.3): `pnpm eval <suite> [--case <slug>]… [--n <runs>] [--model <modelDefId>] [--no-wait] [--local]`
+// Cycle 85 (spec §3.3): `pnpm eval <suite> [--case <slug>]… [--n <runs>] [--model <modelDefId>] [--no-wait] [--local --i-know]`
 //
 // Enqueues an eval run (the worker job `eval:run-suite` — the worker in THIS bus namespace runs it,
 // so it must be up: `pnpm dev` locally, mymind-worker in prod) and tails its progress until it ends.
 // Ctrl-C stops tailing only; the run keeps going in the worker (`--cancel <runId>` cancels one).
-// `--local` runs the job in THIS process instead (no worker needed — dev); Ctrl-C then cancels it.
+// `--local --i-know` runs the job in THIS process instead (dev only, no worker online in this
+// namespace, a local DB — lib/eval/local-guard.ts says why); Ctrl-C then cancels it.
 // Built-in suites (evals/*.json) are seeded first, so `pnpm eval bridget-core` works on a fresh DB.
 // Exit code: 0 when the run finished (`done`), 1 otherwise.
 import { initCore } from '@mymind/core/config'
@@ -18,11 +19,14 @@ const { seedBuiltinSuites } = await import('@mymind/core/lib/eval/suites')
 const { enqueueEvalRun, cancelEvalRun, startEvalRun, _evalRunSettled, EvalRunError } = await import('@mymind/core/lib/eval/runs')
 const { busNs } = await import('@mymind/core/lib/bus/ns')
 const { EVAL_RUN_TERMINAL } = await import('@mymind/core/shared/types/eval')
+const { localRunRefusal } = await import('@mymind/core/lib/eval/local-guard')
+const { workerStatus } = await import('@mymind/core/lib/bus/commands')
+const { coreConfig } = await import('@mymind/core/config')
 type Summary = import('@mymind/core/shared/types/eval').EvalRunSummary
 
 function usage(msg?: string): never {
   if (msg) console.error(`eval: ${msg}`)
-  console.error('usage: pnpm eval <suite> [--case <slug>]… [--n <runs>] [--model <modelDefId>] [--no-wait] [--local]\n       pnpm eval --cancel <runId>')
+  console.error('usage: pnpm eval <suite> [--case <slug>]… [--n <runs>] [--model <modelDefId>] [--no-wait] [--local --i-know]\n       pnpm eval --cancel <runId>')
   process.exit(2)
 }
 
@@ -34,6 +38,7 @@ let model: string | undefined
 let wait = true
 let cancel: string | null = null
 let local = false
+let iKnow = false
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i]!
   const val = () => argv[++i] ?? usage(`${a} needs a value`)
@@ -42,6 +47,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--model') model = val()
   else if (a === '--no-wait') wait = false
   else if (a === '--local') local = true
+  else if (a === '--i-know') iKnow = true
   else if (a === '--cancel') cancel = val()
   else if (a.startsWith('--')) usage(`unknown option ${a}`)
   else if (!suiteName) suiteName = a
@@ -49,6 +55,10 @@ for (let i = 0; i < argv.length; i++) {
 }
 
 const db = useDb()
+if (local) {
+  const refusal = localRunRefusal({ env: process.env, databaseUrl: coreConfig().databaseUrl as string | undefined, iKnow, workerOnline: (await workerStatus()).online })
+  if (refusal) usage(refusal)
+}
 if (cancel) {
   console.log((await cancelEvalRun(cancel)) ? `cancelled ${cancel}` : `${cancel} is not queued or running`)
   process.exit(0)

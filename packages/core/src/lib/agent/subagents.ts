@@ -14,6 +14,7 @@ import { z } from 'zod'
 import { agentTools } from './tools'
 import type { AgentTool } from './types'
 import type { runAgent as RunAgentFn } from './run'
+import { currentEvalScope } from '../eval/context'
 
 export interface SubagentSpec {
   name: string
@@ -66,17 +67,21 @@ export function makeSubagentTool(spec: SubagentSpec, deps: SubagentDeps = {}): A
       const content = extra ? `${task}\n\nContext from the conversation:\n${extra}` : task
       let report = ''
       let toolCalls = 0
-      for await (const ev of run(
-        [{ role: 'user', content }],
-        // M5: the nested fetches/searches are checked by heuristics only; this tool's report gets the
-        // one LLM classification (guard 'web', always — judge/guard.ts GUARD_ALWAYS_LLM_TOOLS).
-        { signal: ctx.signal, speak: false, maxSteps: spec.maxSteps, nestedGuard: true },
-        { tools, buildSystemPrompt: async () => system }
-      )) {
-        if (ev.type === 'text-delta') report += ev.text
-        else if (ev.type === 'tool-start') ctx.onNestedEvent?.(ev)
-        else if (ev.type === 'tool-result') { toolCalls++; ctx.onNestedEvent?.(ev) }
-      }
+      // Cycle 85 fix round 1 (M2): in an eval world a subagent's model calls take the eval's subagent share.
+      const evalRelease = await currentEvalScope()?.throttle?.('subagent', ctx.signal)
+      try {
+        for await (const ev of run(
+          [{ role: 'user', content }],
+          // M5: the nested fetches/searches are checked by heuristics only; this tool's report gets the
+          // one LLM classification (guard 'web', always — judge/guard.ts GUARD_ALWAYS_LLM_TOOLS).
+          { signal: ctx.signal, speak: false, maxSteps: spec.maxSteps, nestedGuard: true },
+          { tools, buildSystemPrompt: async () => system }
+        )) {
+          if (ev.type === 'text-delta') report += ev.text
+          else if (ev.type === 'tool-start') ctx.onNestedEvent?.(ev)
+          else if (ev.type === 'tool-result') { toolCalls++; ctx.onNestedEvent?.(ev) }
+        }
+      } finally { evalRelease?.() }
       report = report.trim()
       if (!report) return { result: { error: 'subagent produced no report' }, summary: `${spec.label}: no report (${toolCalls} tool calls)` }
       const short = task.length > 60 ? `${task.slice(0, 60)}…` : task

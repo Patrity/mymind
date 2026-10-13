@@ -610,6 +610,13 @@
       "when": 1791871267430,
       "tag": "0086_eval_runner",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1791875103295,
+      "tag": "0087_eval_case_checks",
+      "breakpoints": true
     }
   ]
 }

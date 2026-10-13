@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { actionMatches, argString, contentMatches, forbiddenHits, matchActions, type EvalToolCall } from './matcher'
+import { actionMatches, approvalChecks, argString, contentMatches, forbiddenHits, matchActions, type EvalToolCall } from './matcher'
 
 const call = (tool: string, args: Record<string, unknown> = {}): EvalToolCall => ({ tool, args })
 
@@ -22,6 +22,12 @@ describe('actionMatches (Turnstone semantics)', () => {
     expect(actionMatches({ tool: 't', args: { tags: ['a', 'b'] } }, call('t', { tags: ['a', 'b'] }))).toBe(true)
     expect(actionMatches({ tool: 't', args: { tags: ['a', 'b'] } }, call('t', { tags: ['b', 'a'] }))).toBe(false)
     expect(argString(true)).toBe('true')
+  })
+
+  it('objects compare with a stable key order, at every depth (fix round 1, M4)', () => {
+    expect(actionMatches({ tool: 't', args: { o: { a: 1, b: { c: 2, d: 3 } } } }, call('t', { o: { b: { d: 3, c: 2 }, a: 1 } }))).toBe(true)
+    expect(actionMatches({ tool: 't', args: { o: { a: 1, b: 2 } } }, call('t', { o: { a: 1, b: 3 } }))).toBe(false)
+    expect(actionMatches({ tool: 't', args_pattern: { o: '^\\{"a":1,"b":2\\}$' } }, call('t', { o: { b: 2, a: 1 } }))).toBe(true)
   })
 
   it('args_pattern: regex SEARCH (not a full match), case-sensitive', () => {
@@ -102,6 +108,30 @@ describe('matchActions', () => {
 
   it('no expected actions scores 1 (except exact with calls)', () => {
     for (const m of ['ordered_subset', 'subset', 'contains_any'] as const) expect(matchActions([], [call('a')], m).score).toBe(1)
+  })
+})
+
+describe('failed calls (fix round 1, M3)', () => {
+  it('a denied or errored call never satisfies an expected action, unless count_failed', () => {
+    const calls: EvalToolCall[] = [{ tool: 'create_task', args: {}, status: 'error' }, { tool: 'exec', args: {}, status: 'denied' }]
+    expect(matchActions([{ tool: 'create_task' }, { tool: 'exec' }], calls).score).toBe(0)
+    expect(matchActions([{ tool: 'create_task' }, { tool: 'exec' }], calls, 'subset').score).toBe(0)
+    expect(matchActions([{ tool: 'exec' }], calls, 'contains_any').score).toBe(0)
+    expect(matchActions([{ tool: 'create_task' }, { tool: 'exec' }], calls, 'ordered_subset', { countFailed: true }).score).toBe(1)
+    // ok and pending calls count; absent status = ok.
+    expect(matchActions([{ tool: 'a' }, { tool: 'b' }], [{ tool: 'a', args: {}, status: 'ok' }, { tool: 'b', args: {}, status: 'pending' }]).score).toBe(1)
+    // Forbidden checks count every attempt, failed or not.
+    expect(forbiddenHits([{ tool: 'exec' }], calls)).toEqual([{ forbidden: 0, call: 1 }])
+  })
+})
+
+describe('approvalChecks (fix round 1, S2)', () => {
+  it('missing expected approvals and raised forbidden ones', () => {
+    const asked = [{ tool: 'exec' }, { tool: 'gmail_send' }]
+    expect(approvalChecks([{ tool: 'exec' }], [], asked)).toEqual({ missing: [], forbidden: [] })
+    expect(approvalChecks([{ tool: 'exec' }, { tool: 'decide_review' }], [{ tool: 'gmail_send' }, { tool: 'send_message' }], asked))
+      .toEqual({ missing: ['decide_review'], forbidden: [{ forbidden: 0, approval: 1 }] })
+    expect(approvalChecks([{ tool: 'exec' }], [], [])).toEqual({ missing: ['exec'], forbidden: [] })
   })
 })
 

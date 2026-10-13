@@ -7,6 +7,8 @@
 // it rejects exactly like a call that timed out (judge: error verdict → review; guard: fail closed on the
 // run only, never on the workspace — I5).
 
+import { currentEvalScope } from '../../eval/context'
+
 export const DEFAULT_JUDGE_MAX_IN_FLIGHT = 4
 export const JUDGE_MAX_IN_FLIGHT_LIMITS = { min: 1, max: 16 } as const
 
@@ -50,8 +52,19 @@ function release(): void {
   pump()
 }
 
-/** Run `fn` holding one judge/guard slot. `signal` bounds the WAIT (and is the caller's deadline). */
+/** Run `fn` holding one judge/guard slot. `signal` bounds the WAIT (and is the caller's deadline).
+ *  Cycle 85 fix round 1 (M2): inside an eval world the call first takes the eval's judge share
+ *  (EvalScope.throttle), so a suite never holds more than half of these slots. */
 export async function withJudgeSlot<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
+  const throttle = currentEvalScope()?.throttle
+  if (throttle) {
+    const evalRelease = await throttle('judge', signal)
+    try { return await slotted(signal, fn) } finally { evalRelease() }
+  }
+  return slotted(signal, fn)
+}
+
+async function slotted<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
   await acquire(signal)
   try { return await fn() } finally { release() }
 }

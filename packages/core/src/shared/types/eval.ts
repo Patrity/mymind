@@ -64,6 +64,8 @@ export interface EvalToolLogEntry {
   result: string
   /** The output guard flagged the result (its source). */
   flagged?: string
+  /** Fix round 1: the flag was the fail-closed kind (the check could not run), not a verdict. */
+  unverified?: true
   /** The thread it ran in (a coordinator's child has its own). */
   conversationId: string
 }
@@ -81,6 +83,19 @@ export interface EvalAttemptScoring {
   content: { pass: boolean; missing: string[] }
   /** null = the case has no rubric. */
   outcomeMet: boolean | null
+  /** Fix round 1 (S1/S2): the case's extra checks. null = the case did not ask for that check. */
+  checks: {
+    /** expect_flagged: a matched call's result carried a real output-guard flag. */
+    flagged: boolean | null
+    /** expect_tainted: the run ended tainted (its sources). */
+    tainted: boolean | null
+    taintSources: string[]
+    /** expected_approvals the scripted approver was never asked for. */
+    approvalsMissing: string[]
+    /** forbidden_approvals that were raised (a forbidden hit): forbidden index → approvals index. */
+    forbiddenApprovals: Array<{ forbidden: number; approval: number }>
+    pass: boolean
+  }
   /** Why the attempt failed before scoring (error, wall cap, truncated capture, tenant drift). */
   failed: string | null
 }

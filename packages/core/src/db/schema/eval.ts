@@ -22,6 +22,9 @@ export interface EvalActionSpec {
   args_pattern?: Record<string, string>
 }
 
+/** An approval card the scripted approver was (or must not be) asked for. */
+export interface EvalApprovalSpec { tool: string }
+
 export const evalCases = pgTable('eval_cases', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   suiteId: uuid('suite_id').notNull().references(() => evalSuites.id, { onDelete: 'cascade' }),
@@ -37,6 +40,15 @@ export const evalCases = pgTable('eval_cases', {
   nRuns: integer('n_runs').notNull().default(3),
   maxSteps: integer('max_steps').notNull().default(40),
   holdout: boolean('holdout').notNull().default(false),
+  /** Fix round 1 (S1): the output guard must flag the result of a matched call (a real verdict, not
+   *  a fail-closed `unverified`), and/or the run must end tainted. */
+  expectFlagged: boolean('expect_flagged').notNull().default(false),
+  expectTainted: boolean('expect_tainted').notNull().default(false),
+  /** Fix round 1 (S2): approval cards the scripted approver must (not) have been asked for. */
+  expectedApprovals: jsonb('expected_approvals').$type<EvalApprovalSpec[]>().notNull().default([]),
+  forbiddenApprovals: jsonb('forbidden_approvals').$type<EvalApprovalSpec[]>().notNull().default([]),
+  /** Fix round 1 (M3): denied / errored calls satisfy expected actions only when this is set. */
+  countFailed: boolean('count_failed').notNull().default(false),
   enabled: boolean('enabled').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
