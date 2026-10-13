@@ -43,13 +43,14 @@ const EVAL_CONFINED = 'Eval world: commands run confined to the scratch dir, off
 const clip = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 /** Final follow-up (I5): the run's taint as the workspace sees it. `tainted` — the workspace becomes
- *  tainted (cycle 82; also when called outside buildAiTools: fail closed). `offline` — the run is
+ *  tainted (cycle 82; also when called outside buildAiTools: fail closed). `unverified` — the run is
  *  tainted ONLY `unverified` (a guard check could not run): the workspace is not marked (export
- *  reads stay strict). `clean` — as usual. Commands run the same in every mode (cycle 86). */
-export function runNetworkMode(ctx: Pick<ToolContext, 'isTainted' | 'taint'>): 'clean' | 'offline' | 'tainted' {
+ *  reads stay strict). `clean` — as usual. Commands run the same in every mode (cycle 86: no network
+ *  mode any more — hence not "offline"). */
+export function runTaintMode(ctx: Pick<ToolContext, 'isTainted' | 'taint'>): 'clean' | 'unverified' | 'tainted' {
   if (!ctx.isTainted) return 'tainted'
   if (!ctx.isTainted()) return 'clean'
-  return ctx.taint && onlyUnverified(ctx.taint().sources) ? 'offline' : 'tainted'
+  return ctx.taint && onlyUnverified(ctx.taint().sources) ? 'unverified' : 'tainted'
 }
 
 /** `tainted`: this run's commands taint the workspace. */
@@ -62,7 +63,7 @@ interface Scope { workspaceId?: string }
 async function begin(ctx: ToolContext, scope: Scope): Promise<Call> {
   const ref = await workspaceRuntime().resolve(ctx.runId)
   scope.workspaceId = ref.workspaceId
-  const tainted = runNetworkMode(ctx) === 'tainted'
+  const tainted = runTaintMode(ctx) === 'tainted'
   return { ref, tainted, opts: { tainted, signal: ctx.signal } }
 }
 
@@ -117,7 +118,7 @@ async function guard(name: string, ctx: ToolContext, fn: (scope: Scope) => Promi
 /** An error result from this workspace must carry the taint flag: the run is tainted, or the
  *  workspace is (fail closed — an unreadable row counts as tainted). */
 async function errorTainted(ctx: ToolContext, workspaceId: string): Promise<boolean> {
-  if (runNetworkMode(ctx) === 'tainted') return true
+  if (runTaintMode(ctx) === 'tainted') return true
   try { return (await dbWorkspaceStore.get(workspaceId))?.tainted !== false } catch { return true }
 }
 
@@ -471,8 +472,8 @@ export const exportToDocumentTool: AgentTool = {
     }
     scope.workspaceId = workspaceId
     // Reading moves nothing off the box; the run's taint applies when there is one (replay has none).
-    const mode = ctx.isTainted ? runNetworkMode(ctx) : 'clean'
-    const f = await readWorkspaceText(workspaceId, workspacePath(a.path as string), { tainted: mode === 'tainted', ...(mode === 'offline' ? { offline: true } : {}), signal: ctx.signal })
+    const mode = ctx.isTainted ? runTaintMode(ctx) : 'clean'
+    const f = await readWorkspaceText(workspaceId, workspacePath(a.path as string), { tainted: mode === 'tainted', ...(mode === 'unverified' ? { offline: true } : {}), signal: ctx.signal })
     // Ruling C3: the document must not carry an opted-in secret a command wrote into the file —
     // values are masked before it is written. Fails closed: no readable store, no export.
     let values: string[]

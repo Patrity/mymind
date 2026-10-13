@@ -675,7 +675,7 @@ onMounted(() => {
           @full-bleed="fullBleed = true"
         >
           <template #actions>
-            <!-- Cycle 82 Task 3: the chat's sandboxed workspace (files, background shells). -->
+            <!-- The chat's home workspace on Bridget's Mac (files, background shells; cycle 86 host runtime). -->
             <UButton
               icon="i-lucide-folder-code"
               variant="ghost"

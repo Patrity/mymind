@@ -32,14 +32,33 @@ describe('composePrompt — honesty invariant', () => {
 describe('composePrompt — environment self-model', () => {
   for (const speak of [true, false]) {
     it(`states the real runtime topology (speak=${speak})`, () => {
-      const p = composePrompt({ ...base, speak })
-      // Cycle 86: Bridget's own Mac mini (user `bridget`); MyMind runs there, its DB on Tony's Postgres.
-      expect(p).toMatch(/your own Mac \(a Mac mini, macOS; you are the user `bridget`\)/)
+      const p = composePrompt({ ...base, speak, host: { hostname: 'bridget.local', platform: 'darwin', user: 'bridget' } })
+      // Cycle 86: Bridget's own Mac (user `bridget`); MyMind runs there, its DB on Tony's Postgres.
+      expect(p).toContain('your own Mac (`bridget.local`, macOS; you are the user `bridget`)')
+      expect(p).toContain('Absolute paths reach anywhere on the Mac.')
       expect(p).toMatch(/database on Tony's Postgres server/)
       expect(p).toMatch(/harness Tony built/i)
       expect(p).not.toMatch(/LXC 114|mymind-db|\/opt\/mymind/)
     })
   }
+})
+
+describe('composePrompt — the SHELL host comes from runtime facts (final review M2)', () => {
+  it('names the real host, OS and user — never a hardcoded Mac mini', () => {
+    const p = composePrompt({ ...base, speak: false, host: { hostname: 'tonys-mbp', platform: 'darwin', user: 'tony' } })
+    expect(p).toContain('your own Mac (`tonys-mbp`, macOS; you are the user `tony`)')
+    expect(p).not.toMatch(/Mac mini|user `bridget`/)
+    const lx = composePrompt({ ...base, speak: false, host: { hostname: 'mymind', platform: 'linux', user: 'root' } })
+    expect(lx).toContain('your own machine (`mymind`, linux; you are the user `root`)')
+    expect(lx).toContain('runs on this machine too')
+    expect(lx).not.toMatch(/\bMac\b/)
+    expect(lx).toContain('Load the `workspace` toolset')
+  })
+
+  it('defaults to this process\'s host', async () => {
+    const os = await import('node:os')
+    expect(composePrompt({ ...base, speak: false })).toContain(`(\`${os.hostname()}\`, `)
+  })
 })
 
 describe('composePrompt — detail migrated into skills', () => {

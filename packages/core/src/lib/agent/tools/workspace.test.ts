@@ -147,13 +147,13 @@ describe('final follow-up (I5): a run tainted ONLY `unverified` does not taint t
     await run('bash', { command: 'ls' }, alsoMail())
     expect(calls.map(c => c.o.tainted)).toEqual([true])
   })
-  it('runNetworkMode: clean / offline / tainted, and fail closed with no isTainted', async () => {
-    const { runNetworkMode } = await import('./workspace')
-    expect(runNetworkMode({ isTainted: () => false })).toBe('clean')
-    expect(runNetworkMode(unverified())).toBe('offline')
-    expect(runNetworkMode(alsoMail())).toBe('tainted')
-    expect(runNetworkMode({ isTainted: () => true })).toBe('tainted')
-    expect(runNetworkMode({})).toBe('tainted')
+  it('runTaintMode: clean / unverified / tainted, and fail closed with no isTainted', async () => {
+    const { runTaintMode } = await import('./workspace')
+    expect(runTaintMode({ isTainted: () => false })).toBe('clean')
+    expect(runTaintMode(unverified())).toBe('unverified')
+    expect(runTaintMode(alsoMail())).toBe('tainted')
+    expect(runTaintMode({ isTainted: () => true })).toBe('tainted')
+    expect(runTaintMode({})).toBe('tainted')
   })
 })
 

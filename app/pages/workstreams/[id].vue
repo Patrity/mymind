@@ -11,9 +11,10 @@
  *
  * Controls go to the agent worker (it holds the running segment): Cancel / Resume / steer|answer.
  *
- * Cycle 82 Task 3: Files / Shells tabs show the workstream's sandboxed workspace (read through the
- * worker), with the tainted banner when its network is off. The log stays mounted (v-show) while
- * another tab is open; Files / Shells mount only when shown.
+ * Files / Shells tabs show the workstream's workspace — a dir on Bridget's Mac (cycle 86), read through
+ * the worker — with the tainted banner when its content is untrusted (taint is bookkeeping: commands
+ * run the same). The log stays mounted (v-show) while another tab is open; Files / Shells mount only
+ * when shown.
  *
  * Cycle 83 (spec §6): a coordinator gets a Children tab (its tree budget + one row per child, live),
  * opened first; a child links back to its coordinator.

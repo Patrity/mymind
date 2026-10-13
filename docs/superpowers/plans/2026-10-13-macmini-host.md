@@ -48,4 +48,4 @@ Files: `deploy/macmini/{com.mymind.web.plist,com.mymind.worker.plist,provision-m
 ### Task 4 (controller): final review, docs, provision, cutover
 - [ ] Final whole-branch review → fix wave → re-review; wiki (workspace.md rewrite, web-research, judge/eval touches, DEPLOYMENT.md, prod-deploy skill); handover; roadmap row 86.
 - [ ] Mini cleanup (Hermes retired, old brew postgres stopped, disk reclaimed; BlueBubbles untouched) + provision + `gh auth login` as Patrity (Tony runs the interactive step).
-- [ ] Confirm the window with Tony → cutover per spec §6 → acceptance (health, MCP, chat, workstream workspace command, LAN reachability, Brave search, iMessage, confinement trigger, bridget-core on prod).
+- [ ] Confirm the window with Tony → cutover per spec §6 → acceptance (health, MCP, chat, workstream workspace command, LAN reachability, Brave search, iMessage, eval-world confinement (evals only — agent runs are unconfined under option C), bridget-core on prod).
