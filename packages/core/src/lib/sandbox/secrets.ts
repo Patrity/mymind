@@ -1,9 +1,10 @@
 // Cycle 82 Task 3 (spec §6) / cycle 86 (D8): which exec secrets reach a workspace command, and keeping
 // their VALUES out of everything that leaves it (tool results, watch notes, the Files/Shells UI).
 //
-//   Injection: only secrets Tony opted in (Settings → Secrets → "export to Bridget's shell"), and
-//   NEVER when the run or the workspace is tainted (the manager drops secrets for tainted, unverified,
-//   eval and internal commands too — this is the first of the two gates). Names the shell, the loader
+//   Injection: only secrets Tony exported (Settings → Secrets → "Bridget's shell"), to every agent
+//   command — tainted runs included since cycle 86 option C (Tony, 2026-10-13: tainted runs run like
+//   clean ones; the outbound tools stay gated instead) — never in an eval world, never to MyMind's own
+//   internal scripts. Names the shell, the loader
 //   or the command's base env own (HOME, PATH, LANG, LD_*, DYLD_*, …: host/env.ts assertSecretName)
 //   are stripped, never passed — they would steer the shell or clobber its env. A value shorter
 //   than MIN_SANDBOX_SECRET_CHARS is never injected (the toggle refuses it too: it can't be masked

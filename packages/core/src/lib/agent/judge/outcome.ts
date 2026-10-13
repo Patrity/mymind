@@ -357,7 +357,7 @@ export async function conversationCalls(conversationId: string, ns = busNs()): P
 /** The read-only diff script (cwd: the workspace dir). Never initialises git, never writes the index:
  *  `--stat` + untracked files, then the most-changed files' diffs, the whole thing capped. Cycle 86:
  *  it runs on the host, so the workspace's own git config may not run anything — no fsmonitor, no
- *  external diff, no textconv, no hooks path (a tainted workspace is confined besides). Portable:
+ *  external diff, no textconv, no hooks path. Portable:
  *  no `find -printf` (BSD find on macOS). */
 export const WORKSPACE_DIFF_SCRIPT = [
   `g="git -c safe.directory=* -c core.pager=cat -c color.ui=never -c core.fsmonitor=false -c core.hooksPath=/dev/null --no-pager"`,
@@ -376,7 +376,7 @@ export const WORKSPACE_DIFF_SCRIPT = [
 
 export interface WorkspaceDiffDeps {
   /** Run the script in the workspace (default: the worker's runtime — no secrets, never marks the
-   *  workspace tainted; confined when the workspace is tainted and the switch is on). */
+   *  workspace tainted; the script itself turns off the repo's own git hooks / helpers). */
   exec: (workspaceId: string, script: string, o: { timeoutSec: number; capBytes: number; signal?: AbortSignal }) => Promise<{ exitCode: number | null; stdout: string; stderr: string }>
   /** Secret values to mask out of the diff (default: the sandbox secret store; throws → withheld). */
   secrets: () => Promise<string[]>
@@ -385,7 +385,7 @@ export interface WorkspaceDiffDeps {
 export const workspaceDiffDeps: WorkspaceDiffDeps = {
   exec: async (workspaceId, script, o) => {
     const { workspaceRuntime } = await import('../../sandbox/runtime')
-    return workspaceRuntime().manager.exec(workspaceId, script, { ...o, audit: { tool: 'outcome-judge' } })
+    return workspaceRuntime().manager.exec(workspaceId, script, o)
   },
   secrets: async () => (await import('../../sandbox/secrets')).secretValues()
 }

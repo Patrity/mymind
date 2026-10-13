@@ -6,12 +6,13 @@
 //   `home` workspace (sandbox/runtime.ts resolveWorkspace; both created on first use). The workspace
 //   dir is her default working dir: relative paths resolve there, absolute paths go anywhere on the
 //   machine (D5). No approvals, not `outbound`, no quota.
-//   Taint confinement (D6, one switch): a TAINTED run (it read mail/calendar/contacts), an
-//   `unverified`-only run, or a tainted workspace runs its commands under sandbox-exec (no network,
-//   writes only inside the workspace) with no secrets; background shells and watches are refused
-//   then (the manager's confinementFor). EVERY tool passes the run's taint, reads included: a tainted
-//   run's first workspace tool taints the workspace persistently (manager.ts). A confined result
-//   carries `confined` (the tool part's chip; the manager records `sandbox:confined`).
+//   Taint (cycle 86 option C — Tony dropped the confinement trial): a TAINTED run (it read
+//   mail/calendar/contacts) runs its commands exactly like a clean one — network, exported secrets,
+//   background shells, watches. EVERY tool passes the run's taint, reads included: a tainted run's
+//   first workspace tool taints the workspace persistently (manager.ts) — bookkeeping that makes
+//   later readers tainted, so their outbound tools stay gated by the approval judge.
+//   Eval worlds: every command runs confined (offline, scratch dir) — background shells and
+//   watches are refused there.
 //   Results are untrusted data. A result from a tainted workspace carries `workspaceTainted: true`
 //   FIRST — that taints the reading run (ai-tools.ts), since the files may be mail-derived.
 //   Not on /api/mcp: these tools live on bridgetProfile only (profile.ts), and MCP excludes the toolset.
@@ -22,7 +23,7 @@ import {
   DELETE_MAX_PATHS, DELETE_SCRIPT, EDIT_SCRIPT, LIST_SCRIPT, READ_CAP_BYTES, READ_MAX_LINES, READ_SCRIPT, WRITE_MAX_BYTES, WRITE_SCRIPT, GREP_MAX,
   diffCommand, grepCommand, parseDiff
 } from '../../sandbox/fs-ops'
-import { SandboxDiskLowError, SandboxUnavailableError, type ConfinementNote, type ExecOptions, type SandboxExecResult } from '../../sandbox/manager'
+import { SandboxDiskLowError, SandboxUnavailableError, type ExecOptions, type SandboxExecResult } from '../../sandbox/manager'
 import { readWorkspaceText, workspaceRuntime, type WorkspaceRef } from '../../sandbox/runtime'
 import { WORKSPACE_UNTRUSTED_NOTE } from '../../sandbox/paths'
 import { ShellError } from '../../sandbox/shells'
@@ -36,53 +37,38 @@ import { docReceipt, docNotFound } from '../receipt'
 
 /** On every result that carries workspace content (shared with the watch wake notes). */
 export { WORKSPACE_UNTRUSTED_NOTE }
-/** What each confinement reason tells the model (and the chip's tooltip). */
-export const CONFINED_NOTES: Record<ConfinementNote['reason'], string> = {
-  'tainted-run': 'This conversation read Tony\'s mail, calendar or contacts, so its commands run confined: no network, writes only inside the workspace, no secrets',
-  'tainted-workspace': 'This workspace handled mail/calendar content, so its commands run confined (no network, writes only inside the workspace, no secrets) until Tony re-enables it (Workspace → Re-enable)',
-  unverified: 'This run read content the injection check could not verify, so its commands run confined: no network, writes only inside the workspace, no secrets (the workspace itself is not marked)',
-  eval: 'Eval world: commands run confined to the scratch dir, offline'
-}
+/** Why background shells / watches are refused in an eval world. */
+const EVAL_CONFINED = 'Eval world: commands run confined to the scratch dir, offline'
 
 const clip = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
-/** Final follow-up (I5): how this run's commands run. `tainted` — no network and the workspace becomes
+/** Final follow-up (I5): the run's taint as the workspace sees it. `tainted` — the workspace becomes
  *  tainted (cycle 82; also when called outside buildAiTools: fail closed). `offline` — the run is
- *  tainted ONLY `unverified` (a guard check could not run): no network and no secrets, but the
- *  workspace is not marked. `clean` — as usual. */
+ *  tainted ONLY `unverified` (a guard check could not run): the workspace is not marked (export
+ *  reads stay strict). `clean` — as usual. Commands run the same in every mode (cycle 86). */
 export function runNetworkMode(ctx: Pick<ToolContext, 'isTainted' | 'taint'>): 'clean' | 'offline' | 'tainted' {
   if (!ctx.isTainted) return 'tainted'
   if (!ctx.isTainted()) return 'clean'
   return ctx.taint && onlyUnverified(ctx.taint().sources) ? 'offline' : 'tainted'
 }
 
-/** `tainted`: this run's commands taint the workspace; `offline`: unverified only (confined, unmarked). */
-interface Call { ref: WorkspaceRef; tainted: boolean; offline: boolean; opts: ExecOptions }
+/** `tainted`: this run's commands taint the workspace. */
+interface Call { ref: WorkspaceRef; tainted: boolean; opts: ExecOptions }
 
 /** Which workspace a tool call reached (set before any sandbox command runs) — guard() reads it to
  *  taint an ERROR result too (final review I1). */
 interface Scope { workspaceId?: string }
 
-async function begin(ctx: ToolContext, scope: Scope, tool: string): Promise<Call> {
+async function begin(ctx: ToolContext, scope: Scope): Promise<Call> {
   const ref = await workspaceRuntime().resolve(ctx.runId)
   scope.workspaceId = ref.workspaceId
-  const mode = runNetworkMode(ctx)
-  const tainted = mode === 'tainted'
-  const offline = mode === 'offline'
-  return { ref, tainted, offline, opts: { tainted, ...(offline ? { offline: true } : {}), signal: ctx.signal, audit: { tool, ...(ctx.runId ? { runId: ctx.runId } : {}) } } }
+  const tainted = runNetworkMode(ctx) === 'tainted'
+  return { ref, tainted, opts: { tainted, signal: ctx.signal } }
 }
 
-/** Follow-up 2 (NB3): options for bash_output / kill_shell — MyMind's fixed scripts on a live
- *  background shell (the registry runs them `internal`, so they always reach the real process). The
- *  run's taint still travels (it marks the workspace and the result); `offline` is dropped. */
-function liveShellOpts(c: Call): ExecOptions {
-  const { offline: _offline, ...rest } = c.opts
-  return rest
-}
-
-/** Would this run's commands in this workspace run confined (background shells / watches refused)? */
-function confinementFor(c: Call) {
-  return workspaceRuntime().manager.confinementFor(c.ref.workspaceId, { tainted: c.tainted, offline: c.offline })
+/** Eval worlds only: every command is confined, so background shells / watches can't outlive it. */
+function evalConfined(): boolean {
+  return workspaceRuntime().manager.offline
 }
 
 /** Cycle 86: a model path. Relative → the workspace dir (the command's cwd); absolute → anywhere.
@@ -96,11 +82,9 @@ function exec(c: Call, command: string, o: ExecOptions = {}): Promise<SandboxExe
   return workspaceRuntime().manager.exec(c.ref.workspaceId, command, { ...c.opts, ...o })
 }
 
-/** `workspaceTainted` goes FIRST (tool-history.ts carriesWorkspaceTaint reads a capped preview), then
- *  `confined` (the tool part's chip) when the command ran under sandbox-exec. */
-function withTaint<T extends Record<string, unknown>>(r: { tainted: boolean; confined?: ConfinementNote }, body: T): Record<string, unknown> {
-  const confined = r.confined ? { confined: { reason: r.confined.reason, note: CONFINED_NOTES[r.confined.reason] } } : {}
-  return r.tainted ? { workspaceTainted: true, ...confined, ...body } : { ...confined, ...body }
+/** `workspaceTainted` goes FIRST (tool-history.ts carriesWorkspaceTaint reads a capped preview). */
+function withTaint<T extends Record<string, unknown>>(r: { tainted: boolean }, body: T): Record<string, unknown> {
+  return r.tainted ? { workspaceTainted: true, ...body } : body
 }
 
 /** Known sandbox refusals become a clear tool error instead of a thrown one. Every result and
@@ -137,10 +121,8 @@ async function errorTainted(ctx: ToolContext, workspaceId: string): Promise<bool
   try { return (await dbWorkspaceStore.get(workspaceId))?.tainted !== false } catch { return true }
 }
 
-/** Opted-in sandbox secrets for a command — none when the run OR the workspace is tainted (the
- *  manager drops them for tainted commands too; this is the first gate). */
-async function secretsFor(c: Call): Promise<Pick<ExecOptions, 'secrets'>> {
-  if (c.tainted || c.offline || (await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return {}
+/** Exported secrets for a command (cycle 86 option C: tainted runs too — none in an eval world). */
+async function secretsFor(_c: Call): Promise<Pick<ExecOptions, 'secrets'>> {
   const secrets = await sandboxSecretEnv({ tainted: false })
   return Object.keys(secrets).length ? { secrets } : {}
 }
@@ -191,7 +173,7 @@ export const readFileTool: AgentTool = {
     limit: z.number().int().min(1).max(READ_MAX_LINES).optional().describe(`Lines to read (max ${READ_MAX_LINES})`)
   },
   handler: (a, ctx) => guard('read_file', ctx, async (scope) => {
-    const c = await begin(ctx, scope, 'read_file')
+    const c = await begin(ctx, scope)
     const path = a.path as string
     const r = await exec(c, READ_SCRIPT, { input: JSON.stringify({ path: workspacePath(path), offset: a.offset, limit: a.limit }), capBytes: READ_CAP_BYTES, timeoutSec: 60 })
     const j = parseJson(r)
@@ -220,7 +202,7 @@ export const writeFileTool: AgentTool = {
     const path = a.path as string
     const content = a.content as string
     if (byteLen(content) > WRITE_MAX_BYTES) return { result: { ok: false, error: `content is ${byteLen(content)} bytes — the limit is ${WRITE_MAX_BYTES}; write it with bash instead` }, summary: 'write_file: too large' }
-    const c = await begin(ctx, scope, 'write_file')
+    const c = await begin(ctx, scope)
     const r = await exec(c, WRITE_SCRIPT, { input: JSON.stringify({ path: workspacePath(path), content }), timeoutSec: 60 })
     const j = parseJson(r)
     if (!j) return failed('write_file', r)
@@ -244,7 +226,7 @@ export const editFileTool: AgentTool = {
   handler: (a, ctx) => guard('edit_file', ctx, async (scope) => {
     const path = a.path as string
     if (byteLen(a.old_string as string) + byteLen(a.new_string as string) > WRITE_MAX_BYTES) return { result: { ok: false, error: 'edit too large — use write_file or bash' }, summary: 'edit_file: too large' }
-    const c = await begin(ctx, scope, 'edit_file')
+    const c = await begin(ctx, scope)
     const r = await exec(c, EDIT_SCRIPT, { input: JSON.stringify({ path: workspacePath(path), old: a.old_string, new: a.new_string, all: a.replace_all === true }), timeoutSec: 60 })
     const j = parseJson(r)
     if (!j) return failed('edit_file', r)
@@ -265,7 +247,7 @@ export const listFilesTool: AgentTool = {
     largest: z.boolean().optional().describe('Show the largest files and directories instead of a listing')
   },
   handler: (a, ctx) => guard('list_files', ctx, async (scope) => {
-    const c = await begin(ctx, scope, 'list_files')
+    const c = await begin(ctx, scope)
     const r = await exec(c, LIST_SCRIPT, { input: JSON.stringify({ glob: a.glob ?? null, path: a.path ? workspacePath(a.path as string) : null, largest: a.largest === true }), capBytes: 256 * 1024, timeoutSec: 120 })
     const j = parseJson(r)
     if (!j) return failed('list_files', r)
@@ -288,7 +270,7 @@ export const grepTool: AgentTool = {
     glob: z.string().max(500).optional().describe('Only files matching this glob, e.g. *.ts')
   },
   handler: (a, ctx) => guard('grep', ctx, async (scope) => {
-    const c = await begin(ctx, scope, 'grep')
+    const c = await begin(ctx, scope)
     const r = await exec(c, grepCommand({ pattern: a.pattern as string, path: a.path ? workspacePath(a.path as string) : undefined, glob: a.glob as string | undefined }), { capBytes: 128 * 1024, timeoutSec: 60 })
     if (r.timedOut) return failed('grep', r)
     if (r.exitCode === 1) return { result: withTaint(r, { matches: [], count: 0 }), summary: 'grep: no matches' }
@@ -308,7 +290,7 @@ export const diffTool: AgentTool = {
   description: 'Show what changed in your workspace dir (`git diff`, new files included). On first use the workspace becomes a git repo with a baseline commit, so later diffs show changes since then (commit with bash to move the baseline).',
   schema: { path: pathArg.optional().describe('Only this file or directory (relative to your workspace dir)') },
   handler: (a, ctx) => guard('diff', ctx, async (scope) => {
-    const c = await begin(ctx, scope, 'diff')
+    const c = await begin(ctx, scope)
     const r = await exec(c, diffCommand(a.path ? workspacePath(a.path as string) : undefined), { capBytes: 128 * 1024, timeoutSec: 120 })
     if (r.exitCode !== 0) return failed('diff', r)
     const d = parseDiff(r.stdout)
@@ -326,7 +308,7 @@ export const bashTool: AgentTool = {
   guard: 'workspace',
   toolset: 'workspace',
   kind: 'create',
-  description: 'Run a bash command on your Mac — you are `bridget`, with your own logins (gh, git, ssh), Homebrew and the whole machine: LAN and internet, any path. cwd is your workspace dir (relative paths land there). Foreground: returns exit code + output (64 KB tail; timeout default 120s, max 600s). run_in_background: starts it and returns a shellId at once — read its output with bash_output, stop it with kill_shell; use `watch` to wait for it. Background shells are for jobs, not servers: after 15 min with no command and no output read (and no armed watch) they are stopped; they also end when the workstream ends. In a run that read mail/calendar content, commands run confined (no network, writes only in the workspace) and background shells are unavailable.',
+  description: 'Run a bash command on your Mac — you are `bridget`, with your own logins (gh, git, ssh), Homebrew and the whole machine: LAN and internet, any path. cwd is your workspace dir (relative paths land there). Foreground: returns exit code + output (64 KB tail; timeout default 120s, max 600s). run_in_background: starts it and returns a shellId at once — read its output with bash_output, stop it with kill_shell; use `watch` to wait for it. Background shells are for jobs, not servers: after 15 min with no command and no output read (and no armed watch) they are stopped; they also end when the workstream ends.',
   schema: {
     command: z.string().min(1).max(100_000).describe('The bash command'),
     timeout: z.number().int().min(1).max(600).optional().describe('Foreground timeout in seconds (default 120, max 600)'),
@@ -334,10 +316,9 @@ export const bashTool: AgentTool = {
   },
   handler: (a, ctx) => guard('bash', ctx, async (scope) => {
     const command = a.command as string
-    const c = await begin(ctx, scope, 'bash')
+    const c = await begin(ctx, scope)
     if (a.run_in_background === true) {
-      const confined = await confinementFor(c)
-      if (confined) return { result: { ok: false, error: `${CONFINED_NOTES[confined]} — background shells are not available. Run it in the foreground (timeout up to 600s).`, confined: { reason: confined, note: CONFINED_NOTES[confined] } }, summary: 'bash: background refused (confined)' }
+      if (evalConfined()) return { result: { ok: false, error: `${EVAL_CONFINED} — background shells are not available. Run it in the foreground (timeout up to 600s).` }, summary: 'bash: background refused (eval)' }
       const s = await workspaceRuntime().shells.start(c.ref.workspaceId, command, { ...c.opts, ...(await secretsFor(c)) })
       return { result: { shellId: s.shellId, pid: s.pid, state: 'running', note: 'Read its output with bash_output({shellId}); stop it with kill_shell. To wait for it without polling, use watch.' }, summary: `started in background: \`${clip(command)}\`` }
     }
@@ -351,7 +332,7 @@ export const bashTool: AgentTool = {
         ...(r.aborted ? { aborted: true } : {}), ...(r.truncated ? { truncated: true } : {}),
         untrusted: WORKSPACE_UNTRUSTED_NOTE
       }),
-      summary: `ran \`${clip(command)}\` → exit ${r.exitCode}${r.timedOut ? ' (timed out)' : ''}${r.confined ? ' (confined)' : ''}`
+      summary: `ran \`${clip(command)}\` → exit ${r.exitCode}${r.timedOut ? ' (timed out)' : ''}`
     }
   })
 }
@@ -364,10 +345,10 @@ export const bashOutputTool: AgentTool = {
   description: 'New output of a background shell since the last call (≤ 32 KB; `more: true` means call again), plus its state (running / exited with exitCode / killed / lost).',
   schema: { shellId: z.string().uuid().describe('From bash with run_in_background') },
   handler: (a, ctx) => guard('bash_output', ctx, async (scope) => {
-    const c = await begin(ctx, scope, 'bash_output')
-    // Follow-up 2 (NB3): a fixed read of a live shell — the registry runs it internal (never confined),
+    const c = await begin(ctx, scope)
+    // Follow-up 2 (NB3): a fixed read of a live shell — the registry runs it internal; the run's taint
     // so it always sees the real process.
-    const o = await workspaceRuntime().shells.output(c.ref.workspaceId, a.shellId as string, liveShellOpts(c))
+    const o = await workspaceRuntime().shells.output(c.ref.workspaceId, a.shellId as string, c.opts)
     const { tainted: _t, ...body } = o
     return {
       result: withTaint(o, { ...body, untrusted: WORKSPACE_UNTRUSTED_NOTE }),
@@ -383,9 +364,9 @@ export const killShellTool: AgentTool = {
   description: 'Stop a background shell (its whole process group).',
   schema: { shellId: z.string().uuid().describe('From bash with run_in_background') },
   handler: (a, ctx) => guard('kill_shell', ctx, async (scope) => {
-    const c = await begin(ctx, scope, 'kill_shell')
-    // NB3: the kill must reach the real process (internal — never confined).
-    const k = await workspaceRuntime().shells.kill(c.ref.workspaceId, a.shellId as string, liveShellOpts(c))
+    const c = await begin(ctx, scope)
+    // NB3: the kill reaches the real process (MyMind's own internal script).
+    const k = await workspaceRuntime().shells.kill(c.ref.workspaceId, a.shellId as string, c.opts)
     return { result: withTaint(k, { shellId: k.shellId, state: k.state, ...(k.alreadyEnded ? { alreadyEnded: true } : {}) }), summary: k.alreadyEnded ? `shell already ${k.state}` : `stopped shell (${k.state})` }
   })
 }
@@ -397,7 +378,7 @@ export const deleteFilesTool: AgentTool = {
   description: `Delete files or directories (recursively) inside your workspace dir — relative paths, no \`..\`, at most ${DELETE_MAX_PATHS}; .mymind (MyMind's own bookkeeping) can't be deleted, and one invalid path refuses the whole batch (nothing is deleted). Anything outside the workspace: use bash.`,
   schema: { paths: z.array(pathArg).min(1).max(DELETE_MAX_PATHS).describe('Paths relative to your workspace dir') },
   handler: (a, ctx) => guard('delete_files', ctx, async (scope) => {
-    const c = await begin(ctx, scope, 'delete_files')
+    const c = await begin(ctx, scope)
     const r = await exec(c, DELETE_SCRIPT, { input: JSON.stringify({ paths: (a.paths as string[]).map(workspacePath) }), timeoutSec: 300 })
     const j = parseJson(r)
     if (!j) return failed('delete_files', r)
@@ -426,10 +407,9 @@ export const watchTool: AgentTool = {
     const until = a.until as 'exit0' | 'match'
     const pattern = a.pattern as string | undefined
     if (until === 'match' && !pattern) return { result: { ok: false, error: 'until="match" needs a pattern' }, summary: 'watch: no pattern' }
-    const c = await begin(ctx, scope, 'watch')
-    // Fix round 1 (M2): where commands run confined, no watches (a poll would run every interval).
-    const confined = await confinementFor(c)
-    if (confined) return { result: { ok: false, error: `${CONFINED_NOTES[confined]} — watches are not available. Check with a foreground bash command instead.`, confined: { reason: confined, note: CONFINED_NOTES[confined] } }, summary: 'watch: refused (confined)' }
+    const c = await begin(ctx, scope)
+    // An eval world confines every command: no watches (a poll would outlive the call).
+    if (evalConfined()) return { result: { ok: false, error: `${EVAL_CONFINED} — watches are not available. Check with a foreground bash command instead.` }, summary: 'watch: refused (eval)' }
     if (!c.ref.workstreamId && !c.ref.conversationId) return { result: { ok: false, error: 'watch needs a conversation or workstream to report back to' }, summary: 'watch: nowhere to report' }
     if (until === 'match') {
       // Python's regex dialect (the poll matches in python) — check it compiles now.
@@ -544,7 +524,7 @@ export const importDocumentTool: AgentTool = {
     if (!doc) return { result: docNotFound(a.docId as string), summary: 'import_document: not found' }
     const content = doc.content ?? ''
     if (byteLen(content) > WRITE_MAX_BYTES) return { result: { ok: false, error: 'document too large to import' }, summary: 'import_document: too large' }
-    const c = await begin(ctx, scope, 'import_document')
+    const c = await begin(ctx, scope)
     const r = await exec(c, WRITE_SCRIPT, { input: JSON.stringify({ path: workspacePath(a.path as string), content }), timeoutSec: 60 })
     const j = parseJson(r)
     if (!j) return failed('import_document', r)
@@ -593,7 +573,7 @@ export const exportToCoordinatorTool: AgentTool = {
       const why = exportPathProblem(p)
       if (why) return { result: { ok: false, error: `${p}: ${why}` }, summary: 'export_to_coordinator: bad path' }
     }
-    const c = await begin(ctx, scope, 'export_to_coordinator')
+    const c = await begin(ctx, scope)
     const { getWorkstream } = await import('../workstreams/store')
     const child = c.ref.workstreamId ? await getWorkstream(c.ref.workstreamId) : null
     if (!child?.isChild) return { result: { ok: false, error: 'export_to_coordinator is only for a child workstream (this run has no coordinator)' }, summary: 'export_to_coordinator: not a child' }

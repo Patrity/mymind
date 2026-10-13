@@ -7,33 +7,29 @@
 //   concurrency cap, no quota. Kept: output caps and foreground timeouts (a tool result stays
 //   readable), background shells as process groups, watches, idle / terminal cleanup of processes,
 //   the 30-day sweep of finished workstreams' dirs and a low-disk alarm.
-//   Taint confinement (D6, a trial behind ONE switch — agent settings `taintConfinement`, default
-//   on): a command of a tainted run, of an `unverified`-only run, or in a workspace that is tainted
-//   runs under macOS `sandbox-exec` (host/profile.ts: no network, writes only inside the workspace
-//   and a per-command tmp dir), with no secrets; background shells / watches are refused (the tools
-//   ask confinementFor first). Every confinement records a `sandbox:confined` activity row and the
-//   result carries `confined` (the tool part's chip). Switch off: those commands run unconfined —
-//   still without secrets, and taint still marks results (`tainted`) so the reading run is tainted.
-//   Taint stays PERSISTENT (cycle 82): the first tainted command flags the workspace; from then on
-//   every command there is confined (switch on) until Tony re-enables it (reenableNetwork).
-//   Eval worlds (D7): every command — the world's fixed scripts included — runs confined in the
-//   world's own scratch dir, offline, reads under the home dir denied except that dir; spawn.ts
-//   refuses anything else below the manager.
+//   Taint (cycle 82 persistence, cycle 86 option C): a tainted run's command runs EXACTLY like a
+//   clean one — network, secrets, background shells, watches. Taint is bookkeeping only: the first
+//   tainted command (or a guard flag on workspace content) marks the workspace, and a result from a
+//   tainted workspace carries `tainted`, so the tools mark it `workspaceTainted` and the READING run
+//   is tainted too — its outbound tools stay gated by the approval judge (cycles 79b/84). Tony ruled
+//   (2026-10-13) to drop the sandbox-exec confinement trial for agent runs.
+//   Eval worlds (D7): every command — the world's fixed scripts included — runs under sandbox-exec
+//   in the world's own scratch dir, offline, reads under the home dir denied except that dir; every
+//   profile path is a realpath (a rule naming a symlink matches nothing); spawn.ts refuses anything
+//   else below the manager.
 //   Internal (`internal: true`): MyMind's own fixed scripts on a workspace (the Files / Shells UI,
-//   shell status / output / kill, export reads) — never model text, so never confined outside an
-//   eval world (a confinement is a taint decision about MODEL commands), never secrets, never counted
-//   as use. Their results still carry the taint flag.
+//   shell status / output / kill, export reads) — never model text, never secrets, never counted as
+//   use. Their results still carry the taint flag.
 import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, realpath, rm, statfs } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { assertSecretName, confinedEnv, hostBaseEnv } from './host/env'
 import { runHost, registerEvalScratch } from './host/spawn'
-import { credentialPaths, SANDBOX_EXEC, type Confinement } from './host/profile'
+import { SANDBOX_EXEC, type Confinement } from './host/profile'
 import { SandboxDiskLowError, SandboxUnavailableError } from './errors'
 import { dbWorkspaceStore, type WorkspaceRow, type WorkspaceStore } from './store'
 import type { SandboxHealth } from '../../shared/types/workspaces'
-import type { SpanInput } from '../observability/types'
 import { currentEvalScope, type EvalScope } from '../eval/context'
 
 export { SandboxStoppedError, SandboxUnavailableError, SandboxDiskLowError } from './errors'
@@ -70,10 +66,6 @@ export function sandboxSettings(env: NodeJS.ProcessEnv = process.env): SandboxSe
   }
 }
 
-/** Why a command ran under sandbox-exec (the chip and the activity row say which). */
-export type ConfinementReason = 'tainted-run' | 'tainted-workspace' | 'unverified' | 'eval'
-export interface ConfinementNote { reason: ConfinementReason }
-
 export interface SandboxExecResult {
   exitCode: number | null
   stdout: string
@@ -86,26 +78,21 @@ export interface SandboxExecResult {
   /** The run or the workspace is tainted: the content may be mail-derived (the tools mark the
    *  result `workspaceTainted`, which taints the reading run). */
   tainted: boolean
-  /** The run is tainted only `unverified` (a guard check that could not run) — not the workspace. */
-  offline?: boolean
-  /** Ran under sandbox-exec (no network, writes only in the workspace + tmp), and why. */
-  confined?: ConfinementNote
+  /** Ran under sandbox-exec (eval worlds only): offline, writes only in the world's scratch dir. */
+  confined?: boolean
 }
 
 export interface ExecOptions {
   timeoutSec?: number
   signal?: AbortSignal
-  /** Opted-in secrets — never passed to a tainted / unverified run, a tainted workspace, an eval world
-   *  or an internal script. */
+  /** Exported secrets (Settings → Secrets → Bridget's shell) — never to an eval world or an internal
+   *  script. */
   secrets?: Record<string, string>
-  /** The run read untrusted content: the workspace becomes tainted (persistent) and the command is
-   *  confined (switch on). */
+  /** The run read untrusted content: the workspace becomes tainted (persistent). The command itself
+   *  runs as any other. */
   tainted?: boolean
-  /** The run is tainted ONLY `unverified`: confined (switch on), no secrets, the workspace NOT marked.
-   *  `tainted` wins when both are set. */
-  offline?: boolean
-  /** One of MyMind's own fixed scripts (see the header): never confined outside an eval world, never
-   *  secrets, never counted as use, never paused by the low-disk alarm. */
+  /** One of MyMind's own fixed scripts (see the header): never secrets, never counted as use, never
+   *  paused by the low-disk alarm. */
   internal?: boolean
   /** Fed to stdin (file contents — never in argv). */
   input?: string
@@ -114,8 +101,6 @@ export interface ExecOptions {
   /** Cycle 82's "never start a container" for API-token reads — nothing is ever started on the host,
    *  so it is accepted and ignored. */
   noStart?: boolean
-  /** Who asked (the `sandbox:confined` activity row). */
-  audit?: { runId?: string; tool?: string }
 }
 
 /** Hooks the workspace runtime (shells + watches) installs on the shared manager at worker start —
@@ -123,9 +108,6 @@ export interface ExecOptions {
 export interface SandboxRuntimeHooks {
   /** Armed watches: the workspace is not idle-stopped. */
   isBusy?: (workspaceId: string) => boolean | Promise<boolean>
-  /** The workspace was just tainted with confinement on: kill its background shells, cancel its
-   *  watches (they would keep running with network). */
-  onTainted?: (workspaceId: string) => Promise<void> | void
   /** The workspace was stopped (idle, workstream ended, deleted): its background shells die. */
   onStopped?: (workspaceId: string, reason: string) => Promise<void> | void
   /** Every minute, per running workspace: record shells that ended unread. Never counts as use. */
@@ -149,18 +131,12 @@ export interface SandboxManagerOptions extends SandboxRuntimeHooks {
   settings?: Partial<SandboxSettings>
   /** Free bytes on the filesystem holding `dir` (default: statfs). */
   fsStats?: (dir: string) => Promise<{ freeBytes: number }>
-  /** agent settings `taintConfinement` (default: the agent settings doc; an unreadable doc → on). */
-  taintConfinement?: () => Promise<boolean>
   /** An eval world's manager (its schema name): every command confined in the world's scratch dir. */
   evalWorld?: string
   /** Where a command's base env comes from (tests). */
   env?: NodeJS.ProcessEnv
-  /** Bridget's home (default os.homedir()) — its credential paths are unreadable when confined. */
+  /** The home dir an eval world's commands may not read (default os.homedir(); realpath'd). */
   home?: string
-  /** More never-readable paths (default: the worker's own .env / .env.native and MYMIND_SECRET_PATHS). */
-  secretPaths?: string[]
-  /** The activity recorder (default observability/record recordEvent). */
-  record?: (e: SpanInput) => void
   log?: Pick<Console, 'info' | 'warn' | 'error'>
   now?: () => number
   platform?: NodeJS.Platform
@@ -168,9 +144,6 @@ export interface SandboxManagerOptions extends SandboxRuntimeHooks {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export const IDLE_STOP_REASON = 'stopped: the workspace was idle for 15 min (no command, no output read) — background shells are for jobs, not servers'
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-/** Re-enable waits at most this × 100ms for aborted tainted runs to return (well under the web's 60s). */
-const REENABLE_DRAIN_TRIES = 250
 
 async function defaultFsStats(dir: string): Promise<{ freeBytes: number }> {
   // The dir may not exist yet: walk up to the nearest existing ancestor (same filesystem).
@@ -187,18 +160,6 @@ async function defaultFsStats(dir: string): Promise<{ freeBytes: number }> {
   }
 }
 
-/** agent.taintConfinement, read through the cached agent settings doc. Fails closed (on). */
-async function defaultTaintConfinement(): Promise<boolean> {
-  try {
-    const { getAgentSettings } = await import('../agent/agent-settings')
-    return (await getAgentSettings()).taintConfinement
-  } catch { return true }
-}
-
-async function defaultRecord(e: SpanInput): Promise<void> {
-  try { (await import('../observability/record')).recordEvent(e) } catch { /* the activity log is best-effort */ }
-}
-
 export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const store = opts.store ?? dbWorkspaceStore
   const s: SandboxSettings = { ...sandboxSettings(), ...opts.settings }
@@ -207,37 +168,22 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const now = opts.now ?? Date.now
   const platform = opts.platform ?? process.platform
   const fsStats = opts.fsStats ?? defaultFsStats
-  const record = opts.record ?? ((e: SpanInput) => { void defaultRecord(e) })
   const isBusy = (id: string) => (opts.isBusy ?? runtimeHooks.isBusy)?.(id) ?? false
   const onStopped = (id: string, reason: string) => (opts.onStopped ?? runtimeHooks.onStopped)?.(id, reason)
   const refreshShells = (id: string) => (opts.refresh ?? runtimeHooks.refresh)?.(id)
-  const onTainted = (id: string) => (opts.onTainted ?? runtimeHooks.onTainted)?.(id)
-  const confinementOn = async (): Promise<boolean> => {
-    try { return await (opts.taintConfinement ?? defaultTaintConfinement)() !== false } catch { return true }
-  }
-  /** Abort handles of tainted runs in flight, per workspace — registered under the workspace lock by
-   *  taint(), so a re-enable (same lock) always sees every one. */
-  const taintedInFlight = new Map<string, Set<AbortController>>()
   const locks = new Map<string, Promise<unknown>>()
   /** Commands in flight per workspace — never idle-stopped. */
   const inFlight = new Map<string, number>()
   let lowDisk: { freeBytes: number } | null = null
   /** The eval world's realpath'd root (scratch dir), once created. */
   let evalRoot: string | null = null
-  const home = opts.home ?? os.homedir()
-  /** Fix round 1 (C1): never readable by a confined command — her logins, MyMind's env. */
-  const secretPaths = credentialPaths(home, opts.secretPaths ?? [
-    path.resolve('.env'), path.resolve('.env.native'),
-    ...(process.env.MYMIND_SECRET_PATHS ?? '').split(':').filter(p => p.startsWith('/'))
-  ])
-  const secretNameUnder = [path.join(home, '.config')]
 
   function hostDir(id: string): string {
     if (!UUID.test(id)) throw new Error(`invalid workspace id ${id}`)
     return path.join(s.workspacesDir, id)
   }
 
-  /** Serialise per workspace (in-process): taint / re-enable / stop decisions. */
+  /** Serialise per workspace (in-process): stop decisions. */
   function locked<T>(id: string, fn: () => Promise<T>): Promise<T> {
     const prev = locks.get(id) ?? Promise.resolve()
     const next = prev.catch(() => {}).then(fn)
@@ -277,74 +223,13 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     return row
   }
 
-  /**
-   * Why a command would be confined, or null. Eval worlds always; otherwise only with the switch on,
-   * and only for a MODEL command of a tainted run / in a tainted workspace / of an unverified run.
-   */
-  async function reasonFor(o: { runTainted: boolean; workspaceTainted: boolean; offline: boolean; internal: boolean }): Promise<ConfinementReason | null> {
-    if (evalWorld) return 'eval'
-    if (o.internal || (!o.runTainted && !o.workspaceTainted && !o.offline)) return null
-    if (!await confinementOn()) return null
-    return o.runTainted ? 'tainted-run' : o.workspaceTainted ? 'tainted-workspace' : 'unverified'
-  }
-
-  /** For the tools (background shells / watches are refused when a command would be confined). */
-  async function confinementFor(id: string, o: { tainted?: boolean; offline?: boolean } = {}): Promise<ConfinementReason | null> {
-    const row = await liveRow(id)
-    return reasonFor({ runTainted: o.tainted === true, workspaceTainted: row.tainted, offline: o.offline === true, internal: false })
-  }
-
-  /** Persistent taint (cycle 82 I1): flag the workspace, register the tainted run (re-enable aborts it). */
-  function taint(id: string): Promise<AbortController> {
-    return locked(id, async () => {
-      const row = await liveRow(id)
-      if (!row.tainted) {
-        await store.setTainted(id, true)
-        log.warn(`[workspace] ${id} is now tainted: its commands are confined until Tony re-enables it`)
-      }
-      const ctrl = new AbortController()
-      let set = taintedInFlight.get(id)
-      if (!set) taintedInFlight.set(id, set = new Set())
-      set.add(ctrl)
-      return ctrl
-    })
-  }
-
-  function releaseTainted(id: string, ctrl: AbortController): void {
-    const set = taintedInFlight.get(id)
-    set?.delete(ctrl)
-    if (set && !set.size) taintedInFlight.delete(id)
-  }
-
-  /** With confinement on, a workspace that just became tainted loses its live background work. */
-  async function afterTaint(id: string): Promise<void> {
-    if (!evalWorld && !await confinementOn()) return
-    try { await onTainted(id) } catch (err) { log.warn(`[workspace] onTainted(${id}) failed:`, (err as Error).message) }
-  }
-
-  /** Cycle 84: taint a workspace WITHOUT running a command (the output guard flagged content read
-   *  from it) — the same flag flip and the same loss of background work as a tainted command. */
+  /** Persistent taint (cycle 82 I1): the workspace is marked — bookkeeping only (cycle 86 option C):
+   *  its results taint whoever reads them; its commands run as before. */
   async function markTainted(id: string): Promise<void> {
-    releaseTainted(id, await taint(id))
-    await afterTaint(id)
-  }
-
-  /**
-   * Tony re-enables the workspace: under the workspace lock, abort every tainted run in flight there,
-   * wait until each has RETURNED (its process group is dead — runHost kills it on abort), and only
-   * then clear the flag. Fails closed (flag kept) when one won't stop. New tainted runs can't
-   * register meanwhile: taint() needs this lock.
-   */
-  function reenableNetwork(id: string): Promise<WorkspaceRow> {
-    return locked(id, async () => {
-      await liveRow(id)
-      for (const ctrl of taintedInFlight.get(id) ?? []) ctrl.abort()
-      for (let i = 0; taintedInFlight.get(id)?.size && i < REENABLE_DRAIN_TRIES; i++) await sleep(100)
-      if (taintedInFlight.get(id)?.size) throw new SandboxUnavailableError(`tainted command(s) of workspace ${id} did not stop — it stays confined`)
-      await store.setTainted(id, false)
-      log.info(`[workspace] ${id}: re-enabled by Tony`)
-      return liveRow(id)
-    })
+    const row = await liveRow(id)
+    if (row.tainted) return
+    await store.setTainted(id, true)
+    log.info(`[workspace] ${id} is now tainted: its results taint the runs that read them`)
   }
 
   function timeoutOf(sec?: number): number {
@@ -353,10 +238,9 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     return Math.min(t, s.maxTimeoutSec)
   }
 
-  /** A confined command's tmp dir: in the world's scratch for an eval world, else the system tmp. */
+  /** An eval command's tmp dir, inside the world's scratch dir. */
   async function newTmpDir(): Promise<string> {
-    const base = evalWorld ? path.join(await ensureEvalRoot(), '.tmp') : await realpath(os.tmpdir())
-    return realpath(await mkdtemp(path.join(base, 'mm-')))
+    return realpath(await mkdtemp(path.join(await ensureEvalRoot(), '.tmp', 'mm-')))
   }
 
   async function exec(id: string, command: string, o: ExecOptions = {}): Promise<SandboxExecResult> {
@@ -367,21 +251,14 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     const secrets = o.secrets ?? {}
     for (const k of Object.keys(secrets)) assertSecretName(k)
     if (evalWorld && Object.keys(secrets).length) throw new SandboxUnavailableError('eval: secrets are never available in an eval world')
-    // Fix round 1 (minor 7): a MODEL command's confinement decision reads the row UNDER the workspace
-    // lock, so it can't slip past a taint another run is landing at the same moment. Internal scripts
-    // skip it: they are never confined outside eval, and the shell kills of stopIf / the idle stop /
-    // destroy run while that lock is already held.
-    let row = o.tainted || internal ? await liveRow(id) : await locked(id, () => liveRow(id))
+    const row = await liveRow(id)
     const dir = await ensureDir(id)
-    const ctrl = o.tainted ? await taint(id) : null
+    if (o.tainted) await markTainted(id)
+    const tainted = o.tainted === true || row.tainted
     let tmp: string | null = null
     inFlight.set(id, (inFlight.get(id) ?? 0) + 1)
     try {
-      if (ctrl) { row = { ...row, tainted: true }; await afterTaint(id) }
-      const tainted = o.tainted === true || row.tainted
-      const offline = !tainted && o.offline === true
-      const reason = await reasonFor({ runTainted: o.tainted === true, workspaceTainted: row.tainted, offline, internal })
-      if (reason && platform !== 'darwin') throw new SandboxUnavailableError(`this command must run confined (${reason}), and taint confinement needs macOS sandbox-exec — it is refused on ${platform}`)
+      if (evalWorld && platform !== 'darwin') throw new SandboxUnavailableError(`eval commands must run confined, and that needs macOS sandbox-exec — refused on ${platform}`)
       if (!internal) {
         await store.touch(id)
         if (row.state !== 'running') await store.setContainer(id, null, 'running')
@@ -389,21 +266,16 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
       const base = hostBaseEnv(opts.env)
       let env: Record<string, string>
       let confine: Confinement | undefined
-      if (reason) {
+      if (evalWorld) {
+        const root = await ensureEvalRoot()
         tmp = await newTmpDir()
-        env = confinedEnv(base, tmp)
-        confine = { writable: [dir, tmp], secretPaths, secretNameUnder }
-        if (evalWorld) {
-          const root = await ensureEvalRoot()
-          env.HOME = path.join(root, '.home')
-          confine = { writable: [dir, tmp], denyReadUnder: os.homedir(), readable: [root], secretPaths, secretNameUnder }
-        }
-        record({ kind: 'tool', name: 'sandbox:confined', severity: 'info', meta: { workspaceId: id, reason, ...(o.audit?.tool ? { tool: o.audit.tool } : {}), ...(o.audit?.runId ? { runId: o.audit.runId } : {}) } })
+        env = { ...confinedEnv(base, tmp), HOME: path.join(root, '.home') }
+        // Every path a realpath: an SBPL rule naming a path through a symlink matches nothing.
+        confine = { writable: [dir, tmp], denyReadUnder: await realpath(opts.home ?? os.homedir()), readable: [root] }
       } else {
-        env = tainted || offline || internal ? base : { ...base, ...secrets }
+        env = internal ? base : { ...base, ...secrets }
       }
-      const signal = ctrl ? (o.signal ? AbortSignal.any([o.signal, ctrl.signal]) : ctrl.signal) : o.signal
-      const r = await runHost({ command, cwd: dir, env, timeoutMs: timeoutSec * 1000, capBytes, signal, ...(o.input !== undefined ? { input: o.input } : {}), ...(confine ? { confine, reapGroup: true } : {}) })
+      const r = await runHost({ command, cwd: dir, env, timeoutMs: timeoutSec * 1000, capBytes, signal: o.signal, ...(o.input !== undefined ? { input: o.input } : {}), ...(confine ? { confine, reapGroup: true } : {}) })
       return {
         exitCode: r.code,
         stdout: r.stdout,
@@ -413,11 +285,9 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
         aborted: r.aborted,
         truncated: r.truncated,
         tainted,
-        ...(offline ? { offline: true } : {}),
-        ...(reason ? { confined: { reason } } : {})
+        ...(confine ? { confined: true } : {})
       }
     } finally {
-      if (ctrl) releaseTainted(id, ctrl)
       const n = (inFlight.get(id) ?? 1) - 1
       if (n > 0) inFlight.set(id, n)
       else inFlight.delete(id)
@@ -528,8 +398,8 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     return gone
   }
 
-  /** The worker's boot / 5-minute check: the workspaces dir is writable and (macOS) sandbox-exec
-   *  works. Never throws. */
+  /** The worker's boot / 5-minute check: the workspaces dir is writable and, for an eval world's
+   *  manager (the only one that confines — option C), sandbox-exec works. Never throws. */
   async function health(): Promise<SandboxHealth> {
     const checkedAt = new Date(now()).toISOString()
     if (lowDisk) return { ok: false, reason: `the Mac is low on disk (${(lowDisk.freeBytes / 1024 ** 3).toFixed(1)} GB free) — new workspace work is paused until space is freed`, checkedAt }
@@ -540,11 +410,11 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     } catch (err) {
       return { ok: false, reason: `the workspaces dir ${s.workspacesDir} is not writable (${(err as Error).message})`, checkedAt }
     }
-    if (platform === 'darwin') {
+    if (evalWorld !== null && platform === 'darwin') {
       const ok = await new Promise<string | null>((resolve) => {
         execFile(SANDBOX_EXEC, ['-p', '(version 1)\n(allow default)\n(deny network*)', '/usr/bin/true'], { timeout: 10_000 }, err => resolve(err ? err.message : null))
       })
-      if (ok) return { ok: false, reason: `sandbox-exec does not work here (${ok.slice(0, 200)}) — tainted commands are refused while taint confinement is on`, checkedAt }
+      if (ok) return { ok: false, reason: `sandbox-exec does not work here (${ok.slice(0, 200)}) — eval-world commands cannot run confined`, checkedAt }
     }
     return { ok: true, checkedAt }
   }
@@ -559,9 +429,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     ensureDir,
     exec,
     peek,
-    confinementFor,
     markTainted,
-    reenableNetwork,
     stopWorkspace,
     stopIf,
     idleStop,
@@ -611,7 +479,6 @@ export function createEvalSandboxManager(scope: Pick<EvalScope, 'runId' | 'world
     isBusy: id => h().isBusy?.(id) ?? false,
     onStopped: (id, reason) => h().onStopped?.(id, reason),
     refresh: id => h().refresh?.(id),
-    onTainted: id => h().onTainted?.(id),
     ...opts,
     evalWorld: scope.worldId,
     settings: { ...opts.settings, workspacesDir: evalScratchDir(scope.worldId, opts.settings?.evalScratchDir) }

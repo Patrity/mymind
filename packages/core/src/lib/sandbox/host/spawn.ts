@@ -1,19 +1,20 @@
 // Cycle 86 (spec §3): the one place a workspace command becomes a host process.
 //
 //   `bash -c <command>` in its OWN process group (spawn `detached`: setsid), cwd = the workspace dir,
-//   the env the manager built (never the worker's). Confined: wrapped in `sandbox-exec -p <profile>`
-//   (profile.ts), which execs bash in place — same pid, same group.
+//   the env the manager built (never the worker's). Confined (eval worlds only): wrapped in
+//   `sandbox-exec -p <profile>` (profile.ts), which execs bash in place — same pid, same group.
 //   Timeout: SIGTERM to the group, SIGKILL after 2 s, then SIGKILL until the group is empty (a fork
 //   bomb outlives one kill). Abort: SIGKILL the group at once, the same way.
 //   Output: the TAIL of each stream is kept (capBytes); `truncated` says something was cut.
-//   `reapGroup` (confined commands): whatever the command left running in its group dies with it —
-//   a tainted run gets no background work. Clean commands keep `cmd &` children (Bridget's choice).
+//   `reapGroup` (confined commands): whatever the command left running in its group dies with it.
+//   Agent commands keep `cmd &` children (Bridget's choice).
 //
 // Eval worlds (D7, the fence the docker allow-list used to be): inside an eval scope EVERY spawn is
 // checked here, below the manager, before anything runs — confined, cwd / writes / TMPDIR / HOME
 // inside the world's own registered scratch dir, reads under the user's home denied except that dir,
 // and an env with no key beyond EVAL_ENV_KEYS (no secrets). Anything else is refused.
 import { spawn } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { currentEvalScope, type EvalScope } from '../../eval/context'
@@ -95,7 +96,12 @@ function within(p: string, root: string): boolean {
 }
 
 /** Fail closed: an eval world's command is exactly the confined, scratch-bound shape — or nothing. */
-export function assertEvalSpawn(c: HostCommand, scope: Pick<EvalScope, 'worldId'>, home = os.homedir()): void {
+/** The home dir an eval command may not read, as a realpath (the manager passes the same). */
+function realHome(): string {
+  try { return realpathSync(os.homedir()) } catch { return os.homedir() }
+}
+
+export function assertEvalSpawn(c: HostCommand, scope: Pick<EvalScope, 'worldId'>, home = realHome()): void {
   const refuse = (why: string): never => { throw new SandboxUnavailableError(`eval: host command refused in an eval world (${why})`) }
   const root = evalScratch.get(scope.worldId)
   if (!root) return refuse('this world has no scratch dir registered')

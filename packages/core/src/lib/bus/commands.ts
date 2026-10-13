@@ -51,9 +51,6 @@ export interface CommandPayloads {
   presence: { lastActiveAt: number }
   invalidate: { cache: InvalidateCache }
   'workstream-control': { workstreamId: string; action: 'cancel' | 'resume' | 'steer'; text?: string }
-  /** Cycle 82: Tony re-enables a tainted workspace's network. The WORKER does it (it owns the
-   *  sandbox): kills the workspace's tainted runs first, then clears the flag (lib/sandbox/manager). */
-  'workspace-reenable-network': { workspaceId: string }
   /** Cycle 82 Task 2: read a text file of a workspace (the sandbox lives in the worker) — what an
    *  approved export_to_document proposal, replayed in the web, copies into a document. */
   'workspace-read-text': { workspaceId: string; path: string; tainted?: boolean; offline?: boolean }
@@ -90,7 +87,6 @@ export interface CommandResults {
   presence: void
   invalidate: void
   'workstream-control': WorkstreamDTO
-  'workspace-reenable-network': { id: string; tainted: boolean }
   'workspace-read-text': { content: string; bytes: number; path: string; tainted: boolean }
   'workspace-view': unknown
   'workspace-kill-shell': { shellId: string; state: string; alreadyEnded: boolean }

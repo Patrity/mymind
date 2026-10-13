@@ -1,7 +1,7 @@
 // Cycle 82 Task 2 / cycle 86 — the `workspace` tools on the HOST runtime (real processes) + the dev DB.
 // Rows, docs, processes and the temp dir are tracked and removed in afterAll. The tools run exactly as
 // Bridget calls them (tool.handler with a ToolContext); only the workspace selection is pinned to this
-// file's rows. The confinement part (the last test) needs macOS sandbox-exec.
+// file's rows.
 process.loadEnvFile('.env')
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import net from 'node:net'
@@ -14,13 +14,13 @@ import { useDb } from '@mymind/core/db'
 import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { documents, workspaceShells, workspaces } from '@mymind/core/db/schema'
 import { createSandboxManager, type SandboxManager } from '@mymind/core/lib/sandbox/manager'
+import { dbWorkspaceStore } from '@mymind/core/lib/sandbox/store'
 import { createWorkspaceRuntime, setWorkspaceRuntime, runtimeHooks, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
 import { workspaceTools } from '@mymind/core/lib/agent/tools/workspace'
 import type { ToolContext } from '@mymind/core/lib/agent/types'
 import type { WorkspaceWatchRow } from '@mymind/core/lib/sandbox/watches'
 
 const RUN = `wst-${process.pid}-${Date.now().toString(36)}`
-const darwin = process.platform === 'darwin'
 // Final fix wave: every workspace row of this file is in its own bus namespace — a dev worker on the
 // shared DB never scans it, and afterAll removes every row of it (no orphans).
 const NS = RUN.replace(/[^A-Za-z0-9_-]/g, '_')
@@ -55,7 +55,7 @@ describe('workspace tools (host runtime)', () => {
     return r!.id
   }
   const mkManager = () => createSandboxManager({
-    settings: { workspacesDir: root }, taintConfinement: async () => true, record: () => {},
+    settings: { workspacesDir: root },
     log: { info: () => {}, warn: () => {}, error: () => {} }
   })
   const wsDir = (id = current) => path.join(root, id)
@@ -340,7 +340,7 @@ describe('workspace tools (host runtime)', () => {
   }, 120_000)
 
   // LAST (it taints its own workspace for good).
-  it.runIf(darwin)('a tainted run (confinement on): bash runs confined — no loopback listener, no write outside — and taints the workspace; background and watch are refused', async () => {
+  it('a tainted run (option C): bash runs like a clean one — loopback reachable, writes anywhere — and taints the workspace; background and watch are allowed', async () => {
     const id = await newWorkspace()
     const prev = current
     current = id
@@ -352,41 +352,34 @@ describe('workspace tools (host runtime)', () => {
     try {
       await call('write_file', { path: 'pre.txt', content: 'before' })
       const probe = `python3 -I -c 'import socket,sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), 3); print("connected")' ${port}`
-      expect((await call('bash', { command: probe })).stdout).toBe('connected\n') // clean: loopback / LAN reachable
+      expect((await call('bash', { command: probe })).stdout).toBe('connected\n')
       tainted = true
-      const r = await call('bash', { command: `cat pre.txt; echo; ${probe}; mkdir -p ${outside} && echo leak > ${outside}/x; echo in > inside.txt` })
-      expect(Object.keys(r).slice(0, 2)).toEqual(['workspaceTainted', 'confined']) // first keys: survive a capped preview
-      expect(r).toMatchObject({ workspaceTainted: true, confined: { reason: 'tainted-run' } })
-      expect(r.stdout).toBe('before\n')
-      expect(r.stderr).toMatch(/Operation not permitted/)
-      expect(accepted).toBe(1)
-      tainted = false
-      expect((await m.exec(id, `test -e ${outside}/x && echo LEAKED || echo none`, { internal: true })).stdout).toBe('none\n')
-      tainted = true
-      expect((await call('read_file', { path: 'inside.txt' })).content).toBe('     1\tin')
-      const bg = await call('bash', { command: 'sleep 1', run_in_background: true })
-      expect(bg.error).toMatch(/background shells are not available/)
-      const w = await call('watch', { command: 'true', until: 'exit0' })
-      expect(w.error).toMatch(/watches are not available/)
-      expect((await useDb().select().from(workspaceShells).where(eq(workspaceShells.workspaceId, id))).length).toBe(0)
-      // The run is untainted again, but the WORKSPACE stays tainted: reads say so (and would taint the
-      // reader); commands stay confined until Tony re-enables it.
+      const r = await call('bash', { command: `cat pre.txt; echo; ${probe}; mkdir -p ${outside} && echo wrote > ${outside}/x` })
+      expect(Object.keys(r)[0]).toBe('workspaceTainted') // first key: survives a capped preview
+      expect(r).not.toHaveProperty('confined')
+      expect(r.stdout).toBe('before\nconnected\n')
+      expect(accepted).toBe(2)
+      expect((await m.exec(id, `cat ${outside}/x`, { internal: true })).stdout).toBe('wrote\n')
+      expect((await dbWorkspaceStore.get(id))!.tainted).toBe(true)
+      const bg = await call('bash', { command: 'sleep 30', run_in_background: true })
+      expect(bg).toMatchObject({ state: 'running', shellId: expect.any(String) })
+      const w = await call('watch', { command: 'true', until: 'exit0', intervalSec: 600 })
+      expect(w).toMatchObject({ watchId: expect.any(String) })
+      await rt.watches.cancelFor(id, 'test done', { quiet: true })
+      await rt.shells.kill(id, bg.shellId)
+      // The run is untainted again, but the WORKSPACE stays tainted: results say so (and taint the
+      // reader); the commands themselves still run as usual.
       tainted = false
       const rd = await call('read_file', { path: 'pre.txt' })
       expect(rd.workspaceTainted).toBe(true)
-      expect((await call('bash', { command: probe })).confined).toMatchObject({ reason: 'tainted-workspace' })
-      expect(accepted).toBe(1)
-      expect((await call('bash', { command: 'sleep 1', run_in_background: true })).error).toMatch(/until Tony re-enables it.*background shells are not available/)
-      expect((await call('watch', { command: 'true', until: 'exit0' })).error).toMatch(/until Tony re-enables it.*watches are not available/)
+      const again = await call('bash', { command: probe })
+      expect(again).toMatchObject({ workspaceTainted: true, stdout: 'connected\n' })
+      expect(accepted).toBe(3)
       // An export from it marks the result (the exporting run becomes tainted).
       const docPath = `/input/wst-${RUN}-tainted.md`
       const e = await call('export_to_document', { path: 'pre.txt', docPath })
       docIds.push(e.id)
       expect(Object.keys(e)[0]).toBe('workspaceTainted')
-      // Re-enabled: clean again — the listener is reachable.
-      await m.reenableNetwork(id)
-      expect((await call('bash', { command: probe })).stdout).toBe('connected\n')
-      expect(accepted).toBe(2)
     } finally {
       tainted = false
       current = prev

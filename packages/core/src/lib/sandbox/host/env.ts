@@ -1,8 +1,8 @@
 // Cycle 86 (spec §3): the environment a workspace command runs with on the host — Bridget's login
 // environment (HOME, her Homebrew PATH, so her CLI logins under ~ just work), NOT the worker's own:
 // the worker's env holds MyMind's database URL and API keys, and none of it reaches a command.
-// Opted-in secrets (Settings → Secrets → "export to Bridget's shell") are added on top for clean
-// runs only — never for a tainted run, an eval world or one of MyMind's own fixed scripts.
+// Exported secrets (Settings → Secrets → "Bridget's shell") are added on top for agent commands —
+// never for an eval world or one of MyMind's own fixed scripts.
 import os from 'node:os'
 
 const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -34,7 +34,7 @@ export function hostBaseEnv(from: NodeJS.ProcessEnv = process.env): Record<strin
     LANG: from.LANG || 'en_US.UTF-8',
     TERM: 'dumb'
   }
-  // Her ssh agent (git over ssh) — clean commands only (confinedEnv drops it).
+  // Her ssh agent (git over ssh) — never in an eval world (confinedEnv drops it).
   if (from.SSH_AUTH_SOCK) env.SSH_AUTH_SOCK = from.SSH_AUTH_SOCK
   return env
 }
@@ -43,7 +43,7 @@ function safeUser(): string {
   try { return os.userInfo().username } catch { return 'bridget' }
 }
 
-/** A confined command's env: the base env minus the ssh agent, its own TMPDIR. */
+/** An eval (confined) command's env: the base env minus the ssh agent, its own TMPDIR. */
 export function confinedEnv(base: Record<string, string>, tmpDir: string): Record<string, string> {
   const { SSH_AUTH_SOCK: _agent, ...rest } = base
   return { ...rest, TMPDIR: tmpDir }

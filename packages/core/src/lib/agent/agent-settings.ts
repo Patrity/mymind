@@ -13,10 +13,6 @@
 // bare number is the guard cap), and an `eval` section holds the eval runner's capacity knobs —
 // `concurrency` (attempts at once, 1–4; default 1 in production, 2 elsewhere — I2/I3) and
 // `maxTokensPerRun` (a run past it stops, `stopped: budget` — I4).
-//
-// Cycle 86 (spec D6): `taintConfinement` (default true) — the trial switch for running a tainted
-// run's workspace commands under sandbox-exec (lib/sandbox/manager.ts). Missing reads as on; an
-// invalid stored value reads as on too (fail closed: confined).
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { useDb } from '../../db'
@@ -46,11 +42,7 @@ export function defaultEvalConcurrency(): number {
 export interface AgentSettings {
   judge: JudgeSettings
   eval: EvalSettings
-  /** Cycle 86: run a tainted run's workspace commands confined (sandbox-exec). Default on. */
-  taintConfinement: boolean
 }
-
-export const DEFAULT_TAINT_CONFINEMENT = true
 
 function defaultEvalSettings(): EvalSettings {
   return { concurrency: defaultEvalConcurrency(), maxTokensPerRun: DEFAULT_EVAL_MAX_TOKENS_PER_RUN }
@@ -64,8 +56,7 @@ export function defaultAgentSettings(): AgentSettings {
       confidence: DEFAULT_JUDGE_SETTINGS.confidence,
       maxInFlight: { ...DEFAULT_JUDGE_MAX_IN_FLIGHT }
     },
-    eval: defaultEvalSettings(),
-    taintConfinement: DEFAULT_TAINT_CONFINEMENT
+    eval: defaultEvalSettings()
   }
 }
 
@@ -93,8 +84,7 @@ export const agentSettingsPatchSchema = z.object({
   eval: z.object({
     concurrency: evalConcurrencySchema.optional(),
     maxTokensPerRun: evalMaxTokensSchema.optional()
-  }).strict().optional(),
-  taintConfinement: z.boolean().optional()
+  }).strict().optional()
 }).strict()
 export type AgentSettingsPatch = z.infer<typeof agentSettingsPatchSchema>
 
@@ -112,24 +102,17 @@ function readEvalSettings(raw: unknown): EvalSettings {
   }
 }
 
-/** Pure: the stored switch → on unless it is exactly `false` (missing or invalid → confined). */
-function readTaintConfinement(raw: unknown): boolean {
-  return raw !== false
-}
-
 /** Pure: stored JSON → settings, field by field, defaults for anything missing or invalid. */
 export function readAgentSettings(raw: unknown): AgentSettings {
   const d = defaultAgentSettings()
-  // A corrupt row: every safety switch fails closed — the judge off, confinement ON.
-  const off: AgentSettings = { judge: { enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: JUDGE_CONFIDENCE_LIMITS.max, maxInFlight: { ...DEFAULT_JUDGE_MAX_IN_FLIGHT } }, eval: defaultEvalSettings(), taintConfinement: true }
+  const off: AgentSettings = { judge: { enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: JUDGE_CONFIDENCE_LIMITS.max, maxInFlight: { ...DEFAULT_JUDGE_MAX_IN_FLIGHT } }, eval: defaultEvalSettings() }
   if (raw === undefined || raw === null) return d // no row
-  if (typeof raw !== 'object' || Array.isArray(raw)) return off
+  if (typeof raw !== 'object' || Array.isArray(raw)) return off // a corrupt row: everything off
   const ev = readEvalSettings((raw as { eval?: unknown }).eval)
-  const tc = readTaintConfinement((raw as { taintConfinement?: unknown }).taintConfinement)
-  if (!('judge' in raw) || (raw as { judge?: unknown }).judge === undefined) return { ...d, eval: ev, taintConfinement: tc }
+  if (!('judge' in raw) || (raw as { judge?: unknown }).judge === undefined) return { ...d, eval: ev }
   const j = (raw as { judge?: unknown }).judge as Record<string, unknown>
   // A `judge` value that is not an object is corrupt: everything off.
-  if (!j || typeof j !== 'object' || Array.isArray(j)) return { ...off, eval: ev, taintConfinement: tc }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return { ...off, eval: ev }
   const saRaw = j.smartApprovals
   const saCorrupt = saRaw !== undefined && (saRaw === null || typeof saRaw !== 'object' || Array.isArray(saRaw))
   const sa = (saCorrupt ? { workstreams: false, chat: false } : (saRaw ?? {})) as Record<string, unknown>
@@ -145,8 +128,7 @@ export function readAgentSettings(raw: unknown): AgentSettings {
       // A capacity knob, not a safety switch: an invalid value reads as the default (per class).
       maxInFlight: normalizeJudgeMaxInFlight(j.maxInFlight)
     },
-    eval: ev,
-    taintConfinement: tc
+    eval: ev
   }
 }
 
@@ -159,8 +141,6 @@ export function agentSettingsProblems(raw: unknown): string[] {
   if (raw === undefined || raw === null) return []
   if (typeof raw !== 'object' || Array.isArray(raw)) return ['the settings document']
   const out: string[] = []
-  const tcRaw = (raw as { taintConfinement?: unknown }).taintConfinement
-  if (tcRaw !== undefined && typeof tcRaw !== 'boolean') out.push('taintConfinement')
   const e = (raw as { eval?: unknown }).eval
   if (e !== undefined) {
     if (!e || typeof e !== 'object' || Array.isArray(e)) out.push('eval')
@@ -226,8 +206,7 @@ export function mergeAgentSettings(current: AgentSettings, patch: AgentSettingsP
     eval: {
       concurrency: patch.eval?.concurrency ?? current.eval.concurrency,
       maxTokensPerRun: patch.eval?.maxTokensPerRun ?? current.eval.maxTokensPerRun
-    },
-    taintConfinement: patch.taintConfinement ?? current.taintConfinement
+    }
   }
 }
 

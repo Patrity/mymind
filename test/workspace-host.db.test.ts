@@ -1,8 +1,7 @@
 // Cycle 86 Task 1 — the host workspace runtime against the dev DB: real rows, real processes. Replaces
 // cycle 82's real-Docker sandbox.db.test.ts (its container-isolation checks are moot: clean runs own
 // the machine). Proves on real rows: use bookkeeping, secrets in env never in argv, persistent taint
-// (confinement on: background work killed, later clean commands confined, re-enable kills a tainted
-// command before the flag clears — its late write never lands), the idle stop, and the 30-day sweep
+// (option C: the flag is set, nothing is stopped or confined), the idle stop, and the 30-day sweep
 // (files removed, a symlink's target never followed). Rows live in this file's own bus namespace;
 // rows, processes and the temp dir are removed in afterAll.
 process.loadEnvFile('.env')
@@ -16,12 +15,11 @@ import { useDb } from '@mymind/core/db'
 import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { workspaces, workspaceShells } from '@mymind/core/db/schema'
 import { createSandboxManager, IDLE_STOP_REASON, type SandboxManager } from '@mymind/core/lib/sandbox/manager'
-import { createWorkspaceRuntime, runtimeHooks, TAINTED_REASON, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
+import { createWorkspaceRuntime, runtimeHooks, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
 import { dbWorkspaceStore } from '@mymind/core/lib/sandbox/store'
 
 const RUN = `wsh-${process.pid}-${Date.now().toString(36)}`
 const NS = RUN.replace(/[^A-Za-z0-9_-]/g, '_')
-const darwin = process.platform === 'darwin'
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
 
@@ -30,7 +28,6 @@ describe('host workspace runtime (dev DB, real processes)', () => {
   let m: SandboxManager
   let rt: WorkspaceRuntime
   let now = Date.now()
-  const activity: Array<{ name: string; meta: unknown }> = []
 
   async function newWorkspace(): Promise<string> {
     const [r] = await useDb().insert(workspaces).values({ kind: 'workstream', ns: NS }).returning()
@@ -41,10 +38,9 @@ describe('host workspace runtime (dev DB, real processes)', () => {
     setBusNs(NS)
     root = realpathSync(mkdtempSync(path.join(tmpdir(), 'mm-wsh-')))
     m = createSandboxManager({
-      settings: { workspacesDir: root }, taintConfinement: async () => true, now: () => now,
-      record: e => { activity.push({ name: e.name, meta: e.meta }) },
-      // The runtime's own hooks (shells killed on taint / stop, watches cancelled).
-      onTainted: id => runtimeHooks(rt).onTainted(id), onStopped: (id, why) => runtimeHooks(rt).onStopped(id, why),
+      settings: { workspacesDir: root }, now: () => now,
+      // The runtime's own hooks (shells killed on stop, watches keep it busy).
+      onStopped: (id, why) => runtimeHooks(rt).onStopped(id, why),
       isBusy: id => runtimeHooks(rt).isBusy(id),
       log: { info: () => {}, warn: () => {}, error: () => {} }
     })
@@ -99,34 +95,27 @@ describe('host workspace runtime (dev DB, real processes)', () => {
     expect((await dbWorkspaceStore.get(id))!.state).toBe('stopped')
   }, 30_000)
 
-  it.runIf(darwin)('persistent taint: the first tainted command flags the row, kills the clean run\'s background shell, and confines every later command until re-enabled', async () => {
+  it('persistent taint (option C): the first tainted command flags the row; the clean run\'s background shell keeps running and later commands run unconfined', async () => {
     const id = await newWorkspace()
     now = Date.now()
     const s = await rt.shells.start(id, 'sleep 120')
     expect(alive(s.pid)).toBe(true)
-    activity.length = 0
-    const t = await m.exec(id, 'echo hi', { tainted: true, audit: { tool: 'bash', runId: 'r-1' } })
-    expect(t).toMatchObject({ stdout: 'hi\n', tainted: true, confined: { reason: 'tainted-run' } })
-    expect((await dbWorkspaceStore.get(id))).toMatchObject({ tainted: true, taintedAt: expect.any(Date) })
-    await sleep(300)
-    expect(alive(s.pid)).toBe(false)
-    expect(await rt.shells.list(id)).toEqual([expect.objectContaining({ state: 'killed', reason: `stopped: ${TAINTED_REASON}` })])
-    expect(activity).toEqual([{ name: 'sandbox:confined', meta: { workspaceId: id, reason: 'tainted-run', tool: 'bash', runId: 'r-1' } }])
-    expect((await m.exec(id, 'true')).confined).toEqual({ reason: 'tainted-workspace' })
-    await m.reenableNetwork(id)
-    expect((await dbWorkspaceStore.get(id))).toMatchObject({ tainted: false, taintedAt: null })
-    expect((await m.exec(id, 'true')).confined).toBeUndefined()
-  }, 30_000)
-
-  it.runIf(darwin)('re-enable kills a tainted command still running BEFORE the flag clears: its late write never lands', async () => {
-    const id = await newWorkspace()
-    const running = m.exec(id, 'sleep 2; echo late > late.txt', { tainted: true })
-    await sleep(400)
-    await m.reenableNetwork(id)
-    expect((await running).aborted).toBe(true)
-    expect((await dbWorkspaceStore.get(id))!.tainted).toBe(false)
-    await sleep(2500)
-    expect(existsSync(path.join(root, id, 'late.txt'))).toBe(false)
+    try {
+      const t = await m.exec(id, 'echo hi', { tainted: true })
+      expect(t).toMatchObject({ stdout: 'hi\n', tainted: true })
+      expect(t).not.toHaveProperty('confined')
+      expect((await dbWorkspaceStore.get(id))).toMatchObject({ tainted: true, taintedAt: expect.any(Date) })
+      await sleep(300)
+      expect(alive(s.pid)).toBe(true)
+      expect(await rt.shells.list(id)).toEqual([expect.objectContaining({ state: 'running' })])
+      // A later untainted command: reported tainted (the row is), not confined, writes where it likes.
+      const later = await m.exec(id, 'echo x > out.txt && echo ok')
+      expect(later).toMatchObject({ stdout: 'ok\n', tainted: true })
+      expect(later).not.toHaveProperty('confined')
+      expect(existsSync(path.join(root, id, 'out.txt'))).toBe(true)
+    } finally {
+      await rt.shells.kill(id, s.shellId).catch(() => {})
+    }
   }, 30_000)
 
   it('the 30-day sweep: a deleted workstream\'s workspace loses its dir (a symlink\'s target untouched) and its row', async () => {

@@ -17,7 +17,7 @@ import { createConversation } from '@mymind/core/services/conversations'
 import { pauseWorkstreamForTony, startWorkstream, WAITING_FOR_WATCH, wakeWorkstreamForWatch, watchDeliveryDeps } from '@mymind/core/lib/agent/workstreams/loop'
 import { getWorkstream } from '@mymind/core/lib/agent/workstreams/store'
 import { workstreamNotifyDeps } from '@mymind/core/lib/agent/workstreams/notify'
-import { createWorkspaceRuntime, finishedWorkstreamsWithLiveWorkspaces, resolveWorkspace, runtimeHooks, setWorkspaceRuntime, startWorkspaceRuntime, TAINTED_REASON, teardownWorkstreamWorkspace, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
+import { createWorkspaceRuntime, finishedWorkstreamsWithLiveWorkspaces, resolveWorkspace, runtimeHooks, setWorkspaceRuntime, startWorkspaceRuntime, teardownWorkstreamWorkspace, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
 import { dbShellStore } from '@mymind/core/lib/sandbox/shells'
 import { dbWatchStore, WATCH_CAPS } from '@mymind/core/lib/sandbox/watches'
 import { dbWorkspaceStore, ensureWorkstreamWorkspace } from '@mymind/core/lib/sandbox/store'
@@ -36,8 +36,6 @@ let met = false
 const res = (stdout: string, exitCode = 0): SandboxExecResult => ({ exitCode, stdout, stderr: '', timedOut: false, oom: false, aborted: false, truncated: false, tainted: false })
 const fakeManager = {
   exec: async (_id: string, cmd: string) => cmd === WATCH_POLL_SCRIPT ? res(JSON.stringify({ exit: met ? 0 : 1, matched: null, tail: met ? 'BUILD OK' : 'building…' })) : res(''),
-  // Cycle 86: nothing here runs confined (no tainted run, no tainted workspace in these flows).
-  confinementFor: async () => null,
   peek: async () => null
 } as unknown as SandboxManager
 let rt: WorkspaceRuntime
@@ -335,25 +333,6 @@ describe('watch × workstreams', () => {
     const ref = await resolveWorkspace(run!.id)
     expect(ref).toMatchObject({ kind: 'home', workstreamId: null, conversationId: ws.conversationId })
     expect(ref.workspaceId).not.toBe(space.id)
-  })
-
-  it('M2: tainting a workspace cancels its armed watches (owner told why) and records its running shells as stopped', async () => {
-    const conv = await createConversation({ title: 'T2w taint' })
-    convIds.push(conv.id)
-    const [w] = await useDb().insert(workspaces).values({ kind: 'workstream', tainted: true, ns: NS }).returning()
-    wsIds.push(w!.id)
-    met = false
-    const watch = await rt.watches.create({ workspaceId: w!.id, workstreamId: null, conversationId: conv.id, command: 'sleep 1', until: { kind: 'exit0' }, intervalSec: 600, timeoutMin: 5 })
-    if ('refused' in watch) throw new Error('refused')
-    const shell = await dbShellStore.create(w!.id, 'sleep 99')
-    await runtimeHooks(rt).onTainted(w!.id)
-    await runtimeHooks(rt).onTainted(w!.id) // idempotent
-    const [wr] = await useDb().select().from(workspaceWatches).where(eq(workspaceWatches.id, watch.id))
-    expect(wr).toMatchObject({ state: 'cancelled', reason: TAINTED_REASON })
-    expect(wr!.resultText).toMatch(/cancelled: `sleep 1` — this workspace is confined \(it handled mail\/calendar content\)/)
-    const { workspaceShells } = await import('@mymind/core/db/schema')
-    const [sr] = await useDb().select().from(workspaceShells).where(eq(workspaceShells.id, shell!.id))
-    expect(sr).toMatchObject({ state: 'killed', reason: `stopped: ${TAINTED_REASON}` })
   })
 
   it('final fix wave: a watch-cap pause never overwrites a pending ask_tony question — the note goes into the thread', async () => {

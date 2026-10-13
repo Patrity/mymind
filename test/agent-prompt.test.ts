@@ -87,7 +87,7 @@ describe('composePrompt SHELL guidance (cycle 86: the workspace is Bridget\'s ow
     expect(shell).toMatch(/the whole filesystem, Tony's LAN and the internet/)
     expect(shell).toMatch(/your own logins \(gh, git, ssh — already authenticated; never `gh auth login`\)/)
     expect(shell).toMatch(/Your WORKSPACE dir is your default working and storage dir/)
-    expect(shell).toMatch(/run CONFINED \(no network, writes only inside the workspace/) // the taint trial, stated
+    expect(shell).not.toMatch(/CONFINED|confined/) // cycle 86 option C: no taint confinement for agent runs
     // Gone: the container, host exec and its admin toolset.
     expect(shell).not.toMatch(/sandboxed Linux container|`exec`|`admin` toolset|LXC 114/)
   })

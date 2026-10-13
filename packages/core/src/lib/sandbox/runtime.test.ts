@@ -31,34 +31,6 @@ describe('final review I2: the manager hooks', async () => {
     expect(await h.isBusy('w')).toBe(true)
     await h.onStopped('w', 'stopped: idle')
     expect(killed).toEqual([['w', 'stopped: idle']])
-    expect(Object.keys(h).sort()).toEqual(['isBusy', 'onStopped', 'onTainted', 'refresh'])
-  })
-})
-
-describe('follow-up 2 (NB4): quarantineRunWorkspace', async () => {
-  const { quarantineRunWorkspace, setWorkspaceRuntime, UNVERIFIED_REASON } = await import('./runtime')
-  it('confinement on: stops the run\'s workspace shells and cancels its watches — and never marks the workspace; off: touches nothing', async () => {
-    const killed: Array<[string, string]> = []
-    const cancelled: Array<[string, string]> = []
-    const markTainted = vi.fn()
-    let reason: string | null = 'unverified'
-    const confinementFor = vi.fn(async () => reason)
-    setWorkspaceRuntime({
-      resolve: async (runId: string | undefined) => ({ workspaceId: `ws-of-${runId}`, kind: 'workstream', workstreamId: 'w', conversationId: 'c' }),
-      shells: { killAll: async (id: string, why: string) => { killed.push([id, why]); return 1 } },
-      watches: { cancelFor: async (id: string, why: string) => { cancelled.push([id, why]); return 1 } },
-      manager: { markTainted, confinementFor }
-    } as never)
-    try {
-      await quarantineRunWorkspace('run-9')
-      expect(confinementFor).toHaveBeenCalledWith('ws-of-run-9', { offline: true })
-      expect(killed).toEqual([['ws-of-run-9', `stopped: ${UNVERIFIED_REASON}`]])
-      expect(cancelled).toEqual([['ws-of-run-9', UNVERIFIED_REASON]])
-      expect(markTainted).not.toHaveBeenCalled()
-      reason = null // the switch is off: nothing is stopped
-      await quarantineRunWorkspace('run-10')
-      expect(killed).toHaveLength(1)
-      expect(cancelled).toHaveLength(1)
-    } finally { setWorkspaceRuntime(null) }
+    expect(Object.keys(h).sort()).toEqual(['isBusy', 'onStopped', 'refresh'])
   })
 })

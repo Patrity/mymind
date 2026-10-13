@@ -443,7 +443,7 @@ describe('outcome judge — coordinators and evidence', () => {
     }
   })
 
-  it('buildWorkstreamEvidence diffs the workstream\'s OWN workspace (a shared child: its coordinator\'s) through the runner (no secrets; confined when the workspace is tainted)', async () => {
+  it('buildWorkstreamEvidence diffs the workstream\'s OWN workspace (a shared child: its coordinator\'s) through the runner (no secrets; never marks the workspace)', async () => {
     const { ws } = await newWorkstream('diff')
     const seen: string[] = []
     const diff: WorkspaceDiffDeps = { exec: async (id) => { seen.push(id); return { exitCode: 0, stdout: `diff of ${id}`, stderr: '' } }, secrets: async () => [] }
@@ -465,9 +465,9 @@ describe('outcome judge — coordinators and evidence', () => {
     const execs: unknown[] = []
     setWorkspaceRuntime({ manager: { exec: async (id: string, _s: string, o: unknown) => { execs.push({ id, o }); return { exitCode: 0, stdout: '', stderr: '' } } } } as never)
     try { await workspaceDiffDeps.exec(w!.id, 'true', { timeoutSec: 30, capBytes: 1000 }) } finally { setWorkspaceRuntime(null) }
-    // Cycle 86: a plain model-free exec (no secrets, never marks the workspace) — the manager confines
-    // it when the workspace is tainted; the script itself turns off the repo's own git hooks/helpers.
-    expect(execs).toEqual([{ id: w!.id, o: { timeoutSec: 30, capBytes: 1000, audit: { tool: 'outcome-judge' } } }])
+    // Cycle 86: a plain model-free exec (no secrets, never marks the workspace); the script itself
+    // turns off the repo's own git hooks/helpers.
+    expect(execs).toEqual([{ id: w!.id, o: { timeoutSec: 30, capBytes: 1000 } }])
     await patchWorkstream(shared.id, { state: 'cancelled' })
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })

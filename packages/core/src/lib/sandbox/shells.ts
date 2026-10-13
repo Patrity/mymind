@@ -6,8 +6,8 @@
 // exist, their state, how much output was already returned). A worker restart does not kill it, so
 // at boot `reconcile` RE-ATTACHES every shell that is still running and marks the others `exited`
 // (exit file) or `lost` (the process is gone with no exit code). Status, output, tail and kill are
-// MyMind's own fixed scripts (`internal` — never confined outside an eval world, so a kill always
-// reaches the real process). A shell is never started for a command that would run confined.
+// MyMind's own fixed scripts (`internal`). No shell is started in an eval world (its commands run
+// confined, and a confined command's process group is reaped when it returns).
 import { and, eq, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { workspaceShells, workspaces, type WorkspaceShellRow } from '../../db/schema'
@@ -130,7 +130,7 @@ export const SHELL_TAIL_BYTES = 16 * 1024
 
 export class ShellError extends Error { override name = 'ShellError' }
 
-const TAINT_LOST = 'it was stopped when this workspace was confined (it handled mail/calendar content)'
+const EVAL_LOST = 'eval worlds run every command confined, so nothing can keep running in the background'
 
 
 export function createShellRegistry(deps: ShellDeps) {
@@ -138,24 +138,19 @@ export function createShellRegistry(deps: ShellDeps) {
   const log = deps.log ?? console
   const maskValues = deps.secretValues ?? secretValues
 
-  async function lostReason(workspaceId: string, fallback: string): Promise<string> {
-    const ws = await deps.workspace(workspaceId)
-    return ws?.tainted ? TAINT_LOST : fallback
-  }
-
   /** Persist what a status check found (running rows only — an ended row stays as it ended). */
   async function settle(row: WorkspaceShellRow, st: ShellStatus): Promise<WorkspaceShellRow> {
     if (row.state !== 'running' || st.state === 'running') return row
     if (st.state === 'exited') {
       await store.end(row.id, { state: 'exited', exitCode: st.exitCode })
     } else {
-      await store.end(row.id, { state: 'lost', reason: await lostReason(row.workspaceId, 'its process went away without an exit code (killed outside MyMind, or the Mac restarted)') })
+      await store.end(row.id, { state: 'lost', reason: 'its process went away without an exit code (killed outside MyMind, or the Mac restarted)' })
     }
     return (await store.get(row.id)) ?? row
   }
 
   /** `o`: the calling run's options (its taint marks the workspace; secrets only for a clean run). */
-  async function start(workspaceId: string, command: string, o: Pick<ExecOptions, 'secrets' | 'tainted' | 'offline' | 'signal' | 'audit'> = {}): Promise<{ shellId: string; pid: number }> {
+  async function start(workspaceId: string, command: string, o: Pick<ExecOptions, 'secrets' | 'tainted' | 'signal'> = {}): Promise<{ shellId: string; pid: number }> {
     const row = await store.create(workspaceId, command)
     let r: SandboxExecResult
     try {
@@ -168,8 +163,8 @@ export function createShellRegistry(deps: ShellDeps) {
     if (r.exitCode !== 0 || !Number.isFinite(pid) || r.confined) {
       // A confined command's process group is reaped when it returns — a background shell cannot
       // outlive it (the tool refuses before reaching here).
-      await store.end(row.id, { state: 'lost', reason: r.confined ? TAINT_LOST : `could not start (exit ${r.exitCode}): ${r.stderr.trim().slice(0, 300)}` })
-      throw new ShellError(r.confined ? `background shells are not available while commands run confined, and ${TAINT_LOST}` : `could not start the background shell: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
+      await store.end(row.id, { state: 'lost', reason: r.confined ? EVAL_LOST : `could not start (exit ${r.exitCode}): ${r.stderr.trim().slice(0, 300)}` })
+      throw new ShellError(r.confined ? `background shells are not available: ${EVAL_LOST}` : `could not start the background shell: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
     }
     return { shellId: row.id, pid }
   }
@@ -242,7 +237,7 @@ export function createShellRegistry(deps: ShellDeps) {
   }
 
   /**
-   * Kill every running shell of a workspace (it was tainted with confinement on, stopped idle, its
+   * Kill every running shell of a workspace (it was stopped idle, its
    * workstream ended, or it was deleted). Idempotent and cheap: only RUNNING rows are touched. The
    * kill is an internal fixed script (peek), so it reaches the process whatever the workspace's
    * state. `noStart` is cycle 82's teardown flag — accepted, nothing to start on the host.

@@ -27,7 +27,6 @@ function fakeDeps(over: Partial<WorkerDeps> = {}) {
     presence: vi.fn(),
     invalidate: vi.fn(),
     workstreamControl: vi.fn(async (p: { workstreamId: string }) => ({ id: p.workstreamId, state: 'cancelled' }) as unknown as WorkstreamDTO),
-    workspaceReenableNetwork: vi.fn(async (p: { workspaceId: string }) => ({ id: p.workspaceId, tainted: false })),
     workspaceReadText: vi.fn(async (p: { workspaceId: string; path: string }) => ({ content: 'hello', bytes: 5, path: `/workspace/${p.path}`, tainted: false })),
     workspaceView: vi.fn(async (p: { op: string }) => ({ op: p.op })),
     workspaceKillShell: vi.fn(async (p: { shellId: string }) => ({ shellId: p.shellId, state: 'killed', alreadyEnded: false })),
@@ -136,16 +135,6 @@ describe('worker boot', () => {
     await expect(h['workstream-control']({ workstreamId: 'w1', action: 'explode' } as never)).rejects.toThrow(/bad payload/)
     expect(deps.workstreamControl).toHaveBeenCalledTimes(1)
     await expect(h.abort({ runId: 'r1' })).resolves.toEqual({ settled: true })
-  })
-
-  it('workspace-reenable-network reaches the sandbox manager; a bad payload is refused', async () => {
-    const { deps } = fakeDeps()
-    const h = commandHandlers(deps)
-    const id = '11111111-1111-4111-8111-111111111111'
-    expect(await h['workspace-reenable-network']({ workspaceId: id })).toEqual({ id, tainted: false })
-    expect(deps.workspaceReenableNetwork).toHaveBeenCalledWith({ workspaceId: id })
-    await expect(h['workspace-reenable-network']({ workspaceId: '../x' })).rejects.toThrow(/bad payload/)
-    expect(deps.workspaceReenableNetwork).toHaveBeenCalledTimes(1)
   })
 
   it('workspace-read-text (cycle 82 Task 2: a replayed export reads in the sandbox) validates its payload', async () => {

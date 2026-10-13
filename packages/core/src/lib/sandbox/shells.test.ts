@@ -84,13 +84,13 @@ describe('shell registry', () => {
     setReply(() => res({ stdout: '__mm_shell_pid__:1\n' }))
     for (let i = 0; i < 12; i++) await reg.start(WS, `s${i}`)
   })
-  it('the start carries the run\'s options (its taint marks the workspace); a confined launch is lost, never a shell', async () => {
+  it('the start carries the run\'s options (its taint marks the workspace); a confined (eval) launch is lost, never a shell', async () => {
     const { reg, calls, store, setReply } = setup()
     setReply(() => res({ stdout: '__mm_shell_pid__:1\n' }))
-    await reg.start(WS, 'x', { tainted: true, audit: { tool: 'bash' } })
-    expect(calls[0]!.o).toMatchObject({ tainted: true, audit: { tool: 'bash' }, input: 'x' })
-    setReply(() => res({ stdout: '__mm_shell_pid__:2\n', tainted: true, confined: { reason: 'tainted-workspace' } }))
-    await expect(reg.start(WS, 'y')).rejects.toThrow(/not available while commands run confined/)
+    await reg.start(WS, 'x', { tainted: true })
+    expect(calls[0]!.o).toMatchObject({ tainted: true, input: 'x' })
+    setReply(() => res({ stdout: '__mm_shell_pid__:2\n', confined: true }))
+    await expect(reg.start(WS, 'y')).rejects.toThrow(/background shells are not available: eval worlds/)
     expect([...store.rows.values()].at(-1)!.state).toBe('lost')
   })
   it('output is incremental (offset advances by what was returned) and settles exit / lost', async () => {
@@ -109,13 +109,13 @@ describe('shell registry', () => {
     expect(await reg.output(WS, s2)).toMatchObject({ state: 'lost' })
     await expect(reg.output('77777777-7777-4777-8777-777777777777', s2)).rejects.toThrow(/no background shell/)
   })
-  it('a shell lost after the workspace was tainted says why', async () => {
+  it('a shell whose process vanished is lost (taint no longer stops anything — cycle 86 option C)', async () => {
     const { reg, workspace, calls, setReply } = setup()
     setReply(() => res({ stdout: '__mm_shell_pid__:1\n' }))
     const { shellId } = await reg.start(WS, 'x')
     workspace.tainted = true
     setReply(() => res({ stdout: status('gone', 3, 0), tainted: true }))
-    expect((await reg.output(WS, shellId)).reason).toMatch(/confined \(it handled mail\/calendar content\)/)
+    expect((await reg.output(WS, shellId)).reason).toMatch(/its process went away without an exit code/)
     // bash_output's read is MyMind's own script: internal, never confined.
     expect(calls.at(-1)!.o).toMatchObject({ internal: true })
   })

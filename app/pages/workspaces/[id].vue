@@ -55,7 +55,7 @@ const tabs = [
     </template>
 
     <template #body>
-      <WorkspaceNetworkBanner
+      <WorkspaceTaintNote
         v-if="ws"
         :workspace="ws"
       />

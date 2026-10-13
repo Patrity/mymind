@@ -389,7 +389,6 @@ function handlersRecording(seen: string[]) {
     presence: async () => undefined,
     invalidate: async () => undefined,
     'workstream-control': async () => undefined,
-    'workspace-reenable-network': async () => undefined,
     'workspace-read-text': async () => undefined,
     'workspace-view': async () => undefined,
     'workspace-kill-shell': async () => undefined,

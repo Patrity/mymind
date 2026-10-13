@@ -82,9 +82,5 @@ export function useWorkspaceActions() {
       $fetch<{ shellId: string; state: string; alreadyEnded: boolean }>(`/api/workspaces/${p.workspaceId}/shells/${p.shellId}/kill`, { method: 'POST' }),
     onSuccess: (_r, p) => { void qc.invalidateQueries({ queryKey: ['workspace', p.workspaceId] }) }
   })
-  const reenable = useMutation({
-    mutationFn: (workspaceId: string) => $fetch<{ id: string; tainted: boolean }>(`/api/workspaces/${workspaceId}/reenable-network`, { method: 'POST' }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['workspace'] }) }
-  })
-  return { kill, reenable }
+  return { kill }
 }

@@ -352,7 +352,7 @@ async function send() {
         </UCard>
       </div>
 
-      <WorkspaceNetworkBanner
+      <WorkspaceTaintNote
         v-if="workspace"
         :workspace="workspace"
       />

@@ -156,12 +156,12 @@ describe('C1 / N1 / B1: a world\'s host commands are confined to its own scratch
     expect(spawned).toEqual([])
   })
 
-  it('through the world\'s manager: confined whatever the switch, or (off macOS) refused — never a plain process', async () => {
+  it('through the world\'s manager: always confined, or (off macOS) refused — never a plain process', async () => {
     const w = world()
     const scratch = await mkdtemp(path.join(os.tmpdir(), 'mm-fence-'))
     try {
       const store = { get: async (id: string) => ({ id, tainted: false, deletedAt: null, state: 'running' }), touch: async () => {}, setContainer: async () => {}, setTainted: async () => {} }
-      const m = createEvalSandboxManager({ runId: RUN, worldId: SCHEMA }, { store: store as never, taintConfinement: async () => false, settings: { evalScratchDir: scratch }, record: () => {} })
+      const m = createEvalSandboxManager({ runId: RUN, worldId: SCHEMA }, { store: store as never, settings: { evalScratchDir: scratch } })
       const run = w.run(() => m.exec('11111111-1111-4111-8111-111111111111', 'curl https://example.com'))
       if (process.platform === 'darwin') {
         await run
@@ -191,10 +191,11 @@ describe('C1: the workspace sandbox in a world', () => {
     const { rt, hooks } = await w.run(() => ({ rt: workspaceRuntime(), hooks: _evalSandboxHooksFor(currentEvalScope()!) }))
     expect(hooks).toBeDefined()
     const kill = vi.spyOn(rt.shells, 'killAll').mockResolvedValue(undefined as never)
-    const cancel = vi.spyOn(rt.watches, 'cancelFor').mockResolvedValue(undefined as never)
-    await hooks!.onTainted!('11111111-1111-1111-1111-111111111111')
-    expect(kill).toHaveBeenCalled()
-    expect(cancel).toHaveBeenCalled()
+    const armed = vi.spyOn(rt.watches, 'hasArmed').mockResolvedValue(true)
+    await hooks!.onStopped!('11111111-1111-1111-1111-111111111111', 'stopped')
+    expect(kill).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111', 'stopped')
+    expect(await hooks!.isBusy!('11111111-1111-1111-1111-111111111111')).toBe(true)
+    expect(armed).toHaveBeenCalled()
   })
 
   it('sandboxManager() / workspaceRuntime() are the world\'s own: confined, its own scratch dir', async () => {

@@ -19,8 +19,8 @@ export const workspaces = pgTable('workspaces', {
   /** Cycle 82's last measured file count (quota). No longer measured (cycle 86). */
   inodesUsed: integer('inodes_used').notNull().default(0),
   /** Persistent taint (review I1 ruling): set the first time a tainted run executes a command here.
-   *  From then on EVERY command runs without secrets, and — with taint confinement on — confined
-   *  (sandbox-exec), until Tony re-enables the workspace (session-only API). */
+   *  From then on every result from this workspace taints the run that reads it (its outbound tools
+   *  stay gated). Commands still run as usual (cycle 86 option C: no confinement for agent runs). */
   tainted: boolean('tainted').notNull().default(false),
   taintedAt: timestamp('tainted_at', { withTimezone: true }),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }).notNull().defaultNow(),

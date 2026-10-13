@@ -1,7 +1,7 @@
 // PUT /api/settings/agent-settings — patch Bridget's agent settings doc (cycle 84: judge / Smart
-// Approvals; cycle 85: eval knobs; cycle 86: taintConfinement). Body: any subset of { judge: {
-// enabled, smartApprovals: { workstreams, chat }, confidence (0.5–0.99), maxInFlight }, eval: {…},
-// taintConfinement: boolean }; unknown or invalid fields → 400. Session-only.
+// Approvals; cycle 85: eval knobs). Body: any subset of { judge: { enabled, smartApprovals:
+// { workstreams, chat }, confidence (0.5–0.99), maxInFlight }, eval: {…} }; unknown or invalid
+// fields → 400. Session-only.
 import { ZodError } from 'zod'
 import { requireSession } from '../../utils/auth-guard'
 import { saveAgentSettings } from '@mymind/core/lib/agent/agent-settings'

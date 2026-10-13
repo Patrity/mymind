@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // "Workspace unavailable" (cycle 82 final review I6 / cycle 86): the agent worker is up but its
-// workspace health check failed (the workspaces dir is not writable, sandbox-exec does not work, the
-// Mac is low on disk). Workspace tools refuse (or run unconfined work only) until it is fixed;
+// workspace health check failed (the workspaces dir is not writable, or the Mac is low on disk).
+// Workspace tools refuse until it is fixed;
 // nothing else is affected.
 const { sandboxProblem } = useWorkerStatus()
 </script>

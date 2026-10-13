@@ -6,8 +6,8 @@
 //   other run (chat, jobs, wakes, replayed proposals) works in the single `home` workspace. Both are
 //   created on first use.
 //   Boot: running background shells are re-attached (or marked lost/exited) and armed watches
-//   re-armed. The manager's isBusy (no idle stop while a watch is armed), onTainted (confinement on:
-//   kill shells, cancel watches), onStopped and refresh hooks are installed here.
+//   re-armed. The manager's isBusy (no idle stop while a watch is armed), onStopped and refresh
+//   hooks are installed here.
 import { currentEvalScope } from '../eval/context'
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
@@ -20,7 +20,6 @@ import { READ_TEXT_CAP_BYTES, READ_TEXT_SCRIPT } from './fs-ops'
 import { executionMode } from '../agent/runtime/execution-mode'
 import { setWorkstreamTerminalHook } from '../agent/workstreams/store'
 import { busNs } from '../bus/ns'
-import type { ExecOptions } from './manager'
 
 export interface WorkspaceRef {
   workspaceId: string
@@ -134,19 +133,6 @@ export async function taintRunWorkspace(runId: string | undefined): Promise<void
   await rt.manager.markTainted(ref.workspaceId)
 }
 
-/** Follow-up 2 (NB4): the run that works in this workspace read content the injection check could
- *  not verify — with taint confinement on, its live background shells are stopped and its watches
- *  cancelled (they would run files that run writes, with network). The workspace itself stays
- *  unconfined for later clean runs. Switch off: nothing is stopped. */
-export const UNVERIFIED_REASON = 'a run in this workspace read content the injection check could not verify'
-export async function quarantineRunWorkspace(runId: string | undefined): Promise<void> {
-  const rt = workspaceRuntime()
-  const ref = await rt.resolve(runId)
-  if (!await rt.manager.confinementFor(ref.workspaceId, { offline: true })) return
-  await rt.shells.killAll(ref.workspaceId, `stopped: ${UNVERIFIED_REASON}`)
-  await rt.watches.cancelFor(ref.workspaceId, UNVERIFIED_REASON)
-}
-
 /** Build a runtime around a given manager (tests: a labelled manager on a temp dir). */
 export function createWorkspaceRuntime(manager: SandboxManager, o: { resolve?: WorkspaceRuntime['resolve']; deliver?: Parameters<typeof createWatchRuntime>[0]['deliver'] } = {}): WorkspaceRuntime {
   const deps = { exec: manager.exec, workspace: (id: string) => dbWorkspaceStore.get(id) }
@@ -158,19 +144,9 @@ export function createWorkspaceRuntime(manager: SandboxManager, o: { resolve?: W
   }
 }
 
-export const TAINTED_REASON = 'this workspace is confined (it handled mail/calendar content)'
-
-/** isBusy / onTainted / onStopped / refresh for the manager (exported for tests). onTainted is
- *  idempotent: it only touches running shells / armed watches, so repeats (every tainted command)
- *  find nothing to do. The manager calls it only with taint confinement on. */
+/** isBusy / onStopped / refresh for the manager (exported for tests). */
 export function runtimeHooks(rt: Pick<WorkspaceRuntime, 'shells' | 'watches'>) {
   return {
-    // Fix round 1 (M2): a confined workspace keeps no live background work — its shells are killed
-    // and its watches cancelled (a watch would otherwise keep polling with network).
-    onTainted: async (id: string) => {
-      await rt.shells.killAll(id, `stopped: ${TAINTED_REASON}`)
-      await rt.watches.cancelFor(id, TAINTED_REASON)
-    },
     // Final review I2 ruling: only an armed watch keeps a workspace's shells up past 15 idle minutes
     // (shells are for jobs, not servers).
     isBusy: (id: string) => rt.watches.hasArmed(id),
@@ -269,7 +245,7 @@ export class WorkspaceFileError extends Error { override name = 'WorkspaceFileEr
  * carrying the run's taint. In the web process (an approved export_to_document proposal is replayed
  * there) the worker does the read — the workspaces are the worker's.
  */
-export async function readWorkspaceText(workspaceId: string, path: string, o: Pick<ExecOptions, 'tainted' | 'offline' | 'signal'> = {}): Promise<{ content: string; bytes: number; path: string; tainted: boolean }> {
+export async function readWorkspaceText(workspaceId: string, path: string, o: { tainted?: boolean; offline?: boolean; signal?: AbortSignal } = {}): Promise<{ content: string; bytes: number; path: string; tainted: boolean }> {
   if (executionMode() === 'remote') {
     const { sendCommand } = await import('../bus/commands')
     // Fix round 1 (M3): the taint travels with the command (the workspace is marked as it would be
@@ -278,12 +254,12 @@ export async function readWorkspaceText(workspaceId: string, path: string, o: Pi
     if (!r) throw new WorkspaceFileError('the agent worker returned nothing')
     return r
   }
-  // Fix round 1: this is MyMind's own (unconfined) reader — after mail/calendar content (the run or
+  // Fix round 1: this is MyMind's own reader — after mail/calendar content (the run or
   // the workspace is tainted) it reads only a relative path inside the workspace, never through a
   // symlink, so a tainted run can't export Bridget's credentials. Fails closed: an unreadable row is strict.
   const row = await dbWorkspaceStore.get(workspaceId).catch(() => null)
   const strict = o.tainted === true || o.offline === true || row?.tainted !== false
-  const r = await workspaceRuntime().manager.exec(workspaceId, READ_TEXT_SCRIPT, { input: JSON.stringify({ path, ...(strict ? { strict: true } : {}) }), capBytes: READ_TEXT_CAP_BYTES, timeoutSec: 60, ...o, internal: true })
+  const r = await workspaceRuntime().manager.exec(workspaceId, READ_TEXT_SCRIPT, { input: JSON.stringify({ path, ...(strict ? { strict: true } : {}) }), capBytes: READ_TEXT_CAP_BYTES, timeoutSec: 60, ...(o.tainted ? { tainted: true } : {}), ...(o.signal ? { signal: o.signal } : {}), internal: true })
   let j: { content?: string; bytes?: number; path?: string; error?: string; message?: string } | null = null
   try { j = r.exitCode === 0 ? JSON.parse(r.stdout) : null } catch { j = null }
   if (!j) throw new WorkspaceFileError(r.truncated ? 'the file is too large to export' : `could not read ${path}: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)

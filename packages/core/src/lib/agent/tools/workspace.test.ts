@@ -1,5 +1,5 @@
 // Cycle 82 Task 2 / cycle 86: the workspace tools' POLICY against a fake runtime (no processes, no DB):
-// which workspace, the run's taint on every command, confinement (chip + refusals), path semantics,
+// which workspace, the run's taint on every command, the eval-world refusals, path semantics,
 // untrusted results, stdin-only payloads, the headless gate, and taint flowing from a tainted
 // workspace back into the run (ai-tools). What the scripts do on the host: test/workspace-tools.db.test.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -34,8 +34,8 @@ const res = (o: Partial<SandboxExecResult> = {}): SandboxExecResult => ({ exitCo
 
 interface Call { command: string; o: ExecOptions }
 let calls: Call[]
-/** agent.taintConfinement as the fake manager sees it. */
-let switchOn: boolean
+/** The fake manager is an eval world's (manager.offline): background shells / watches refused. */
+let evalWorld: boolean
 let execResult: (command: string, o: ExecOptions) => SandboxExecResult
 let started: string[]
 let armed: unknown[]
@@ -46,9 +46,7 @@ const shellOpts: Array<ExecOptions | undefined> = []
 function install(ref: { workstreamId?: string | null; conversationId?: string | null } = {}) {
   const manager = {
     exec: vi.fn(async (_id: string, command: string, o: ExecOptions = {}) => { calls.push({ command, o }); return execResult(command, o) }),
-    // What the real manager decides (manager.ts reasonFor), against this file's switch and taint.
-    confinementFor: vi.fn(async (_id: string, o: { tainted?: boolean; offline?: boolean } = {}) =>
-      !switchOn ? null : o.tainted ? 'tainted-run' : wsTainted ? 'tainted-workspace' : o.offline ? 'unverified' : null)
+    get offline() { return evalWorld }
   }
   const rt = {
     manager,
@@ -68,13 +66,11 @@ function install(ref: { workstreamId?: string | null; conversationId?: string | 
 
 beforeEach(() => {
   secretStore.opted = {}; secretStore.all = {}; secretStore.broken = false
-  calls = []; started = []; armed = []; switchOn = true; wsTainted = false; paused.length = 0; shellOpts.length = 0
+  calls = []; started = []; armed = []; evalWorld = false; wsTainted = false; paused.length = 0; shellOpts.length = 0
   watchReply = () => ({ id: 'w1', createdAt: new Date(0), deadlineAt: new Date(30 * 60_000) })
   execResult = (command, o) => {
-    // As the manager answers: tainted = the run or the workspace; confined when the switch is on.
-    const tainted = !!o.tainted || wsTainted
-    const reason = !switchOn || o.internal ? null : o.tainted ? 'tainted-run' : wsTainted ? 'tainted-workspace' : o.offline ? 'unverified' : null
-    const extra = { tainted, ...(o.offline && !tainted ? { offline: true } : {}), ...(reason ? { confined: { reason } as const } : {}) }
+    // As the manager answers: tainted = the run or the workspace (option C: nothing is confined).
+    const extra = { tainted: !!o.tainted || wsTainted }
     if (command === WRITE_SCRIPT) return res({ stdout: JSON.stringify({ ok: true, path: '/Users/bridget/mymind/workspaces/x/a', bytes: 1, created: true }), ...extra })
     if (command.startsWith('python3 -I -c')) return res({ stdout: JSON.stringify({ content: '     1\tx', lines: 1, totalLines: 1, truncated: false }), ...extra })
     return res({ stdout: 'ok\n', ...extra })
@@ -101,73 +97,55 @@ describe('workspace tools — the run\'s taint reaches every command', () => {
   })
 })
 
-describe('taint confinement (cycle 86, D6): the chip, the refusals, the switch', () => {
-  it('a tainted run\'s bash is confined: workspaceTainted FIRST, then `confined` (the chip) with why', async () => {
-    const r = await run('bash', { command: 'curl example.com' }, ctx(true))
-    expect(Object.keys(r).slice(0, 2)).toEqual(['workspaceTainted', 'confined'])
-    expect(r.confined).toEqual({ reason: 'tainted-run', note: expect.stringMatching(/read Tony's mail, calendar or contacts.*no network, writes only inside the workspace, no secrets/) })
-    expect(r).not.toHaveProperty('networkOff')
-    expect((await tool('bash').handler({ command: 'ls' }, ctx(true))).summary).toMatch(/\(confined\)$/)
-    expect(calls.at(-1)!.o.audit).toEqual({ tool: 'bash' })
-  })
-  it('every tool carries the chip when its command ran confined (read_file here)', async () => {
-    expect((await run('read_file', { path: 'a' }, ctx(true))).confined).toMatchObject({ reason: 'tainted-run' })
-  })
-  it('run_in_background is refused with a clear message — nothing starts — and the refusal shows the chip', async () => {
-    const r = await run('bash', { command: 'npm run dev', run_in_background: true }, ctx(true))
-    expect(r.error).toMatch(/background shells are not available/)
-    expect(r.confined).toMatchObject({ reason: 'tainted-run' })
-    expect(started).toEqual([])
-    expect(calls).toEqual([])
-  })
-  it('watch is refused — nothing is armed', async () => {
-    const r = await run('watch', { command: 'true', until: 'exit0' }, ctx(true))
-    expect(r.error).toMatch(/watches are not available/)
-    expect(armed).toEqual([])
-  })
-  it('a TAINTED WORKSPACE (persistent) confines an untainted run too: background shells refused', async () => {
-    wsTainted = true
-    const r = await run('bash', { command: 'sleep 9', run_in_background: true })
-    expect(r.error).toMatch(/handled mail\/calendar content.*until Tony re-enables it.*background shells are not available/)
-    expect(started).toEqual([])
-    expect((await run('bash', { command: 'ls' })).confined).toMatchObject({ reason: 'tainted-workspace' })
-  })
-  it('switch OFF: a tainted run is not confined — no chip, background shells and watches allowed (still no secrets, still flagged)', async () => {
-    switchOn = false
+describe('cycle 86 option C: a tainted run runs like a clean one (only the flag differs)', () => {
+  it('a tainted run\'s bash: workspaceTainted first, no chip, no refusal; the command gets the secrets', async () => {
     secretStore.opted = { TOKEN: 'sekrit-token-value' }; secretStore.all = { TOKEN: 'sekrit-token-value' }
-    const r = await run('bash', { command: 'ls' }, ctx(true))
+    const r = await run('bash', { command: 'curl example.com' }, ctx(true))
+    expect(Object.keys(r)[0]).toBe('workspaceTainted')
     expect(r).not.toHaveProperty('confined')
-    expect(r).toMatchObject({ workspaceTainted: true })
-    expect(calls.at(-1)!.o.secrets).toBeUndefined()
+    expect(calls.at(-1)!.o).toMatchObject({ tainted: true, secrets: { TOKEN: 'sekrit-token-value' } })
+    expect((await tool('bash').handler({ command: 'ls' }, ctx(true))).summary).not.toMatch(/confined/)
+  })
+  it('background shells and watches are allowed in a tainted run (the start carries the taint and the secrets)', async () => {
+    secretStore.opted = { TOKEN: 'sekrit-token-value' }; secretStore.all = { TOKEN: 'sekrit-token-value' }
     const bg = await run('bash', { command: 'sleep 9', run_in_background: true }, ctx(true))
     expect(bg).toMatchObject({ state: 'running' })
-    // The start carries the run's taint (the workspace is marked as by any tainted command), no secrets.
-    expect(rtNow.shells.start).toHaveBeenLastCalledWith(WS, 'sleep 9', expect.objectContaining({ tainted: true }))
-    expect((rtNow.shells.start as unknown as ReturnType<typeof vi.fn>).mock.lastCall![2]).not.toHaveProperty('secrets')
+    expect(rtNow.shells.start).toHaveBeenLastCalledWith(WS, 'sleep 9', expect.objectContaining({ tainted: true, secrets: { TOKEN: 'sekrit-token-value' } }))
     expect(await run('watch', { command: 'true', until: 'exit0' }, ctx(true))).toMatchObject({ watchId: 'w1' })
+  })
+  it('a TAINTED WORKSPACE allows background shells and watches in an untainted run too; its results carry the flag', async () => {
+    wsTainted = true
+    expect(await run('bash', { command: 'sleep 9', run_in_background: true })).toMatchObject({ state: 'running' })
+    expect(started).toEqual(['sleep 9'])
+    expect(await run('watch', { command: 'true', until: 'exit0' })).toMatchObject({ watchId: 'w1' })
+    const r = await run('bash', { command: 'ls' })
+    expect(Object.keys(r)[0]).toBe('workspaceTainted')
+    expect(r).not.toHaveProperty('confined')
+  })
+  it('an eval world (manager.offline) refuses background shells and watches — nothing starts or is armed', async () => {
+    evalWorld = true
+    expect((await run('bash', { command: 'npm run dev', run_in_background: true })).error).toMatch(/Eval world.*background shells are not available/)
+    expect((await run('watch', { command: 'true', until: 'exit0' })).error).toMatch(/Eval world.*watches are not available/)
+    expect(started).toEqual([])
+    expect(armed).toEqual([])
+    expect(calls).toEqual([])
   })
 })
 
-describe('final follow-up (I5): a run tainted ONLY `unverified` runs confined without tainting the workspace', () => {
+describe('final follow-up (I5): a run tainted ONLY `unverified` does not taint the workspace', () => {
   const unverified = (): ToolContext => ({ signal: new AbortController().signal, isTainted: () => true, taint: () => ({ sources: ['unverified'], flags: [] }) })
   const alsoMail = (): ToolContext => ({ signal: new AbortController().signal, isTainted: () => true, taint: () => ({ sources: ['mail', 'unverified'], flags: [] }) })
-  it('bash: exec offline (not tainted), no secrets; the result is confined (unverified) and does NOT carry workspaceTainted', async () => {
+  it('bash: exec not tainted (the workspace is not marked), runs as usual with the secrets; no workspaceTainted', async () => {
     secretStore.opted = { TOKEN: 'sekrit-token-value' }; secretStore.all = { TOKEN: 'sekrit-token-value' }
     const r = await run('bash', { command: 'curl example.com' }, unverified())
-    expect(calls.map(c => [c.o.tainted, c.o.offline])).toEqual([[false, true]])
-    expect(calls[0]!.o.secrets).toBeUndefined()
+    expect(calls.map(c => c.o.tainted)).toEqual([false])
+    expect(calls[0]!.o.secrets).toEqual({ TOKEN: 'sekrit-token-value' })
     expect(r).not.toHaveProperty('workspaceTainted')
-    expect(r.confined).toEqual({ reason: 'unverified', note: expect.stringMatching(/could not verify.*the workspace itself is not marked/) })
-  })
-  it('background shells and watches are refused like in a tainted run', async () => {
-    expect((await run('bash', { command: 'npm run dev', run_in_background: true }, unverified())).error).toMatch(/background shells are not available/)
-    expect((await run('watch', { command: 'true', until: 'exit0' }, unverified())).error).toMatch(/watches are not available/)
-    expect(started).toEqual([])
-    expect(armed).toEqual([])
+    expect(r).not.toHaveProperty('confined')
   })
   it('any other source alongside it → the ordinary tainted path (the workspace is tainted)', async () => {
     await run('bash', { command: 'ls' }, alsoMail())
-    expect(calls.map(c => [c.o.tainted, c.o.offline])).toEqual([[true, undefined]])
+    expect(calls.map(c => c.o.tainted)).toEqual([true])
   })
   it('runNetworkMode: clean / offline / tainted, and fail closed with no isTainted', async () => {
     const { runNetworkMode } = await import('./workspace')
@@ -321,10 +299,10 @@ describe('fix round 1', () => {
     expect(Object.keys(r)[0]).toBe('workspaceTainted')
     vi.restoreAllMocks()
   })
-  it('M2: watch is refused in a tainted workspace (even in an untainted run) while confinement is on', async () => {
+  it('M2 (option C): a watch in a tainted workspace is armed like any other', async () => {
     wsTainted = true
-    expect((await run('watch', { command: 'true', until: 'exit0' })).error).toMatch(/until Tony re-enables it.*watches are not available/)
-    expect(armed).toEqual([])
+    expect(await run('watch', { command: 'true', until: 'exit0' })).toMatchObject({ watchId: 'w1' })
+    expect(armed).toHaveLength(1)
   })
   it('I2: a workstream over its watch caps is paused for Tony, and the tool says so; a workspace cap is just refused', async () => {
     install({ workstreamId: 'ws-9', conversationId: 't-9' })
@@ -390,7 +368,7 @@ describe('verified ⚠(a): the history policy never loses workspaceTainted while
   })
 })
 
-describe('Task 3: sandbox secrets (spec §6) — opted in, never tainted, values never in results', () => {
+describe('Task 3: sandbox secrets (spec §6) — opted in, every run (option C), values never in results', () => {
   const VALUE = 'ghp_SuperSecretValue123'
   beforeEach(() => {
     secretStore.opted = { GITHUB_TOKEN: VALUE, DOCKER_HOST: 'tcp://evil:2375', HOME: '/root', LD_PRELOAD: '/x.so' }
@@ -403,15 +381,15 @@ describe('Task 3: sandbox secrets (spec §6) — opted in, never tainted, values
     expect(bashCall().o.secrets).toEqual({ GITHUB_TOKEN: VALUE })
     expect(bashCall().o.tainted).toBe(false)
   })
-  it('a TAINTED run gets none (it runs confined)', async () => {
+  it('option C: a TAINTED run gets them too (it runs like a clean one)', async () => {
     await run('bash', { command: 'env' }, ctx(true))
     expect(bashCall().o.tainted).toBe(true)
-    expect(bashCall().o.secrets).toBeUndefined()
+    expect(bashCall().o.secrets).toEqual({ GITHUB_TOKEN: VALUE })
   })
-  it('a TAINTED WORKSPACE gets none, even in an untainted run', async () => {
+  it('option C: so does an untainted run in a TAINTED WORKSPACE', async () => {
     wsTainted = true
     await run('bash', { command: 'env' }, ctx(false))
-    expect(bashCall().o.secrets).toBeUndefined()
+    expect(bashCall().o.secrets).toEqual({ GITHUB_TOKEN: VALUE })
   })
   it('nothing opted in → no secrets option at all', async () => {
     secretStore.opted = {}
@@ -582,10 +560,10 @@ describe('follow-up 2 (NB3): bash_output / kill_shell always reach the REAL proc
     const shellCalls: Array<{ command: string; o?: ExecOptions }> = []
     let killedInContainer = false
     const shells = createShellRegistry({
-      // A confined / offline read could not be trusted to see the shell: the registry must run internal.
+      // A non-internal read could not be trusted to see the shell: the registry must run internal.
       exec: async (_id: string, command: string, o?: ExecOptions) => {
         shellCalls.push({ command, o })
-        if (o?.offline || !o?.internal) return res({ stdout: `${SHELL_STATUS_MARK}gone:0:0\n` })
+        if (!o?.internal) return res({ stdout: `${SHELL_STATUS_MARK}gone:0:0\n` })
         if (command === shellKillCommand(SH)) { killedInContainer = true; return res({ stdout: `${SHELL_STATUS_MARK}gone:3:0\n` }) }
         return res({ stdout: `${SHELL_STATUS_MARK}running:3:3\n${Buffer.from('abc').toString('base64')}` })
       },
@@ -610,6 +588,6 @@ describe('follow-up 2 (NB3): bash_output / kill_shell always reach the REAL proc
     expect(killedInContainer).toBe(true)
     expect(k).toMatchObject({ state: 'killed' })
     expect(k).not.toHaveProperty('alreadyEnded', true)
-    expect(shellCalls.every(c => !c.o?.offline && c.o?.internal === true)).toBe(true)
+    expect(shellCalls.every(c => c.o?.internal === true)).toBe(true)
   })
 })

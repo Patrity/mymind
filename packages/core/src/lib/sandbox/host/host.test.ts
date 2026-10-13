@@ -6,7 +6,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { confinementProfile, credentialPaths, MACH_DENY, sbplString } from './profile'
+import { confinementProfile, MACH_DENY, sbplString } from './profile'
 import { assertEvalSpawn, registerEvalScratch, runHost, unregisterEvalScratch, type HostCommand } from './spawn'
 import { assertSecretName, confinedEnv, hostBaseEnv } from './env'
 
@@ -32,7 +32,8 @@ describe('the sandbox-exec profile', () => {
     const p = confinementProfile({ writable: ['/w/ws', '/w/tmp/'] })
     const lines = p.split('\n')
     expect(lines.slice(0, 5)).toEqual(['(version 1)', '(allow default)', '(deny network*)', '(deny user-preference-write)', '(deny appleevent-send)'])
-    expect(p).toContain('(global-name "com.apple.coreservices.launchservicesd")')
+    expect(p).toContain('(global-name-regex #"^com\\.apple\\.coreservices\\.")')
+    expect(p).toContain('(global-name-regex #"^com\\.apple\\.lsd\\.")')
     expect(p).toContain('(global-name "com.apple.dnssd.service")')
     expect(p).toContain('(global-name "com.apple.SecurityServer")')
     expect(p).toContain(`(deny mach-lookup ${MACH_DENY.join(' ')})`)
@@ -40,11 +41,6 @@ describe('the sandbox-exec profile', () => {
     // The allow follows its deny (sandbox-exec: the last matching rule wins), trailing slash trimmed.
     expect(lines.indexOf('(deny file-write*)')).toBeLessThan(lines.findIndex(l => l.startsWith('(allow file-write*')))
     expect(lines.at(-1)).toMatch(/^\(allow file-write\* \(subpath "\/w\/ws"\) \(subpath "\/w\/tmp"\) \(literal "\/dev\/null"\)/)
-    // credential read-denies come LAST (nothing after them can re-allow)
-    const withSecrets = confinementProfile({ writable: ['/w/ws'], denyReadUnder: '/h', readable: ['/h/w'], secretPaths: ['/h/w/.ssh'], secretNameUnder: ['/h/.config'] }).split('\n')
-    expect(withSecrets.at(-1)).toBe('(deny file-read* (subpath "/h/w/.ssh") (regex #"^/h/\\.config/.*([Tt]oken|[Cc]redential|[Ss]ecret)"))')
-    expect(credentialPaths('/Users/b', ['/srv/app/.env'])).toEqual(expect.arrayContaining(['/Users/b/.ssh', '/Users/b/.config/gh', '/Users/b/.netrc', '/Users/b/.aws', '/Users/b/.docker', '/Users/b/Library/Keychains', '/Users/b/Library/Application Support/Google/Chrome', '/Users/b/mymind/env', '/srv/app/.env']))
-    expect(p).not.toContain('file-read*')
   })
 
   it('eval: reads under the home dir denied, the world dir allowed after it', () => {
@@ -228,7 +224,7 @@ describe.runIf(darwin)('confinement under sandbox-exec (macOS)', () => {
 
 // ── fix round 1: out-of-process escapes and credential reads (macOS) ──────────────────────────
 
-describe.runIf(darwin)('fix round 1: what a confined command can no longer reach (real sandbox-exec probes)', () => {
+describe.runIf(darwin)('fix rounds 1–2: what an eval-world command can not reach (real sandbox-exec probes)', () => {
   const run = (command: string, confined: boolean, extra: Partial<HostCommand> = {}) =>
     runHost({ ...base(), env: confined ? confinedEnv(hostBaseEnv(), tmp) : hostBaseEnv(), ...(confined ? { confine: { writable: [ws, tmp] } } : {}), command, ...extra })
 
@@ -236,7 +232,7 @@ describe.runIf(darwin)('fix round 1: what a confined command can no longer reach
     const lookup = path.join(root, 'look.py')
     await writeFile(lookup, ['import ctypes, sys', 'lib = ctypes.CDLL("/usr/lib/libSystem.dylib")', 'bp = ctypes.c_uint.in_dll(lib, "bootstrap_port")',
       'for n in sys.argv[1:]:', '    port = ctypes.c_uint(0)', '    print(n, lib.bootstrap_look_up(bp, n.encode(), ctypes.byref(port)))'].join('\n'))
-    const names = ['com.apple.coreservices.launchservicesd', 'com.apple.dnssd.service', 'com.apple.nsurlsessiond', 'com.apple.pasteboard.1', 'com.apple.SecurityServer',
+    const names = ['com.apple.coreservices.launchservicesd', 'com.apple.coreservices.quarantine-resolver', 'com.apple.lsd.mapdb', 'com.apple.dnssd.service', 'com.apple.nsurlsessiond', 'com.apple.pasteboard.1', 'com.apple.SecurityServer',
       'com.apple.securityd.xpc', 'com.apple.imagent.desktop.auth', 'com.apple.imtransferservices.IMTransferAgent', 'com.apple.sharingd', 'com.apple.shortcuts.systemshortcutservice.runner', 'com.apple.siriactionsd.xpc']
     const parse = (out: string) => Object.fromEntries(out.trim().split('\n').map(l => l.split(' ')).map(([n, r]) => [n, Number(r)]))
     const clean = parse((await run(`python3 -I ${lookup} ${names.join(' ')}`, false)).stdout)
@@ -260,9 +256,11 @@ describe.runIf(darwin)('fix round 1: what a confined command can no longer reach
 
   it('no preference writes through cfprefsd (`defaults write` persists nothing)', async () => {
     const domain = `mm.host.test.${process.pid}`
-    const r = await run(`defaults write ${domain} k v; echo "rc=$?"`, true)
-    expect(r.stdout).toMatch(/rc=[1-9]/)
-    await expect(readFile(path.join(os.homedir(), 'Library/Preferences', `${domain}.plist`))).rejects.toThrow(/ENOENT/)
+    try {
+      const r = await run(`defaults write ${domain} k v; echo "rc=$?"`, true)
+      expect(r.stdout).toMatch(/rc=[1-9]/)
+      await expect(readFile(path.join(os.homedir(), 'Library/Preferences', `${domain}.plist`))).rejects.toThrow(/ENOENT/)
+    } finally { await runHost({ ...base(), command: `defaults delete ${domain} >/dev/null 2>&1; rm -f ~/Library/Preferences/${domain}.plist` }) }
   })
 
   it('/usr/bin/shortcuts can not even start (nothing of Tony\'s is run: the exec itself is refused)', async () => {
@@ -294,23 +292,30 @@ describe.runIf(darwin)('fix round 1: what a confined command can no longer reach
     expect(r.stderr).toMatch(/-600/)
   })
 
-  it('C1: credential paths are unreadable confined (dirs, files, a *token* name under ~/.config, MyMind\'s env); the rest of home is not', async () => {
-    const home = path.join(root, 'fakehome')
-    const files: Record<string, string> = {
-      '.ssh/id_ed25519': 'KEY', '.config/gh/hosts.yml': 'GH', '.netrc': 'NETRC', '.aws/credentials': 'AWS', '.docker/config.json': 'DOCKER',
-      'Library/Keychains/login.keychain-db': 'KC', 'Library/Application Support/Google/Chrome/Default/Cookies': 'COOKIE',
-      '.config/someapp/api_token': 'TOKEN', 'mymind/env/mymind.env': 'ENV', 'notes.txt': 'NOTES'
-    }
-    for (const [rel, v] of Object.entries(files)) { await mkdir(path.dirname(path.join(home, rel)), { recursive: true }); await writeFile(path.join(home, rel), v) }
-    const extraEnv = path.join(root, 'app.env')
-    await writeFile(extraEnv, 'DATABASE_URL=x')
-    const confine = { writable: [ws, tmp], secretPaths: credentialPaths(home, [extraEnv]), secretNameUnder: [path.join(home, '.config')] }
-    const cat = (rel: string) => `cat ${JSON.stringify(path.join(home, rel))} 2>/dev/null; echo "|$?"`
-    for (const rel of Object.keys(files).filter(r => r !== 'notes.txt')) {
-      expect((await runHost({ ...base(), command: cat(rel) })).stdout, `clean ${rel}`).toBe(`${files[rel]}|0\n`)
-      expect((await runHost({ ...base(), confine, command: cat(rel) })).stdout, `confined ${rel}`).toMatch(/^\|1\n$/)
-    }
-    expect((await runHost({ ...base(), confine, command: `cat ${extraEnv} 2>/dev/null; echo "|$?"` })).stdout).toBe('|1\n')
-    expect((await runHost({ ...base(), confine, command: cat('notes.txt') })).stdout).toBe('NOTES|0\n')
-  })
+  it('LaunchServices: LSOpenCFURLRef can not hand a URL to the browser — a loopback listener never sees the request', async () => {
+    // Re-review I4: denying launchservicesd alone left LSOpen working (the browser fetched the URL,
+    // with whatever data it carried). Only the clean case would launch a browser, so it is never run.
+    const lsopen = path.join(root, 'lsopen.py')
+    await writeFile(lsopen, [
+      'import ctypes, sys',
+      'cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")',
+      'cs = ctypes.CDLL("/System/Library/Frameworks/CoreServices.framework/CoreServices")',
+      'cf.CFURLCreateWithBytes.restype = ctypes.c_void_p',
+      'cf.CFURLCreateWithBytes.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32, ctypes.c_void_p]',
+      'cs.LSOpenCFURLRef.argtypes = [ctypes.c_void_p, ctypes.c_void_p]',
+      'u = sys.argv[1].encode()',
+      'print("ls=%d" % cs.LSOpenCFURLRef(cf.CFURLCreateWithBytes(None, u, len(u), 0x08000100, None), None))'
+    ].join('\n'))
+    const seen: string[] = []
+    const server = net.createServer((c) => { c.on('error', () => {}); c.on('data', d => seen.push(d.toString().split('\r\n')[0]!)); c.end('HTTP/1.1 204 No Content\r\n\r\n') })
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()))
+    try {
+      const port = (server.address() as net.AddressInfo).port
+      const r = await run(`python3 -I ${lsopen} 'http://127.0.0.1:${port}/?leak=MM_LSOPEN_PROBE'`, true)
+      expect(r.stdout).toMatch(/^ls=-?\d+\n$/)
+      expect(r.stdout).not.toBe('ls=0\n')
+      await sleep(3000) // a browser would have fetched by now
+      expect(seen).toEqual([])
+    } finally { await new Promise(r => server.close(r)) }
+  }, 20_000)
 })

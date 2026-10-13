@@ -50,7 +50,7 @@ describe('export_to_coordinator (host runtime)', () => {
     setBusNs(NS)
     root = realpathSync(mkdtempSync(path.join(tmpdir(), 'mm-t83x-')))
     m = createSandboxManager({
-      settings: { workspacesDir: root }, taintConfinement: async () => false, record: () => {},
+      settings: { workspacesDir: root },
       log: { info: () => {}, warn: () => {}, error: () => {} }
     })
     rt = createWorkspaceRuntime(m, { resolve: async () => ({ workspaceId: as.workspaceId, kind: 'workstream', workstreamId: as.workstreamId, conversationId: null }) })

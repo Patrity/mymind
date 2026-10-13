@@ -241,7 +241,8 @@ function shellStatusLines(d: string): string[] {
     'if [ -n "$p" ] && ps -ww -o args= -p "$p" 2>/dev/null | grep -qF "mm-shell $d"; then st=running',
     'elif [ -f "$d/exit" ]; then st="exit:$(cat "$d/exit")"',
     'elif [ -d "$d" ]; then st=gone; fi',
-    'sz=$(wc -c < "$d/out" 2>/dev/null | tr -d " "); [ -n "$sz" ] || sz=0'
+    // Only a regular, non-link file is sized (fix round 2: `wc -c` on a FIFO would block).
+    'sz=0; if [ -f "$d/out" ] && [ ! -L "$d/out" ]; then sz=$(wc -c < "$d/out" 2>/dev/null | tr -d " "); [ -n "$sz" ] || sz=0; fi'
   ]
 }
 
@@ -368,7 +369,9 @@ export const DELETE_SCRIPT = py([
 export const EXPORT_MAX_BYTES = 400_000
 
 /** Python: open a path RELATIVE to the cwd with O_NOFOLLOW at every component (dir_fd chain), so
- *  no symlink — a final one or one in a parent — is ever followed. Raises OSError (ELOOP/ENOTDIR). */
+ *  no symlink — a final one or one in a parent — is ever followed. Raises OSError (ELOOP/ENOTDIR).
+ *  The final open is O_NONBLOCK (fix round 2): a FIFO opens at once instead of wedging the reader
+ *  until its timeout; the caller then refuses it as not a regular file. */
 const PY_OPEN_NOFOLLOW = [
   'def open_nofollow(rel):',
   '    parts = [x for x in rel.split("/") if x not in ("", ".")]',
@@ -377,7 +380,7 @@ const PY_OPEN_NOFOLLOW = [
   '    try:',
   '        for x in parts[:-1]:',
   '            nfd = os.open(x, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd); os.close(fd); fd = nfd',
-  '        return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)',
+  '        return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)',
   '    finally: os.close(fd)'
 ].join('\n')
 
@@ -395,9 +398,10 @@ export const READ_TEXT_SCRIPT = py([
   '    if p.startswith("/") or ".." in p.split("/"): out({"error": "outside", "message": "after reading mail or calendar content only files inside the workspace (a relative path, no ..) can be exported"})',
   '    try: fd = open_nofollow(p)',
   '    except FileNotFoundError: out({"error": "not_found"})',
+  '    except PermissionError: out({"error": "permission_denied"})',
   '    except OSError: out({"error": "symlink", "message": "a symbolic link (in the path or the file itself) can not be exported after reading mail or calendar content"})',
   'else:',
-  '    try: fd = os.open(p, os.O_RDONLY)',
+  '    try: fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK)',
   '    except FileNotFoundError: out({"error": "not_found"})',
   '    except PermissionError: out({"error": "permission_denied"})',
   '    except IsADirectoryError: out({"error": "not_a_regular_file"})',
@@ -413,13 +417,15 @@ export const READ_TEXT_SCRIPT = py([
 
 /** Background-shell output (bash_output / the Shells tail): `.mymind/shells/<id>/out` from byte
  *  argv[2], at most argv[3] bytes, base64 when argv[4] == "b64" — always O_NOFOLLOW at every
- *  component (fix round 1: the out file lives in the writable workspace; a confined command could
- *  swap it for a symlink to a credential and this unconfined reader would hand it back). */
+ *  component (fix round 1: the out file lives in the writable workspace; a command could swap it for
+ *  a symlink to a file it can't otherwise reach and this reader would hand it back). */
 export const SHELL_READ_SCRIPT = [
   'import os, sys, base64',
   PY_OPEN_NOFOLLOW,
   'try: fd = open_nofollow(".mymind/shells/%s/out" % sys.argv[1])',
   'except OSError: sys.exit(3)',
+  'import stat',
+  'if not stat.S_ISREG(os.fstat(fd).st_mode): sys.exit(3)',
   'os.lseek(fd, int(sys.argv[2]), 0); data = os.read(fd, int(sys.argv[3]))',
   'sys.stdout.buffer.write(base64.b64encode(data) if sys.argv[4] == "b64" else data)'
 ].join('\n')

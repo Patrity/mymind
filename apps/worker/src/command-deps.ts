@@ -13,7 +13,6 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
     import('@mymind/core/lib/bus/invalidate'),
     import('@mymind/core/lib/agent/workstreams/loop')
   ])
-  const { sandboxManager } = await import('@mymind/core/lib/sandbox/manager')
   const { readWorkspaceText } = await import('@mymind/core/lib/sandbox/runtime')
   const view = await import('@mymind/core/lib/sandbox/view')
   return {
@@ -31,11 +30,6 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
     invalidate: cache => invalidate.invalidateLocalCache(cache),
     // Cancel / resume / steer (spec §3.2, §5.5): acts on this process's segments + the DB, then kicks.
     workstreamControl: p => workstreams.controlWorkstream(p),
-    // Cycle 82/86: the workspaces live here — stop the workspace's tainted runs, then clear the taint.
-    workspaceReenableNetwork: async (p) => {
-      const row = await sandboxManager().reenableNetwork(p.workspaceId)
-      return { id: row.id, tainted: row.tainted }
-    },
     // Task 2: export_to_document replayed in the web reads its file here, where the workspace is.
     workspaceReadText: p => readWorkspaceText(p.workspaceId, p.path, { tainted: p.tainted === true, offline: p.offline === true }),
     // Task 3: the Files / Shells UI (lib/sandbox/view.ts) — every read runs here, in the workspace.

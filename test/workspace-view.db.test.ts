@@ -1,7 +1,7 @@
 // Cycle 82 Task 3 / cycle 86 — the Files / Shells UI reads and workspace secrets on the HOST runtime +
 // the dev DB. Rows, processes and the temp dir are removed in afterAll. The secret store is faked here
 // (the dev DB's real exec secrets are never touched); everything else — the manager, the scripts, the
-// processes — is real. The confined part needs macOS sandbox-exec.
+// processes — is real.
 process.loadEnvFile('.env')
 import { createHash } from 'node:crypto'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
@@ -40,7 +40,6 @@ const RUN = `wsv-${process.pid}-${Date.now().toString(36)}`
 // shared DB never scans it, and afterAll removes every row of it (no orphans).
 const NS = RUN.replace(/[^A-Za-z0-9_-]/g, '_')
 
-const darwin = process.platform === 'darwin'
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 describe('workspace UI reads + workspace secrets (host runtime)', () => {
@@ -57,7 +56,7 @@ describe('workspace UI reads + workspace secrets (host runtime)', () => {
   beforeAll(async () => {
     setBusNs(NS)
     root = realpathSync(mkdtempSync(path.join(tmpdir(), 'mm-wsv-')))
-    m = createSandboxManager({ settings: { workspacesDir: root }, taintConfinement: async () => true, record: () => {}, log: { info: () => {}, warn: () => {}, error: () => {} } })
+    m = createSandboxManager({ settings: { workspacesDir: root }, log: { info: () => {}, warn: () => {}, error: () => {} } })
     const [r] = await useDb().insert(workspaces).values({ kind: 'workstream', ns: NS }).returning()
     rowIds.push(r!.id)
     ws = r!.id
@@ -228,7 +227,7 @@ describe('workspace UI reads + workspace secrets (host runtime)', () => {
     expect(parts.join('')).toBe(want)
   }, 60_000)
 
-  it('secrets: an opted-in secret is in `env` of an untainted command (value masked); reserved names never; a tainted run gets none', async () => {
+  it('secrets: an opted-in secret is in `env` of an untainted command (value masked); reserved names never; a tainted run gets it too (option C)', async () => {
     secretStore.opted = { MM_TEST_SECRET: SECRET, DOCKER_HOST: 'tcp://evil:2375', HOME: '/root' }
     try {
       tainted = false
@@ -244,16 +243,17 @@ describe('workspace UI reads + workspace secrets (host runtime)', () => {
       let tl = await shellTail(ws, bg.shellId)
       for (let i = 0; i < 40 && tl.state === 'running'; i++) { await sleep(250); tl = await shellTail(ws, bg.shellId) }
       expect(tl.output).toBe('MM_TEST_SECRET=«redacted»\n')
-      if (!darwin) return // confinement needs macOS sandbox-exec
+      // Option C: a tainted run runs like a clean one — it gets the secret (masked), and is not confined.
       tainted = true
       const t = await bash('env')
-      expect(t.confined).toMatchObject({ reason: 'tainted-run' })
-      expect(t.stdout).not.toContain('MM_TEST_SECRET')
-      // The workspace is now tainted: an UNTAINTED run gets none either (and runs confined).
+      expect(t).not.toHaveProperty('confined')
+      expect(t.stdout).toContain('MM_TEST_SECRET=«redacted»')
+      expect(JSON.stringify(t)).not.toContain(SECRET)
+      // The workspace is now tainted: an untainted run gets it too, and its result carries the flag.
       tainted = false
       const u = await bash('env')
-      expect(u.stdout).not.toContain('MM_TEST_SECRET')
-      expect(u.confined).toMatchObject({ reason: 'tainted-workspace' })
+      expect(u.stdout).toContain('MM_TEST_SECRET=«redacted»')
+      expect(Object.keys(u)[0]).toBe('workspaceTainted')
     } finally {
       secretStore.opted = {}
       tainted = false

@@ -4,7 +4,7 @@
 //
 // Persisted (`workspace_watches`): the worker re-arms every armed watch at boot, so a restart costs
 // at most one interval. Polls run through the manager like any command (with no secrets). A watch is
-// never armed where commands run confined, and a workspace confined mid-flight cancels its watches.
+// never armed in an eval world (its commands are confined and can't outlive the call).
 // The regex is evaluated in the poll's own python process (fs-ops WATCH_POLL_SCRIPT) — a pathological
 // pattern can never block the worker's event loop.
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
