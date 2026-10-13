@@ -6,8 +6,9 @@ export const BRAVE_BURST = 3
 
 export const MAX_QUEUE_WAIT_MS = 60_000
 
+/** The queue is too long: the model sees this text — it tells it to slow its fan-out, not to hammer. */
 export class SearchBusyError extends Error {
-  constructor() { super('search busy, try again') }
+  constructor() { super('search busy: too many searches at once — wait and retry fewer in parallel') }
 }
 
 function abortReason(signal: AbortSignal): unknown {
@@ -25,12 +26,18 @@ export function raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
   })
 }
 
-export interface LimiterClock {
-  now(): number
-  sleep(ms: number): Promise<void>
+/** A sleep that rejects on abort AND clears its timer then (no timer outlives an aborted wait). */
+export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  let t: ReturnType<typeof setTimeout> | undefined
+  return raceAbort(new Promise<void>((r) => { t = setTimeout(r, ms) }), signal).finally(() => clearTimeout(t))
 }
 
-const realClock: LimiterClock = { now: () => Date.now(), sleep: ms => new Promise(r => setTimeout(r, ms)) }
+export interface LimiterClock {
+  now(): number
+  sleep(ms: number, signal?: AbortSignal): Promise<void>
+}
+
+const realClock: LimiterClock = { now: () => Date.now(), sleep: abortableSleep }
 
 export class TokenBucket {
   private tokens: number
@@ -72,7 +79,7 @@ export class TokenBucket {
         if (this.tokens >= 1) { this.tokens -= 1; return }
         const wait = Math.ceil(((1 - this.tokens) / this.rate) * 1000)
         if (this.clock.now() + wait > deadline) throw new SearchBusyError()
-        await raceAbort(this.clock.sleep(wait), signal)
+        await raceAbort(this.clock.sleep(wait, signal), signal)
       }
     })
     this.chain = run.then(() => undefined, () => undefined)

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { TokenBucket, SearchBusyError, type LimiterClock } from '@mymind/core/lib/search/limiter'
 import { braveProvider, parseRetryAfter } from '@mymind/core/lib/search/providers/brave'
 import { normalizeSearchConfig } from '@mymind/core/lib/search/store'
@@ -102,7 +102,8 @@ describe('TokenBucket abort + queue bound', () => {
     const b = new TokenBucket(1, 1, clock)
     await b.acquire()
     await expect(b.acquire(undefined, 500)).rejects.toBeInstanceOf(SearchBusyError)
-    await expect(b.acquire(undefined, 500)).rejects.toThrow('search busy, try again')
+    // The model reads this: it must say to slow the fan-out, not just "try again".
+    await expect(b.acquire(undefined, 500)).rejects.toThrow('too many searches at once — wait and retry fewer in parallel')
     expect(clock.t).toBe(0) // failed fast, never slept
     await b.acquire(undefined, 1500) // within budget still works
     expect(clock.t).toBe(1000)
@@ -114,6 +115,24 @@ describe('TokenBucket abort + queue bound', () => {
     await b.acquire()
     await b.acquire(undefined, 60_000) // waits 10s
     await expect(b.acquire(undefined, 5_000)).rejects.toBeInstanceOf(SearchBusyError)
+  })
+})
+
+describe('the real clock (final wave: Task 2 minor)', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('an aborted wait clears its sleep timer — nothing is left pending', async () => {
+    vi.useFakeTimers()
+    const b = new TokenBucket(0.05, 1) // the default (real) clock: 20 s per token (inside the 60 s max wait)
+    await b.acquire()
+    const ac = new AbortController()
+    const waiting = b.acquire(ac.signal)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(vi.getTimerCount()).toBe(1)
+    ac.abort()
+    await expect(waiting).rejects.toThrow()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
 
