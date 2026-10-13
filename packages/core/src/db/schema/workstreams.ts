@@ -18,7 +18,7 @@ export const workstreams = pgTable('workstreams', {
   attention: jsonb('attention'),                     // WorkstreamAttention | null
   /** Cycle 84: a detail of a `running` workstream — 'evaluating' while the judge decides whether a
    *  call needs Tony (Smart Approvals; no new state, attention only once a human is needed). */
-  stateDetail: text('state_detail').$type<'evaluating'>(),
+  stateDetail: text('state_detail').$type<'evaluating' | 'verifying'>(),
   summary: text('summary'),
   /** Why it failed (budget exhausted, repeated segment failure). Set while the final summary
    *  segment runs (state still 'running'), so a restart mid-summary still knows it is finishing. */
@@ -62,7 +62,12 @@ export const workstreams = pgTable('workstreams', {
   lifecycleNoted: text('lifecycle_noted'),
   /** Cycle 83 final fix wave (M4): on a COORDINATOR — when Tony was last texted about its children
    *  (approvals, escalated questions): at most one such text per tree per 10 minutes. */
-  treeAwayAt: timestamp('tree_away_at', { withTimezone: true })
+  treeAwayAt: timestamp('tree_away_at', { withTimezone: true }),
+  /** Cycle 85 (spec §2.3): the outcome verifier's latest verdict (OutcomeVerification) — set at every
+   *  verified finish_workstream (a send-back too). Null: never verified. */
+  verification: jsonb('verification'),
+  /** Cycle 85: how many times the verifier sent a finish back. ≤ 2 (MAX_SEND_BACKS); never reset. */
+  sendBacks: integer('send_backs').notNull().default(0)
 }, (t) => [
   index('workstreams_parent_idx').on(t.parentId),
   uniqueIndex('workstreams_conversation_idx').on(t.conversationId),

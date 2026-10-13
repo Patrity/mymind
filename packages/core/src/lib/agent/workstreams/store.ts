@@ -7,7 +7,7 @@ import { workspaces, workstreams, type WorkstreamRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
 import {
   DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, ZERO_USED, normalizeTreeBudget,
-  type TreeBudget, type WorkstreamAttention, type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
+  type OutcomeVerification, type TreeBudget, type WorkstreamAttention, type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 import { persistableTaint, TAINT_SOURCES, type ApprovalVerdictDTO, type TaintSource } from '../judge/types'
 
@@ -46,7 +46,8 @@ export function toWorkstreamDTO(r: WorkstreamRow, childIds: string[] = [], child
     createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(), finishedAt: r.finishedAt?.toISOString() ?? null,
     parentId: r.parentId, modelLabel: r.modelLabel, resolvedModel: r.isChild ? resolvedModel : null, workspaceMode: r.workspaceMode,
     treeBudget: treeBudgetOf(r), treeUsed: r.treeUsed ? usedOf({ used: r.treeUsed }) : null,
-    childIds, childCount, tainted: r.tainted, isChild: r.isChild
+    childIds, childCount, tainted: r.tainted, isChild: r.isChild,
+    verification: (r.verification as OutcomeVerification | null) ?? null, sendBacks: r.sendBacks ?? 0
   }
 }
 
@@ -237,7 +238,7 @@ export async function addWorkstreamTaint(id: string, sources: readonly TaintSour
 
 export async function patchWorkstream(
   id: string,
-  patch: Partial<Pick<WorkstreamRow, 'state' | 'used' | 'attention' | 'stateDetail' | 'summary' | 'failureReason' | 'failures' | 'lastOutcome' | 'cancelRequested' | 'currentRunId' | 'finishedAt' | 'budget' | 'treeBudget' | 'tainted'>>,
+  patch: Partial<Pick<WorkstreamRow, 'state' | 'used' | 'attention' | 'stateDetail' | 'summary' | 'failureReason' | 'failures' | 'lastOutcome' | 'cancelRequested' | 'currentRunId' | 'finishedAt' | 'budget' | 'treeBudget' | 'tainted' | 'verification'>>,
   whenStates?: WorkstreamState[]
 ): Promise<WorkstreamRow | null> {
   const where: SQL = and(eq(workstreams.id, id), whenStates?.length ? inArray(workstreams.state, whenStates) : undefined)!
@@ -252,5 +253,34 @@ export async function patchWorkstream(
   if (r && patch.state) {
     try { await (await import('./coordinator')).afterTransition(r) } catch (err) { console.error('[workstreams] tree transition hook failed:', err) }
   }
+  return r ?? null
+}
+
+/**
+ * Cycle 85: the `verifying` detail of a running workstream (the outcome verifier is checking a
+ * finish_workstream). Set only while `running`; cleared only while it still says `verifying` (an
+ * `evaluating` set meanwhile is never wiped). Publishes on a change.
+ */
+export async function setVerifying(id: string, on: boolean): Promise<boolean> {
+  const rows = await useDb().update(workstreams)
+    .set({ stateDetail: on ? 'verifying' : null, updatedAt: sql`now()` })
+    .where(and(eq(workstreams.id, id), on ? eq(workstreams.state, 'running') : eq(workstreams.stateDetail, 'verifying')))
+    .returning({ id: workstreams.id })
+  if (rows.length) publishWorkstream(id)
+  return rows.length > 0
+}
+
+/**
+ * Cycle 85: record one send-back — compare-and-set on the count read before verifying (`seen`), and
+ * only while the workstream is still `running`, so two verifications racing (a restart mid-verify)
+ * can never both count, and a send-back can never reopen work that finished or was cancelled.
+ * Returns the new row, or null when the guard did not match (the caller re-reads).
+ */
+export async function recordSendBack(id: string, seen: number, verification: OutcomeVerification): Promise<WorkstreamRow | null> {
+  const [r] = await useDb().update(workstreams)
+    .set({ sendBacks: sql`${workstreams.sendBacks} + 1`, verification, stateDetail: null, updatedAt: sql`now()` })
+    .where(and(eq(workstreams.id, id), eq(workstreams.state, 'running'), eq(workstreams.cancelRequested, false), eq(workstreams.sendBacks, seen)))
+    .returning()
+  if (r) publishWorkstream(id)
   return r ?? null
 }

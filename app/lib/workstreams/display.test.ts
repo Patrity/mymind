@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET, RESUME_EXTENSION, ZERO_USED } from '@mymind/core/shared/types/workstreams'
 import {
   BUDGET_NOTES, EVALUATING_META, STATE_META, stateMeta, canCancel, canResume, childModelLabel, elapsedMs, eventDisplay, formatCost, formatDuration, hiddenChildren,
-  nestWorkstreams, resumeAdds, resumeLabel, startedWorkstream
+  nestWorkstreams, resumeAdds, resumeLabel, startedWorkstream, VERIFYING_META, verifierBadge, verificationView
 } from './display'
+import type { OutcomeVerification } from '@mymind/core/shared/types/workstreams'
 import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
 import type { WorkstreamRow } from '@mymind/core/db/schema'
 
@@ -182,7 +183,7 @@ const dto = (o: Partial<WorkstreamDTO>): WorkstreamDTO => ({
   id: ID, conversationId: ID, originConversationId: null, goal: 'g', state: 'running', toolsets: [],
   budget: { maxSteps: 200, maxWallMs: 3_600_000 }, used: { ...ZERO_USED }, attention: null, stateDetail: null, summary: null, failureReason: null,
   currentRunId: null, createdAt: '2026-10-12T00:00:00Z', updatedAt: '2026-10-12T00:00:00Z', finishedAt: null,
-  parentId: null, modelLabel: null, resolvedModel: null, workspaceMode: 'own', treeBudget: null, treeUsed: null, childIds: [], childCount: 0, isChild: false, tainted: false, ...o
+  parentId: null, modelLabel: null, resolvedModel: null, workspaceMode: 'own', treeBudget: null, treeUsed: null, childIds: [], childCount: 0, isChild: false, tainted: false, verification: null, sendBacks: 0, ...o
 })
 
 describe('nestWorkstreams', () => {
@@ -230,5 +231,30 @@ describe('stateMeta (cycle 84: evaluating)', () => {
     expect(stateMeta({ state: 'running' })).toBe(STATE_META.running)
     expect(stateMeta({ state: 'attention', stateDetail: 'evaluating' })).toBe(STATE_META.attention)
     expect(stateMeta({ state: 'done', stateDetail: 'evaluating' })).toBe(STATE_META.done)
+  })
+})
+
+describe('cycle 85: the outcome verifier in the UI', () => {
+  const v = (o: Partial<OutcomeVerification>): OutcomeVerification => ({ verdict: 'partial', confidence: 0.8, gaps: ['no prices'], nextStep: 'add prices', model: 'm', latencyMs: 1200, outcome: 'flagged', sendBacks: 2, at: '2026-10-13T00:00:00Z', ...o })
+  it('running + verifying reads "verifying"; a stale detail on another state is ignored', () => {
+    expect(stateMeta({ state: 'running', stateDetail: 'verifying' })).toBe(VERIFYING_META)
+    expect(stateMeta({ state: 'done', stateDetail: 'verifying' })).toBe(STATE_META.done)
+  })
+  it('the list ⚠ badge: only a DONE workstream finished flagged (partial / unmet / error)', () => {
+    expect(verifierBadge({ state: 'done', verification: v({}) })).toEqual({ label: '⚠ partial', tooltip: 'Verifier: partial — no prices' })
+    expect(verifierBadge({ state: 'done', verification: v({ verdict: 'unmet', gaps: [] }) })).toEqual({ label: '⚠ unmet', tooltip: 'Verifier: unmet' })
+    expect(verifierBadge({ state: 'done', verification: v({ verdict: null, error: 'verifier timed out', gaps: [] }) })).toEqual({ label: '⚠ unverified', tooltip: 'The verifier could not check it (verifier timed out)' })
+    expect(verifierBadge({ state: 'done', verification: v({ verdict: 'met', outcome: 'finished' }) })).toBeNull()
+    expect(verifierBadge({ state: 'done', verification: v({ outcome: 'skipped', verdict: null }) })).toBeNull()
+    expect(verifierBadge({ state: 'running', verification: v({ outcome: 'sent-back' }) })).toBeNull()
+    expect(verifierBadge({ state: 'done', verification: null })).toBeNull()
+  })
+  it('the verdict panel', () => {
+    expect(verificationView(null, 0)).toBeNull()
+    expect(verificationView(v({ verdict: 'met', confidence: 0.92, outcome: 'finished' }), 1)).toMatchObject({ color: 'success', title: 'Verified: met (0.92) after 1 send-back' })
+    expect(verificationView(v({ outcome: 'sent-back', sendBacks: 1 }), 1)).toMatchObject({ color: 'warning', title: 'Sent back 1 of 2 — verifier: partial (0.80)' })
+    expect(verificationView(v({}), 2)).toMatchObject({ color: 'warning', title: '⚠ Finished unverified — verifier: partial (0.80) after 2 send-backs' })
+    expect(verificationView(v({ verdict: null, error: 'x' }), 0)).toMatchObject({ title: '⚠ Finished unverified — the verifier could not check it' })
+    expect(verificationView(v({ outcome: 'skipped', verdict: null }), 0)).toMatchObject({ color: 'neutral' })
   })
 })

@@ -48,7 +48,7 @@ import {
   type WorkstreamBudget, type WorkstreamDTO, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 import {
-  addWorkstreamTaint, budgetOf, exhausted, getWorkstream, patchAttentionJudge, patchWorkstream, publishWorkstream, rollupTree, storedTaintSources, usedOf,
+  addWorkstreamTaint, budgetOf, exhausted, getWorkstream, patchAttentionJudge, patchWorkstream, publishWorkstream, rollupTree, setVerifying, storedTaintSources, usedOf,
   workstreamDTO, workstreamForConversation, workstreamWorkspaceTainted, type WorkstreamRow
 } from './store'
 import { promptInfo, segmentOrigin, segmentText, type SegmentWhy } from './prompt'
@@ -151,6 +151,12 @@ export interface Segment {
    *  ask_tony await it, so a coordinator can never read a child's words before the child counts as
    *  tainted. Follow-up N3: REJECTS when a taint could not be persisted (they then refuse). */
   taintSettled(): Promise<void>
+  /** Cycle 85: the outcome verifier is checking a finish_workstream — `stateDetail: 'verifying'` while
+   *  on, and (like the judge's `evaluating`) the time does not count against the wall budget: the
+   *  verifier has its own 60 s deadline. Resolves once the row says so. */
+  verifying(on: boolean): Promise<void>
+  /** Cycle 85: aborts an in-flight verification (cancelWorkstream) — the finish is then refused. */
+  verifyAbort: AbortController | null
 }
 
 /** Who Tony sees a workstream as, and where its notes go (cycle 83): a child is shown as
@@ -354,6 +360,16 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
       taintChain.catch(() => {}) // observed by taintSettled / onSegmentFinished
     },
     taintSettled: () => taintChain,
+    verifyAbort: null,
+    async verifying(on) {
+      if (on) {
+        pause()
+        await serial(() => setVerifying(ws.id, true))
+      } else {
+        await serial(() => setVerifying(ws.id, false))
+        if (!evaluating.size && !waiting.size) resume()
+      }
+    },
     toolCalls: 0,
     stepsTaken: () => steps,
     shouldStop() {
@@ -1182,7 +1198,8 @@ export async function onSegmentInterrupted(run: AgentRun): Promise<string | null
     await failWorkstream(ws, `${failures} segments failed in a row (interrupted by restarts)`, null, 'interrupted')
     return null
   }
-  const row = await patchWorkstream(ws.id, { failures, lastOutcome: 'interrupted', state: 'running', attention: null }, RUNNABLE)
+  // Cycle 85: a verification the dead segment had in flight is gone with it (the next finish re-verifies).
+  const row = await patchWorkstream(ws.id, { failures, lastOutcome: 'interrupted', state: 'running', attention: null, stateDetail: null }, RUNNABLE)
   if (!row) return null
   if (row.failureReason) return enqueueWhy(row, 'budget', row.failureReason)
   return continueWith(row, run, 'restarted')
@@ -1360,6 +1377,8 @@ export async function cancelWorkstream(ws: WorkstreamRow): Promise<void> {
   const seg = [...active.values()].find(s => s.workstreamId === ws.id)
   if (seg) {
     seg.stop ??= 'cancel'
+    // Cycle 85: a verification in flight is abandoned — finish_workstream then refuses (cancelled).
+    seg.verifyAbort?.abort(new Error('workstream cancelled'))
     // C3: withdrawn by the cancel, not denied by Tony (recorded cancelled / system).
     for (const requestId of pendingBusApprovals(seg.runId)) cancelBusApproval(requestId)
     return

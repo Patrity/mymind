@@ -74,7 +74,7 @@ export interface WorkstreamDTO {
   attention: WorkstreamAttention | null
   /** Cycle 84: while `running` — 'evaluating': the judge is deciding whether a call needs Tony
    *  (Smart Approvals). Null otherwise. */
-  stateDetail: 'evaluating' | null
+  stateDetail: WorkstreamStateDetail | null
   summary: string | null
   failureReason: string | null
   currentRunId: string | null
@@ -103,6 +103,41 @@ export interface WorkstreamDTO {
   isChild: boolean
   /** A run of it read mail/calendar/contacts content. */
   tainted: boolean
+  /** Cycle 85: the outcome verifier's latest verdict on a finish_workstream (null: never verified). */
+  verification: OutcomeVerification | null
+  /** Cycle 85: how many times the verifier sent a finish back (≤ 2; survives segments and restarts). */
+  sendBacks: number
+}
+
+/** Cycle 84: 'evaluating' — the judge is deciding whether a call needs Tony. Cycle 85: 'verifying' —
+ *  the outcome verifier is checking a finish_workstream. Both only while `running`. */
+export type WorkstreamStateDetail = 'evaluating' | 'verifying'
+
+export const OUTCOME_VERDICTS = ['met', 'partial', 'unmet'] as const
+export type OutcomeVerdictKind = typeof OUTCOME_VERDICTS[number]
+
+/** Cycle 85 (spec §2.3): the outcome verifier's verdict, stored on the row (`workstreams.verification`).
+ *  `verdict` null = no usable verdict (`error` says why) — it never blocked the finish. `gaps` and
+ *  `nextStep` are MODEL OUTPUT: escaped plain text only. `outcome`: what the verdict did. */
+export interface OutcomeVerification {
+  verdict: OutcomeVerdictKind | null
+  confidence: number
+  gaps: string[]
+  nextStep: string | null
+  error?: string
+  model: string | null
+  latencyMs: number
+  /** `sent-back` (the work continued), `finished` (met), `flagged` (finished after the last send-back,
+   *  or on a verifier error), `skipped` (the judge is switched off). */
+  outcome: 'sent-back' | 'finished' | 'flagged' | 'skipped'
+  /** Send-backs so far, this one included. */
+  sendBacks: number
+  at: string
+}
+
+/** The ⚠ flag the list and the detail show: a finished workstream the verifier did not pass. */
+export function verificationFlagged(v: Pick<OutcomeVerification, 'outcome'> | null | undefined): boolean {
+  return v?.outcome === 'flagged'
 }
 
 export const DEFAULT_WORKSTREAM_BUDGET: WorkstreamBudget = { maxSteps: 400, maxWallMs: 7_200_000 }

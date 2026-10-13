@@ -279,6 +279,8 @@ async function send() {
           />
           ⚖ The judge is checking a call — Smart Approvals may run it without you.
         </p>
+        <!-- Cycle 85: the outcome verifier — checking a finish, or its latest verdict. -->
+        <WorkstreamsVerificationPanel :ws="ws" />
         <!-- What it is waiting on. The question / approval text is model-written → hardened. -->
         <UAlert
           v-if="ws.state === 'attention' && ws.attention"

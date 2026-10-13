@@ -42,6 +42,8 @@ import type { LiveEvent } from '@mymind/core/shared/types/live'
 import { buildAiTools } from '@mymind/core/lib/agent/ai-tools'
 import { gmailDeps, gmailSendTool } from '@mymind/core/lib/agent/tools/gmail'
 import { fakeFetch } from '@mymind/core/lib/google/fake-fetch'
+import { stubOutcomeVerifier } from './helpers/outcome-stub'
+stubOutcomeVerifier() // cycle 85: finishes here are not about the outcome judge
 const G = '/gmail/v1/users/me'
 
 const NS = `t5-ws-${process.pid}`

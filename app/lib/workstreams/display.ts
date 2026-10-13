@@ -1,8 +1,8 @@
 // Cycle 81 Task 6: pure display helpers for workstreams (spec §5.5) — kept out of the SFCs so the
 // labels, the budget maths and the event parsing are unit-tested.
 import {
-  BUDGET_LIMITS, COORDINATOR_ORIGIN, resumeBudget,
-  type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
+  BUDGET_LIMITS, COORDINATOR_ORIGIN, resumeBudget, verificationFlagged,
+  type OutcomeVerification, type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
 } from '@mymind/core/shared/types/workstreams'
 import { splitOrigin } from '@mymind/core/shared/utils/event-origin'
 
@@ -22,10 +22,42 @@ export const STATE_META: Record<WorkstreamState, { label: string; color: Color; 
  *  state, a detail of `running`. */
 export const EVALUATING_META = { label: 'evaluating', color: 'info', icon: 'i-lucide-scale' } as const satisfies { label: string; color: Color; icon: string }
 
-/** The badge for a workstream: its state, or "evaluating" while running with the judge deciding. */
-export function stateMeta(ws: { state: WorkstreamState; stateDetail?: 'evaluating' | null }): { label: string; color: Color; icon: string } {
+/** Cycle 85: a running workstream whose finish the outcome verifier is checking. */
+export const VERIFYING_META = { label: 'verifying', color: 'info', icon: 'i-lucide-list-checks' } as const satisfies { label: string; color: Color; icon: string }
+
+/** The badge for a workstream: its state, or "evaluating" / "verifying" while running with the judge
+ *  deciding a call / the verifier checking a finish. */
+export function stateMeta(ws: { state: WorkstreamState; stateDetail?: 'evaluating' | 'verifying' | null }): { label: string; color: Color; icon: string } {
   if (ws.state === 'running' && ws.stateDetail === 'evaluating') return EVALUATING_META
+  if (ws.state === 'running' && ws.stateDetail === 'verifying') return VERIFYING_META
   return STATE_META[ws.state]
+}
+
+/** Cycle 85: the list's ⚠ badge — a DONE workstream the verifier did not pass (partial / unmet / an
+ *  error), or null. Its text is ours; the gaps (model output) only go in the tooltip, as plain text. */
+export function verifierBadge(ws: Pick<WorkstreamDTO, 'state' | 'verification'>): { label: string; tooltip: string } | null {
+  const v = ws.verification
+  if (ws.state !== 'done' || !v || !verificationFlagged(v)) return null
+  const label = v.verdict ? `⚠ ${v.verdict}` : '⚠ unverified'
+  return { label, tooltip: v.verdict ? `Verifier: ${v.verdict}${v.gaps.length ? ` — ${v.gaps.join('; ')}` : ''}` : `The verifier could not check it (${v.error ?? 'no verdict'})` }
+}
+
+/** Cycle 85: the detail page's verdict panel — colour, icon, title. Null: never verified. */
+export function verificationView(v: OutcomeVerification | null, sendBacks: number): { color: Color; icon: string; title: string } | null {
+  if (!v) return null
+  const conf = (c: number) => c.toFixed(2)
+  switch (v.outcome) {
+    case 'finished':
+      return { color: 'success', icon: 'i-lucide-badge-check', title: `Verified: met (${conf(v.confidence)})${sendBacks ? ` after ${sendBacks} send-back${sendBacks === 1 ? '' : 's'}` : ''}` }
+    case 'sent-back':
+      return { color: 'warning', icon: 'i-lucide-undo-2', title: `Sent back ${v.sendBacks} of 2 — verifier: ${v.verdict ?? 'no verdict'}${v.verdict ? ` (${conf(v.confidence)})` : ''}` }
+    case 'flagged':
+      return v.verdict
+        ? { color: 'warning', icon: 'i-lucide-triangle-alert', title: `⚠ Finished unverified — verifier: ${v.verdict} (${conf(v.confidence)})${sendBacks ? ` after ${sendBacks} send-back${sendBacks === 1 ? '' : 's'}` : ''}` }
+        : { color: 'warning', icon: 'i-lucide-triangle-alert', title: `⚠ Finished unverified — the verifier could not check it` }
+    case 'skipped':
+      return { color: 'neutral', icon: 'i-lucide-circle-dashed', title: 'Not verified (the judge is switched off)' }
+  }
 }
 
 export function isTerminal(state: WorkstreamState): boolean {

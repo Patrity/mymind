@@ -43,6 +43,8 @@ import { segmentTaintDeps } from '@mymind/core/lib/agent/workstreams/loop'
 import { spawnWorkstreamsTool } from '@mymind/core/lib/agent/tools/coordinator'
 import { addWorkstreamTaint } from '@mymind/core/lib/agent/workstreams/store'
 import type { WorkstreamAttention } from '@mymind/core/shared/types/workstreams'
+import { stubOutcomeVerifier } from './helpers/outcome-stub'
+stubOutcomeVerifier() // cycle 85: finishes here are not about the outcome judge
 
 const NS = `judge-sticky-${process.pid}`
 const convIds: string[] = []

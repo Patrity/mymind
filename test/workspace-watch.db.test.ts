@@ -25,6 +25,8 @@ import { patchWorkstream } from '@mymind/core/lib/agent/workstreams/store'
 import { WATCH_POLL_SCRIPT } from '@mymind/core/lib/sandbox/fs-ops'
 import type { SandboxManager, SandboxExecResult } from '@mymind/core/lib/sandbox/manager'
 import type { RunAgentCtx, AgentMessage, AgentEvent } from '@mymind/core/lib/agent/run'
+import { stubOutcomeVerifier } from './helpers/outcome-stub'
+stubOutcomeVerifier() // cycle 85: finishes here are not about the outcome judge
 
 const NS = `t2-watch-${process.pid}`
 const convIds: string[] = []

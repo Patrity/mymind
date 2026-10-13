@@ -33,6 +33,8 @@ import { capResult, WRITE_RESULT_CAP } from '@mymind/core/lib/agent/tool-history
 import type { RunAgentCtx, AgentMessage, AgentEvent } from '@mymind/core/lib/agent/run'
 import type { ApprovalRequest } from '@mymind/core/lib/agent/types'
 import type { ChildWait, WorkstreamAttention } from '@mymind/core/shared/types/workstreams'
+import { stubOutcomeVerifier } from './helpers/outcome-stub'
+stubOutcomeVerifier() // cycle 85: finishes here are not about the outcome judge
 
 const NS = `t83-coord-${process.pid}`
 const convIds: string[] = []

@@ -10,7 +10,7 @@
  */
 import type { TableColumn } from '@nuxt/ui'
 import { BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET } from '@mymind/core/shared/types/workstreams'
-import { BUDGET_NOTES, stateMeta, childModelLabel, elapsedMs, formatCost, formatDuration, hiddenChildren, nestWorkstreams, type WorkstreamNode } from '~/lib/workstreams/display'
+import { BUDGET_NOTES, stateMeta, verifierBadge, childModelLabel, elapsedMs, formatCost, formatDuration, hiddenChildren, nestWorkstreams, type WorkstreamNode } from '~/lib/workstreams/display'
 
 definePageMeta({ title: 'Workstreams' })
 
@@ -122,6 +122,20 @@ async function create() {
             :label="stateMeta(row.original).label"
             :data-testid="`ws-state-${row.original.id}`"
           />
+          <!-- Cycle 85: finished, but the outcome verifier did not pass it. -->
+          <UTooltip
+            v-if="verifierBadge(row.original)"
+            :text="verifierBadge(row.original)!.tooltip"
+          >
+            <UBadge
+              color="warning"
+              variant="subtle"
+              size="sm"
+              class="ms-1"
+              :label="verifierBadge(row.original)!.label"
+              :data-testid="`ws-verifier-${row.original.id}`"
+            />
+          </UTooltip>
         </template>
 
         <template #goal-cell="{ row }">

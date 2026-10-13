@@ -3,7 +3,9 @@
 //                       NOT available inside a workstream (no recursion this step): the workstream
 //                       registry (profile.ts workstreamProfile) leaves it out, and the handler refuses
 //                       a workstream run anyway.
-//   finish_workstream — workstream runs only: done + the summary posted to the origin conversation.
+//   finish_workstream — workstream runs only: done + the summary posted to the origin conversation —
+//                       once the outcome verifier (cycle 85, judge/outcome.ts) has checked it: up to
+//                       2 send-backs ("Not done yet: …"), then it finishes flagged; never blocked.
 //   ask_tony          — workstream runs only: attention + a notification; resumes on his reply.
 // Never-throw contract (tools/jobs.ts): every failure is `{ ok: false, error }`.
 import { z } from 'zod'
@@ -13,7 +15,9 @@ import { agentRuns } from '../../../db/schema'
 import type { AgentTool, ToolContext } from '../types'
 import { persistableTaint, type TaintSource } from '../judge/types'
 import { ON_DEMAND_TOOLSETS, type ToolsetId } from '../toolsets'
-import { getWorkstream, patchWorkstream } from '../workstreams/store'
+import { getWorkstream, patchWorkstream, recordSendBack } from '../workstreams/store'
+import { recordEvent } from '../../observability/record'
+import type { OutcomeVerdict, OutcomeVerification } from '../judge/outcome'
 import { BUDGET_LIMITS, DEFAULT_TREE_BUDGET, TREE_BUDGET_LIMITS, workstreamPath } from '../../../shared/types/workstreams'
 
 const fail = (name: string, err: unknown) => {
@@ -36,6 +40,7 @@ export function runTaintSources(ctx: Pick<ToolContext, 'isTainted' | 'taint'>): 
 // import here would make the load order matter (it broke a replay-first entry in the review round).
 const loop = () => import('../workstreams/loop')
 const notify = () => import('../workstreams/notify')
+const outcome = () => import('../judge/outcome')
 
 export const startWorkstreamTool: AgentTool = {
   name: 'start_workstream',
@@ -90,7 +95,7 @@ export const finishWorkstreamTool: AgentTool = {
   name: 'finish_workstream',
   toolset: 'core',
   kind: 'create',
-  description: 'The goal is done: end this workstream with a summary for Tony (what you did, what you found, sources, anything left open). Nothing else ends a workstream.',
+  description: 'The goal is done: end this workstream with a summary for Tony (what you did, what you found, sources, anything left open). Nothing else ends a workstream. Your work is checked against the goal first: if something is missing you get "Not done yet: …" back — keep working on it, then finish again.',
   schema: { summary: z.string().min(1).max(8000).describe('The final report, markdown') },
   handler: async (a, ctx) => {
     try {
@@ -110,16 +115,103 @@ export const finishWorkstreamTool: AgentTool = {
       // M7: the taint bit is on the row before the work can end (a coordinator reads this summary).
       if (ctx.isTainted?.()) seg.markTainted(ctx.taint?.().sources)
       await seg.taintSettled()
-      const ws = await patchWorkstream(seg.workstreamId, { state: 'done', summary, attention: null, finishedAt: new Date() }, ['running', 'attention'])
-      if (!ws) return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'finish_workstream: not running' }
+      // Cycle 85 (spec §2.1): the outcome verifier checks the work against the goal first.
+      const checked = await verifyFinish(seg, summary, ctx.signal)
+      if ('refused' in checked) return { result: { ok: false, error: checked.refused }, summary: `finish_workstream: ${checked.summary}` }
+      if ('sendBack' in checked) return { result: { ok: false, notDone: true, error: checked.sendBack }, summary: checked.summary }
+      const verification = checked.verification
+      const ws = await patchWorkstream(seg.workstreamId, { state: 'done', summary, attention: null, finishedAt: new Date(), stateDetail: null, verification }, ['running', 'attention'])
+      if (!ws) {
+        await seg.verifying(false)
+        return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'finish_workstream: not running' }
+      }
       seg.stop = 'finished'
+      record(ws.id, verification, verification.outcome)
+      const { flagLine } = await outcome()
+      const flag = verification.outcome === 'flagged' ? `\n\n${flagLine(verification)}` : ''
       // A child reports to its coordinator (woken by the transition: coordinator.ts), not to Tony.
-      if (!ws.isChild) await (await notify()).notifyTony(ws, `⚙ Workstream done — ${ws.goal}\n\n${summary}`)
-      return { result: { ok: true, state: 'done' }, summary: 'workstream finished' }
+      if (!ws.isChild) await (await notify()).notifyTony(ws, `⚙ Workstream done — ${ws.goal}${flag}\n\n${summary}`)
+      return {
+        result: { ok: true, state: 'done', ...(verification.outcome === 'flagged' ? { verifier: verification.verdict ?? 'error' } : {}) },
+        summary: verification.outcome === 'flagged' ? `workstream finished — ${flagLine(verification)}` : 'workstream finished'
+      }
     } catch (err) {
       return fail('finish_workstream', err)
     }
   }
+}
+
+type Seg = NonNullable<ReturnType<Awaited<ReturnType<typeof loop>>['segmentForRun']>>
+type Checked =
+  | { verification: OutcomeVerification }
+  | { sendBack: string; summary: string }
+  | { refused: string; summary: string }
+
+/**
+ * Cycle 85 (spec §2.1): verify a finish (the caller records the activity once the finish lands). `stateDetail: 'verifying'` while it runs. A verifier error or
+ * timeout finishes (flagged) — it never blocks; Stop or cancel during it refuses the finish (the
+ * segment then pauses / cancels as usual). A send-back is counted on the row (compare-and-set, only
+ * while running) BEFORE the agent is told, so it survives segments and restarts and two racing
+ * verifications never both count.
+ */
+async function verifyFinish(seg: Seg, summary: string, signal: AbortSignal): Promise<Checked> {
+  const o = await outcome()
+  const row = await getWorkstream(seg.workstreamId)
+  if (!row || !['running', 'attention'].includes(row.state)) return { refused: 'the workstream is no longer running', summary: 'not running' }
+  let enabled = true
+  try { enabled = await o.outcomeDeps.enabled() } catch { /* unreadable settings: verify anyway */ }
+  if (!enabled) {
+    const verification = o.toVerification(o.outcomeError('the judge is switched off', 0), 'skipped', row.sendBacks)
+    return { verification }
+  }
+  const cancel = new AbortController()
+  seg.verifyAbort = cancel
+  const sig = AbortSignal.any([signal, cancel.signal])
+  let v: OutcomeVerdict
+  try {
+    await seg.verifying(true)
+    let evidence: Awaited<ReturnType<typeof o.outcomeDeps.evidence>> | null = null
+    try { evidence = await o.outcomeDeps.evidence(row, summary, { signal: sig }) } catch (err) {
+      v = o.outcomeError(`could not gather the evidence: ${(err as Error).message.slice(0, 200)}`, 0)
+    }
+    if (evidence) v = await o.outcomeDeps.verify(evidence, { signal: sig }).catch(err => o.outcomeError(`verifier failed: ${(err as Error).message.slice(0, 200)}`, 0))
+  } finally {
+    seg.verifyAbort = null
+  }
+  const stopped = cancel.signal.aborted || seg.stop === 'cancel' ? 'cancelled' : signal.aborted ? 'stopped' : null
+  if (stopped) {
+    await seg.verifying(false)
+    record(row.id, o.toVerification(v!, 'skipped', row.sendBacks), stopped)
+    return { refused: `the workstream was ${stopped} while its outcome was being checked — it has not finished`, summary: stopped }
+  }
+  let seen = row.sendBacks
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const d = o.decideOutcome(v!, seen)
+    if (d.kind === 'finish') return { verification: o.toVerification(v!, d.outcome, seen) }
+    const verification = o.toVerification(v!, 'sent-back', seen + 1)
+    const sent = await recordSendBack(row.id, seen, verification)
+    if (sent) {
+      await seg.verifying(false)
+      record(row.id, verification, 'sent-back')
+      const first = v!.gaps[0] ?? (v!.verdict === 'met' ? 'low confidence' : 'goal not yet met')
+      return { sendBack: o.sendBackText(v!, seen + 1), summary: `⚖ verifier sent this back (${seen + 1}/${o.MAX_SEND_BACKS}): ${first.length > 120 ? `${first.slice(0, 119)}…` : first}` }
+    }
+    // The guard missed: the work ended / was cancelled meanwhile, or another verification counted first.
+    const now = await getWorkstream(row.id)
+    if (!now || now.state !== 'running' || now.cancelRequested) {
+      await seg.verifying(false)
+      return { refused: 'the workstream is no longer running', summary: 'not running' }
+    }
+    seen = now.sendBacks
+  }
+  return { verification: o.toVerification(v!, 'flagged', seen) }
+}
+
+function record(workstreamId: string, v: OutcomeVerification, outcome: string): void {
+  recordEvent({
+    kind: 'tool', name: 'judge:outcome', severity: v.verdict === null && outcome === 'flagged' ? 'warn' : 'info',
+    meta: { workstreamId, outcome, verdict: v.verdict, confidence: v.confidence, gaps: v.gaps.length, sendBacks: v.sendBacks, model: v.model, latencyMs: v.latencyMs, ...(v.error ? { error: v.error.slice(0, 300) } : {}) }
+  })
 }
 
 export const askTonyTool: AgentTool = {

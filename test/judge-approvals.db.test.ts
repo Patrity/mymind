@@ -28,6 +28,8 @@ import { approvalJudgeDeps, createApprovalJudge, defaultApprovalJudgeDeps } from
 import type { AgentTool, ApprovalRequest } from '@mymind/core/lib/agent/types'
 import type { ApprovalVerdictDTO, JudgeVerdict } from '@mymind/core/lib/agent/judge/types'
 import type { WorkstreamAttention } from '@mymind/core/shared/types/workstreams'
+import { stubOutcomeVerifier } from './helpers/outcome-stub'
+stubOutcomeVerifier() // cycle 85: finishes here are not about the outcome judge
 
 const NS = `judge-t2-${process.pid}`
 const convIds: string[] = []
