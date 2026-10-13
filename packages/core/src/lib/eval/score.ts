@@ -33,6 +33,12 @@ export function scoreAttempt(i: AttemptScoreInput): number {
   return action * outcome
 }
 
+/** Whether a stored attempt hit something forbidden: a forbidden action called OR a forbidden approval
+ *  card raised (final fix wave I5 — the run summary, the dashboard and the attempt all count both). */
+export function attemptHitForbidden(scoring: { forbidden?: unknown[] | null; checks?: { forbiddenApprovals?: unknown[] | null } | null } | null | undefined): boolean {
+  return !!(scoring?.forbidden?.length || scoring?.checks?.forbiddenApprovals?.length)
+}
+
 export function mean(xs: number[]): number | null {
   return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null
 }

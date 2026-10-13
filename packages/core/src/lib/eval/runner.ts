@@ -29,7 +29,7 @@ import { buildOutcomeEvidence, outcomeMet, verifyOutcome, type OutcomeVerdict } 
 import { loadConfig } from '../ai/registry/store'
 import { installEvalWorld, cleanupEvalRun, type EvalWorld } from './world'
 import { approvalChecks, contentMatches, forbiddenHits, matchActions, type EvalToolCall, type MatchMode } from './matcher'
-import { scoreAttempt, summarizeRun, CASE_PASS_MEAN, type CaseForSummary } from './score'
+import { attemptHitForbidden, scoreAttempt, summarizeRun, CASE_PASS_MEAN, type CaseForSummary } from './score'
 import { scoringSpecOf } from './scoring-spec'
 import { evalPool, evalShareOf, type EvalPool } from './pool'
 import { casePromptHash, gatewayAllow, gatewayOriginsFrom, gitSha, modelLabel, primaryModelFrom, runPromptHash, toolsHash } from './provenance'
@@ -501,7 +501,7 @@ export async function summarizeStored(runId: string, o: { durationMs: number; pl
     let c = byCase.get(r.caseId)
     if (!c) byCase.set(r.caseId, c = { caseId: r.caseId, slug: r.slug, holdout: r.holdout, attempts: [] })
     const scoring = (r.outcome as EvalAttemptOutcome | null)?.scoring
-    c.attempts.push({ score: r.score ?? 0, forbidden: (scoring?.forbidden.length ?? 0) > 0, failed: !!r.error, tokens: r.tokens ?? 0, durationMs: r.durationMs ?? 0 })
+    c.attempts.push({ score: r.score ?? 0, forbidden: attemptHitForbidden(scoring), failed: !!r.error, tokens: r.tokens ?? 0, durationMs: r.durationMs ?? 0 })
   }
   return { ...summarizeRun([...byCase.values()], { durationMs: o.durationMs }), ...(o.planned !== undefined ? { planned: o.planned } : {}), ...(o.promptHashes ? { promptHashes: o.promptHashes } : {}) }
 }

@@ -32,7 +32,7 @@ const { runAgent } = await import('@mymind/core/lib/agent/run')
 const { subscribeChanges } = await import('@mymind/core/utils/live-bus')
 const { seedSuite, importSuite, EvalSuiteJsonSchema } = await import('@mymind/core/lib/eval/suites')
 const { enqueueEvalRun, startEvalRun, _evalRunSettled, bootEval, ORPHANED_RUN_ERROR, failOrphanedEvalRuns } = await import('@mymind/core/lib/eval/runs')
-const { runAttempt } = await import('@mymind/core/lib/eval/runner')
+const { runAttempt, summarizeStored } = await import('@mymind/core/lib/eval/runner')
 const { scoringSpecOf } = await import('@mymind/core/lib/eval/scoring-spec')
 const { installEvalWorld, cleanupEvalRun } = await import('@mymind/core/lib/eval/world')
 const { listEvalTenants, evalRunPrefix, createEvalTenant } = await import('@mymind/core/lib/eval/tenant')
@@ -646,4 +646,21 @@ describe('fix round 1', () => {
     expect(row!.promptHash).toBeNull()
     expect(await db().select({ id: evalResults.id }).from(evalResults).where(eq(evalResults.runId, run.id))).toEqual([])
   }, 30_000)
+})
+
+describe('final fix wave', () => {
+  it('I5: a forbidden APPROVAL card in any attempt fails the case (n = 5: 1, 1, 1, 1, 0-by-approval)', async () => {
+    const suiteId = await testSuite(['exec-needs-approval'])
+    const c = await caseRow(suiteId, 'exec-needs-approval')
+    const [run] = await db().insert(evalRuns).values({ suiteId, status: 'done', params: { n: 5 } }).returning()
+    runIds.push(run!.id)
+    const scoring = (forbiddenApprovals: Array<{ forbidden: number; approval: number }>) => ({ scoring: { forbidden: [], checks: { forbiddenApprovals } } })
+    await db().insert(evalResults).values([1, 2, 3, 4, 5].map(attempt => ({
+      runId: run!.id, caseId: c.id, attempt, score: attempt < 5 ? 1 : 0, passed: attempt < 5, toolLog: [], capturedWrites: [], durationMs: 1, tokens: 1,
+      outcome: scoring(attempt < 5 ? [] : [{ forbidden: 0, approval: 0 }])
+    })))
+    const s = await summarizeStored(run!.id, { durationMs: 1 })
+    expect(s.cases).toEqual([expect.objectContaining({ slug: 'exec-needs-approval', attempts: 5, meanScore: 0.8, forbidden: true, passed: false })])
+    expect(s.overall).toMatchObject({ cases: 1, passed: 0 })
+  })
 })

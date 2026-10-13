@@ -11,6 +11,7 @@ import type {
 import { evalResultDTO, evalRunDTO, listEvalRuns } from './runs'
 import { caseJsonOf } from './suites'
 import { sameScoringSpec, scoringSpecOf } from './scoring-spec'
+import { attemptHitForbidden } from './score'
 
 /** How many finished runs a suite's sparkline shows. */
 export const TREND_RUNS = 20
@@ -71,7 +72,7 @@ export function resultLite(r: EvalResultRow): EvalResultLite {
   return {
     id: r.id, caseId: r.caseId, attempt: r.attempt, score: r.score, passed: r.passed, error: r.error,
     failed: o?.scoring?.failed ?? null,
-    forbidden: !!(o?.scoring?.forbidden?.length || o?.scoring?.checks?.forbiddenApprovals?.length),
+    forbidden: attemptHitForbidden(o?.scoring),
     verdict: o?.judge?.verdict ?? null, durationMs: r.durationMs, tokens: r.tokens
   }
 }
