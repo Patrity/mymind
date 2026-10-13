@@ -1,6 +1,8 @@
 // Cycle 81 Task 1 — the LISTEN connection's lifecycle against an injected fake client (no DB).
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
+import { AsyncResource } from 'node:async_hooks'
+import { currentEvalScope, runInEvalScope, type EvalScope } from '../eval/context'
 import { closeListener, configureListener, ListenerClosedError, listenReady, onListenReady, onNotify, setListenClientFactory, type ListenClient } from './listen'
 import { nsWrap, setBusNs } from './ns'
 
@@ -173,5 +175,45 @@ describe('listen connection', () => {
     const t0 = Date.now()
     await listenReady()
     expect(Date.now() - t0).toBeGreaterThanOrEqual(50)
+  })
+})
+
+// Cycle 85: the LISTEN connection serves the whole process, even when the first subscriber happened
+// to run inside an eval world. A real pg client emits notifications from its socket, i.e. in the
+// async context the client was CREATED in — SocketLikeClient mimics that with an AsyncResource.
+describe('listen connection vs eval worlds (cycle 85)', () => {
+  class SocketLikeClient extends FakeClient {
+    res = new AsyncResource('fake-socket')
+    override notify(channel: string, payload: string, ns?: string) {
+      this.res.runInAsyncScope(() => this.emit('notification', { channel, payload: nsWrap(payload, ns) }))
+    }
+  }
+  const scope = { busNs: 'eval_world_ns' } as unknown as EvalScope
+
+  it('a listener first started inside a world runs its handlers outside it', async () => {
+    setBusNs('proc-ns')
+    const made: SocketLikeClient[] = []
+    setListenClientFactory(() => { const c = new SocketLikeClient(); made.push(c); return c as unknown as ListenClient })
+    const got: { payload: string; scoped: boolean }[] = []
+    runInEvalScope(scope, () => onNotify('run_event', p => got.push({ payload: p, scoped: currentEvalScope() !== null })))
+    await until(() => made[0]?.queries.includes('LISTEN "run_event"') ?? false)
+    made[0]!.notify('run_event', 'real', 'proc-ns')
+    expect(got).toEqual([{ payload: 'real', scoped: false }])
+  })
+
+  it('dispatch filters on the PROCESS namespace even from a world-bound socket', async () => {
+    setBusNs('proc-ns')
+    const made: SocketLikeClient[] = []
+    setListenClientFactory(() => {
+      const c = runInEvalScope(scope, () => new SocketLikeClient())
+      made.push(c)
+      return c as unknown as ListenClient
+    })
+    const got: string[] = []
+    onNotify('run_event', p => got.push(p))
+    await until(() => made[0]?.queries.includes('LISTEN "run_event"') ?? false)
+    made[0]!.notify('run_event', 'real', 'proc-ns')
+    made[0]!.notify('run_event', 'world', 'eval_world_ns')
+    expect(got).toEqual(['real'])
   })
 })
