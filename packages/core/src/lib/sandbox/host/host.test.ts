@@ -86,12 +86,14 @@ describe('runHost (real processes)', () => {
     expect(r.stdout.endsWith('line 2000\n')).toBe(true)
   })
 
-  it('a timeout kills the WHOLE process group — no child survives', async () => {
-    const r = await runHost({ ...base(), timeoutMs: 500, command: 'sleep 30 & echo "child=$!"; sleep 30' })
+  it('a timeout kills the WHOLE process group — no child survives, not even one that ignores SIGTERM', async () => {
+    const r = await runHost({ ...base(), timeoutMs: 500, command: 'sleep 30 & echo "child=$!"; (trap "" TERM; exec sleep 30) & echo "stubborn=$!"; sleep 30' })
     expect(r.timedOut).toBe(true)
     const child = Number(r.stdout.match(/child=(\d+)/)![1])
-    await sleep(2600) // SIGTERM, then SIGKILL after 2 s
+    const stubborn = Number(r.stdout.match(/stubborn=(\d+)/)![1])
+    await sleep(2800) // SIGTERM, then SIGKILL after 2 s
     expect(alive(child)).toBe(false)
+    expect(alive(stubborn)).toBe(false)
   })
 
   it('an abort kills the group at once', async () => {
