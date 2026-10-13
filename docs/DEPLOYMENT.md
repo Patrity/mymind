@@ -791,13 +791,14 @@ release dir until restarted. Layout elsewhere under `~/mymind/`: `env/` (0700), 
 - **`MYMIND_CUTOVER_DONE`** (`true` once prod runs on the mini). The first `[lxc]` step,
   *Refuse after cutover*, **fails** when `DEPLOY_TARGET` is `macmini` or `MYMIND_CUTOVER_DONE` is `true`,
   so a stray default run can never start LXC 114's retired units (a second worker re-running Tony's
-  jobs and iMessages against the old database). Going back to LXC is deliberate: set
-  `DEPLOY_TARGET=lxc` **and delete** `MYMIND_CUTOVER_DONE` first.
+  jobs and iMessages against the old database). A rollback to LXC 114 does **not** flip these (see Cutover
+  and rollback); leave both set.
 
 The `macmini` path: sync the checkout into LXC 114's **separate build dir `/opt/mymind-build`** (never
 `/opt/mymind`, whose `.output` and `.worker` are the rollback target) → `provision-native.sh
 --build-only` (fails if `mymind`/`mymind-worker` are still active in LXC 114) → `deploy/macmini/build-artifacts.sh`
 (darwin-arm64 natives via `pnpm-workspace.yaml` `supportedArchitectures`; outputs `.macmini-out/{web,worker}`)
+→ `prune-arch.sh` (called by `build-artifacts.sh`: drops `linux-arm64`, `darwin-x64` and `linuxmusl` native dirs, then fails the build if linux-x64 or darwin-arm64 `*.node` binaries are gone; `build-artifacts.sh` itself refuses to run in `/opt/mymind`, the `MYMIND_LXC_RUNTIME_DIR` default, symlinks resolved)
 → provision the mini (`provision-macmini.sh`, idempotent) → `release.sh stage` both releases over
 `tar | ssh` (the mini's rsync is Apple's openrsync) → cancel running evals and `pnpm db:migrate` from
 LXC 114 against `.80` using `/opt/mymind-build/.env.macmini` → activate + restart the web and gate on
@@ -834,18 +835,26 @@ otherwise put an unconfined root shell on the box that holds Docker and the old 
    so quote values with spaces, `$`, `#` or quotes). Keys: see `.env.example` (Mac mini section) and
    the skill. Copy `BETTER_AUTH_SECRET` (and `CONFIG_ENC_KEY` if set) from LXC 114 **unchanged**: provider
    keys in the DB are encrypted with a key derived from them. Every runtimeConfig key needs its `NUXT_`
-   twin.
+   twin. `provision-macmini.sh --check` enforces this with `check-env-twins.sh`, driven by
+   `deploy/macmini/runtime-env-twins.txt` (plain -> twin pairs, derived from core's config mapper and
+   `nuxt.config.ts` and drift-tested by `test/macmini-env-twins.test.ts`); it prints key names only, and a
+   missing twin is a FAIL.
 3. **`gh auth login` as Patrity** on the mini (as `bridget`), full access (accepted risk on a
    dedicated box). Her `git`/`ssh` logins live in her macOS account.
 4. `/opt/mymind-build/.env.macmini` in LXC 114 (see Central DB).
 
 ### Cutover and rollback
 
-The runbook (window of **30 to 60 minutes**: stop LXC units, `pg_dump`, `pg_restore` into `.80` with
-a table-by-table count compare, copy uploads, flip `DEPLOY_TARGET`, merge, CD, Pangolin) is in the
-handover. **Rollback** within the 7-day window needs no workflow run: re-enable and start `mymind` and
-`mymind-worker` in LXC 114 (they still run the cycle-85 code from `/opt/mymind`, against the old
-database, which keeps all its data), stop the mini's agents (`launchctl bootout`) and point Pangolin
-back at LXC 114. Note that rows written on `.80` after cutover are not in the old database.
+The ordered runbook is **`deploy/macmini/CUTOVER.md`** (window of **30 to 60 minutes**: stop LXC units,
+`pg_dump`, `pg_restore` into `.80` with `compare-counts.sh`, `copy-uploads.sh`, set `DEPLOY_TARGET` and
+`MYMIND_CUTOVER_DONE`, merge, CD, Pangolin); the handover summarises it.
 
-Files: `deploy/macmini/{provision-macmini.sh,release.sh,run.sh,build-artifacts.sh,com.mymind.web.plist,com.mymind.worker.plist}`.
+**Rollback** within the 7-day window needs **no workflow run**, because macmini deploys build in
+`/opt/mymind-build` and never write `/opt/mymind`: `launchctl bootout` the mini's worker then web; in LXC
+114 `docker compose up -d db` and `systemctl enable --now mymind mymind-worker` (cycle-85 code, old
+database); point Pangolin (and Unmute's `KYUTAI_LLM_URL`) back at LXC 114. **`DEPLOY_TARGET` stays
+`macmini`** (and `MYMIND_CUTOVER_DONE` stays set): a push then fails harmlessly at `--build-only`, whereas
+switching to `lxc` would build new code onto the old database. Rows written on `.80` after cutover are not
+in the old database.
+
+Files: `deploy/macmini/{CUTOVER.md,provision-macmini.sh,release.sh,run.sh,build-artifacts.sh,prune-arch.sh,check-env-twins.sh,runtime-env-twins.txt,compare-counts.sh,copy-uploads.sh,com.mymind.web.plist,com.mymind.worker.plist}`.

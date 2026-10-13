@@ -105,6 +105,10 @@ The **UI** (Files / Shells / download) shows only the workspace: its paths must 
   'darwin'` or `MYMIND_HOST_RUNTIME_ALLOWED=1` is set. The refusal is a clear tool error ("workspace
   unavailable on this host: …") and the manager's health check reports it the same way. This is the
   backstop for the cutover ordering mistake of merging to master while CD still targets LXC 114.
+  `exec()` is the single seam, so bash, shells, watches and the Files UI scripts are all covered, before any
+  dir is created. The flag must be exactly `1` (`true` does not lift it); the env is read from
+  `opts.env ?? process.env`, so web and worker are both covered. Eval worlds keep their own stricter darwin
+  gate. **Never set the override on LXC 114.**
   Dev and tests (non-production) are never refused.
 
 ## The low-disk alarm
@@ -358,6 +362,14 @@ LXC 114 any more (no Docker image, no iptables, no firewall; `deploy/sandbox/` i
 swap `app`/`.worker` symlinks and never touch `workspaces/`, so files persist across deploys. See
 [DEPLOYMENT.md § 23](../DEPLOYMENT.md#23-mac-mini-host-cycle-86) and the
 [prod-deploy skill](../../.claude/skills/prod-deploy/SKILL.md).
+
+Build and rollback safety (final fix wave): macmini CD builds in LXC 114's **separate `/opt/mymind-build`**,
+never touching `/opt/mymind/.output` or `.worker` (`build-artifacts.sh` refuses to run in
+`MYMIND_LXC_RUNTIME_DIR`, default `/opt/mymind`, symlinks resolved). **Rollback** needs no workflow run:
+boot out the mini's agents, re-enable the LXC units (cycle-85 code, old DB) and point Pangolin back;
+`DEPLOY_TARGET` stays `macmini` until then and after. `prune-arch.sh` strips unused native-binary
+platforms from the release trees and fails if linux-x64 or darwin-arm64 `*.node` files are lost. The
+mini's env file is checked against `deploy/macmini/runtime-env-twins.txt` (see DEPLOYMENT.md § 23).
 
 ## Diagnosing "Sandbox unavailable" / a stuck workspace
 

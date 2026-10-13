@@ -21,7 +21,7 @@ wiki:
   - ../wiki/core-package.md
   - ../DEPLOYMENT.md
 migrations: none  # additive-free cycle; workspaces.container_id / bytes_used / inodes_used stay but are unused
-next: cutover (runbook below), then 7 days later retire LXC 114's runtime; harness step 6b (optimizer) is still open
+next: cutover (deploy/macmini/CUTOVER.md), then 7 days later retire LXC 114's runtime; harness step 6b (optimizer) is still open
 ---
 
 # Mac mini host (cycle 86)
@@ -91,102 +91,70 @@ newsyslog (the wrapper rotates), tar over ssh not rsync (the mini's rsync is App
 migrations run from LXC 114 against `.80` not on the mini. Full detail: [`DEPLOYMENT.md` § 23](../DEPLOYMENT.md#23-mac-mini-host-cycle-86)
 and the `prod-deploy` skill (rewritten for the mini).
 
-**Final whole-branch review and fix wave.** The review (`3741121..67560fc`) said *not ready*: **C1**
-merging before the window would deploy the cycle-86 worker onto LXC 114 as an unconfined, approval-free
-root shell; I1 an under-specified restore; I2 LXC rollback overwritten by macmini builds; I3 the window
-estimate; I4 stale docs. Fix wave so far on the branch: `0dce140` **production platform guard**
-(`hostRuntimeRefusal`: in production a non-eval workspace command is refused unless the platform is
-`darwin` or `MYMIND_HOST_RUNTIME_ALLOWED=1`), `86bd12e` macmini builds go to a **separate
-`/opt/mymind-build`** (so LXC 114's `.output` and `.worker` stay the cycle-85 rollback), `prune-arch.sh`
-with a platform assertion, DB-clock health bound, rollback on cancelled runs. The brief also covers the restore
-runbook plus a table-by-table count compare script, the uploads copy script, host facts in the prompt,
-an env check derived from the config mapper, and the parked minors. **At the time of writing these
-were still landing; check `git log feat/macmini` and `deploy/macmini/`** (a `CUTOVER.md` and
-`compare-counts.sh` are expected there). If `deploy/macmini/CUTOVER.md` exists, it supersedes the
-condensed runbook below.
+**Final whole-branch review and fix wave** (base `67560fc`, head `3596b6b`). The review
+(`3741121..67560fc`) said *not ready*: **C1** merging before the window would deploy the cycle-86 worker
+onto LXC 114 as an unconfined, approval-free root shell; I1 an under-specified restore; I2 LXC rollback
+overwritten by macmini builds; I3 the window estimate; I4 stale docs. All landed:
+- `0dce140` C1 **production platform guard** (`hostRuntimeRefusal` in `sandbox/manager.ts`: in production a
+  non-eval workspace command is refused unless the platform is `darwin` or `MYMIND_HOST_RUNTIME_ALLOWED=1`;
+  `health()` reports the same reason).
+- `86bd12e` macmini builds go to a **separate `/opt/mymind-build`** (LXC 114's `.output` and `.worker` stay
+  the cycle-85 rollback; `build-artifacts.sh` refuses to run in `/opt/mymind`, symlinks resolved),
+  `prune-arch.sh` with a platform assertion (linux-x64 and darwin-arm64 `*.node` must remain), health bound on
+  the DB clock, rollback also on cancelled runs.
+- `932fd42` the mini's `NUXT_` twin check is derived from the config mapping
+  (`deploy/macmini/runtime-env-twins.txt` + `check-env-twins.sh`, drift-tested).
+- `b604f12` the SHELL prompt block names the host from runtime facts (`promptHost()`); stale sandbox wording
+  dropped; `runNetworkMode` renamed `runTaintMode` (`'offline'` -> `'unverified'`; the bus wire field
+  `offline` on `workspace-read-text` is unchanged to avoid web/worker skew).
+- `a61dea3` limiter sleep timer cleared on abort; busy error tells the model to slow its fan-out.
+- `e5f0870` **`deploy/macmini/CUTOVER.md`**, `compare-counts.sh`, `copy-uploads.sh`, the LXC rollback, the
+  `.89` -> `.35` doc updates, `prod-deploy` skill.
+- `8bbaee3` test follow-up for the rename; `3596b6b` wiring tests for prune-arch and the twin check.
+37 of 37 mutations killed.
 
 ## Counts and range
 
-- **Counts (from the task reports; no final-fix report existed when this was written):** unit **4651 passed
-  / 1 skipped**, db **1293 passed** (Task 3 fix round 1, the latest report). Earlier: Task 1 4599/1 + 1290;
-  Task 2 4613/1 + 1293; Task 3 4637/1 then 4651/1. One db test, `memory-search-contradicts`, fails on the
-  base too (pre-existing, noted in Task 1). `pnpm typecheck` and `pnpm build` were green at each report.
-  Re-take the counts from the final-fix report once it lands.
-- **Range:** branch base is master `2cb28f7`; branch commits `5fa0559` (spec) through `86bd12e` (21 commits at
-  the time of writing, more to come with the fix wave). SDD ledger and reports:
-  `.superpowers/sdd/2026-10-13-macmini-host/`.
+- **Counts (final-fix report):** unit **4690 passed / 1 skipped** (was 4651/1), db **1293 passed**
+  (`MYMIND_BUS_NS=c86-finalfix`, no rows left behind). `pnpm typecheck`, `pnpm build` and the worker build +
+  stage were green. `memory-search-contradicts` is the pre-existing flaky db test (failed once, passed on
+  rerun). `typecheck` does not cover `test/`: the rename broke a db test only `test:db` caught (`8bbaee3`).
+- **Range:** branch base is master `2cb28f7`; branch commits `5fa0559` (spec) through `3596b6b` (HEAD before
+  this docs commit). SDD ledger and reports: `.superpowers/sdd/2026-10-13-macmini-host/`.
 - **No migration.** The `workspaces` columns `container_id`, `bytes_used`, `inodes_used` stay but are
   unused (container id always null; no quota to measure).
 
-## Cutover runbook (condensed)
+## Cutover runbook
 
-Expected window: **30 to 60 minutes of downtime**, not the 15 minutes in the spec. The site is dark from
-the moment the LXC units stop: dump, restore (the `messages_embedding_hnsw` index alone is ~563 MB and
-rebuilds on restore), then the first macmini CD run (the `test` job, a clean cross-arch `node_modules`
-install, the 4 GB-heap Nuxt build, the worker build, a ~711 MB tar over ssh, the gates).
+The canonical, ordered checklist is **[`deploy/macmini/CUTOVER.md`](../../deploy/macmini/CUTOVER.md)**
+(committed, no secrets). Summary:
 
-**Tony's one-time steps (before the window):**
-1. **Runner SSH key.** On the Proxmox host: `ssh-keygen -t ed25519 -N "" -C mymind-cd -f /root/.ssh/mymind_macmini`;
-   append the `.pub` to `/Users/bridget/.ssh/authorized_keys` on the mini; `ssh-keyscan -t ed25519 192.168.2.35
-   >> /root/.ssh/known_hosts` (CD pins the host key); verify `ssh -i /root/.ssh/mymind_macmini -o BatchMode=yes
-   bridget@192.168.2.35 hostname`.
-2. **The env file `~/mymind/env/mymind.env`** on the mini (0600 in a 0700 dir; bash-sourced `KEY=value`
-   lines, quote values with spaces, `$`, `#`). Key names are in `.env.example` (Mac mini section) and the
-   skill; never write values into docs. Copy `BETTER_AUTH_SECRET` (and `CONFIG_ENC_KEY` if set) from LXC 114
-   **unchanged**. Every runtimeConfig key needs its `NUXT_` twin. Also `/opt/mymind-build/.env.macmini` in LXC
-   114 (0600): `DATABASE_URL` **and** `NUXT_DATABASE_URL` pointing at `.80`.
-3. **`gh auth login` as Patrity** on the mini (as `bridget`), full access (accepted risk, D8).
+- **Window: 30 to 60 minutes dark** (not the spec's 15): the 563 MB HNSW rebuild on restore plus the first
+  CD run (test job, clean cross-arch install, Nuxt build, ~711 MB tar, gates). Pre-building via CD is blocked
+  on purpose; the optional pre-warm is to copy the branch into `/opt/mymind-build` and `pnpm install`.
+- **Before:** runner key, the mini's env file (twins per `runtime-env-twins.txt`),
+  `/opt/mymind-build/.env.macmini`, provision + `--check`, `.80` preflight, repoint `.89` consumers
+  (Unmute `KYUTAI_LLM_URL`), stage `compare-counts.sh` and `copy-uploads.sh`. Do not merge yet.
+- **Window:** W0 deny pending `exec` approvals and cancel evals; stop the LXC units; `pg_dump -Fc` and
+  `pg_restore --no-owner --no-acl -j 4` (no `-1`, no `--exit-on-error`; "must be owner of extension" noise
+  filtered); `compare-counts.sh`; `copy-uploads.sh`; set `DEPLOY_TARGET=macmini` and `MYMIND_CUTOVER_DONE`
+  **before** merging; merge and watch CD; LAN smoke test; Pangolin + Unmute to `.35`.
+- **Rollback (7 days, no workflow run):** boot out the mini's agents, `docker compose up -d db` and
+  `systemctl enable --now mymind mymind-worker` in LXC 114 (cycle-85 code, old DB, untouched because
+  macmini builds use `/opt/mymind-build`), Pangolin and Unmute back to `.89`. **Leave `DEPLOY_TARGET=macmini`
+  and `MYMIND_CUTOVER_DONE` set** (never switch to `lxc`: that would build new code onto the old DB; pushes
+  fail harmlessly at `--build-only`). Rows written on `.80` since cutover are not in the old DB.
 
-**Preflight (controller):**
-- Mini: copy `deploy/macmini` to `~/mymind/deploy`, run `bash ~/mymind/deploy/provision-macmini.sh`, then with
-  `--check` (must exit 0). Hermes retirement (D9): unload `ai.hermes.serve`/`ai.hermes.gateway`, archive
-  `~/.hermes`, remove the leftover `hermes@ct140` key from `authorized_keys`, stop the old Homebrew
-  `postgresql@16`. Never touch BlueBubbles.
-- `.80`: extensions `vector`, `pgcrypto`, `pg_trgm`, `ltree` present **in `public`**
-  (`select extname, extnamespace::regnamespace from pg_extension`); database empty (`\dn`, `\dt`); `show timezone`
-  (if not UTC, `ALTER DATABASE bridget SET timezone='UTC'`). **Do not run any migration before the restore**
-  (it would create the schema and the `drizzle` ledger and the restore would collide).
-- Deny pending `exec` approvals (the tool no longer exists; a dangling card cannot be decided).
-- Check external consumers of LXC 114's IP: unmute's `KYUTAI_LLM_URL` and anything naming `192.168.2.89`.
-- **Set the repo variable `DEPLOY_TARGET=macmini` BEFORE merging** (final review C1): a push with it unset
-  takes the `lxc` path and would run the cycle-86 worker on LXC 114. The platform guard and the *Refuse
-  after cutover* step are backstops, not the plan. Merge only inside the window, or run
-  `gh workflow run deploy.yml --ref master -f target=macmini` once master holds the code.
+**Controller-verified preflight (done):**
+- In LXC 114, `docker exec mymind-db pg_dump` / `psql -U mymind` work without a password.
+- LXC 114's `.env.native` DSN points at localhost (so the source DSN for the count compare works).
+- `.80` is PG 17.6, empty, extensions present in `public`, `timezone` UTC, `max_connections` 1000.
 
-**Window:**
-1. `systemctl disable --now mymind mymind-worker` in LXC 114.
-2. `pg_dump -Fc` (no owner flags) from `mymind-db`, then `pg_restore --no-owner --no-acl -j 4` into
-   `.80`/`bridget` with `PGOPTIONS='-c maintenance_work_mem=1GB'`; use LXC 114's host `pg_restore` (17.x).
-   No `-1`, no `--exit-on-error`. Expect "must be owner of extension" errors on `COMMENT ON EXTENSION`; that
-   noise is fine. Put dumps in `/root/db-backups`, not in the CD-wiped `/opt/mymind`.
-3. Compare row counts table by table (`deploy/macmini/compare-counts.sh <srcDSN> <dstDSN>` if the fix wave
-   shipped it; non-zero exit on any mismatch). Do not proceed on a mismatch.
-4. Uploads (~69 MB) from the Proxmox host, which holds the runner key: `pct exec 114 -- tar -C
-   /opt/mymind/.data/uploads -cf - . | ssh -i /root/.ssh/mymind_macmini bridget@192.168.2.35 'tar -x -C
-   ~/mymind/data/uploads -f -'`. Compare file counts.
-5. Merge and push (CD takes the `macmini` path) or `gh workflow run deploy.yml --ref master -f target=macmini`;
-   `gh run watch <id> --exit-status`. It builds in `/opt/mymind-build`, stages, cancels evals, migrates `.80`
-   (a no-op after the restore), activates, and health-gates web (sha) then worker (new pid).
-6. Smoke test: `/api/health` 200 over the LAN, an MCP round trip, a chat turn, a workstream with a
-   workspace command (also confirms the platform guard allows the mini), a Brave search, iMessage send and
-   receive via BlueBubbles.
-7. Retarget Pangolin to `192.168.2.35:3000`; check the external `/api/health`.
-8. `gh variable set MYMIND_CUTOVER_DONE --body true`.
-9. In LXC 114 remove the orphan search container (`docker compose -f docker-compose.prod.yml up -d
-   --remove-orphans db`). Optional: reboot the mini and confirm both agents return via autologin.
-
-**Rollback (within 7 days, no workflow run):** re-enable and start `mymind` and `mymind-worker` in LXC 114
-(they still run the cycle-85 code against the untouched old database), `launchctl bootout` the mini's two
-agents, and point Pangolin back. Rows written on `.80` after cutover are not in the old database. To make
-CD target LXC again set `DEPLOY_TARGET=lxc` and **delete** `MYMIND_CUTOVER_DONE`.
+Still unproved until W7: the first real linux-x64 -> darwin-arm64 build in `/opt/mymind-build` (a red deploy
+before any restart if it fails, not an outage).
 
 ## Open at write time
 
-- The SHELL prompt block still hardcodes "a Mac mini"; the fix wave is to derive host name and platform
-  from runtime facts. `coordinator.ts` ("its own sandbox") and a comment in `agent/index.vue` were stale too.
-- `runNetworkMode`'s `'offline'` naming in `tools/workspace.ts` is cosmetic leftover from the confinement trial.
-- Task 2 minors: the default sleep timer is not cleared on abort; the busy text could tell the model to slow
-  its fan-out.
 - `/api/health` publishes the deployed short sha to the internet (accepted).
 - Dev is a full-trust host: on Tony's Mac the dev worker runs her `bash` as him, with no approval.
 - The first real linux-to-darwin native run happens at the first macmini deploy; staging fails closed (a red
