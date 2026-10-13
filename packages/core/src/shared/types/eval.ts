@@ -140,3 +140,83 @@ export interface EvalResultDTO {
   tokens: number | null
   createdAt: string
 }
+
+// ── Task 4: the /evals dashboard's read models (lib/eval/dashboard.ts builds them) ─────────────
+
+/** One point of a suite's pass-rate trend (a finished run, oldest first). */
+export interface EvalTrendPoint { runId: string; at: string; passRate: number | null; meanScore: number | null; status: EvalRunStatus }
+
+export interface EvalSuiteOverview {
+  id: string
+  name: string
+  description: string
+  cases: number
+  enabledCases: number
+  updatedAt: string
+  /** The newest run, whatever its state (a running one shows its progress). */
+  lastRun: EvalRunDTO | null
+  /** Non-holdout pass rate of the last finished (done) runs, oldest first. */
+  trend: EvalTrendPoint[]
+}
+
+/** A case as the suite page lists it. */
+export interface EvalCaseListItem {
+  id: string
+  slug: string
+  surface: 'chat' | 'workstream'
+  prompt: string
+  matchMode: EvalMatchMode
+  holdout: boolean
+  enabled: boolean
+  nRuns: number
+  hasRubric: boolean
+  updatedAt: string
+}
+
+export interface EvalSuiteDetail {
+  suite: { id: string; name: string; description: string; updatedAt: string }
+  cases: EvalCaseListItem[]
+  /** Newest first. */
+  runs: EvalRunDTO[]
+}
+
+/** A case in the editor: its JSON (the import format) plus where it lives. */
+export interface EvalCaseView {
+  id: string
+  suiteId: string
+  suiteName: string
+  updatedAt: string
+  json: Record<string, unknown>
+}
+
+/** An attempt as the run page lists it (no tool log / writes / text — the attempt page has those). */
+export interface EvalResultLite {
+  id: string
+  caseId: string
+  attempt: number
+  score: number | null
+  passed: boolean | null
+  error: string | null
+  failed: string | null
+  forbidden: boolean
+  verdict: 'met' | 'partial' | 'unmet' | null
+  durationMs: number | null
+  tokens: number | null
+}
+
+export interface EvalRunView {
+  run: EvalRunDTO
+  suite: { id: string; name: string }
+  /** Every case the run planned or scored (slug order). */
+  cases: Array<{ id: string; slug: string; holdout: boolean; surface: 'chat' | 'workstream' }>
+  results: EvalResultLite[]
+}
+
+export interface EvalAttemptView {
+  result: EvalResultDTO
+  run: EvalRunDTO
+  suite: { id: string; name: string }
+  /** The case as it is NOW; `editedSince` = changed after the run started, so the expected actions
+   *  shown may not be the ones this attempt was scored against. Null when the case was deleted. */
+  case: { id: string; slug: string; updatedAt: string; editedSince: boolean; json: Record<string, unknown> } | null
+}

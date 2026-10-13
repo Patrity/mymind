@@ -1,0 +1,372 @@
+<script setup lang="ts">
+/**
+ * /evals/attempts/[id] (spec §3.5): one attempt — its score and why: the tool log against the
+ * expected actions (matched / missing / extra / forbidden / failed), the checks (content, flagged,
+ * tainted, approval cards), the outcome verdict, the writes the fake world captured and the final
+ * text. Everything here that came from the model or the fixtures is untrusted: the final text goes
+ * through the hardened renderer (MessageResponse → agentMarkdownProps), everything else is escaped
+ * plain text.
+ */
+import { MessageResponse } from '@/components/ai-elements/message'
+import type { EvalAttemptScoring } from '@mymind/core/shared/types/eval'
+import { score, specLabel, type ActionSpecLike } from '~/lib/evals/display'
+import { formatDuration } from '~/lib/workstreams/display'
+
+definePageMeta({ title: 'Eval attempt' })
+
+const route = useRoute()
+const toast = useToast()
+const id = computed(() => String(route.params.id ?? ''))
+const { data, error, isPending } = useEvalAttempt(id)
+watch(error, (err) => {
+  if (err) toast.add({ color: 'error', title: 'Could not load the attempt', description: evalErrorOf(err).message })
+})
+const result = computed(() => data.value?.result ?? null)
+const scoring = computed<EvalAttemptScoring | null>(() => result.value?.outcome?.scoring ?? null)
+const judge = computed(() => result.value?.outcome?.judge ?? null)
+const approvals = computed(() => result.value?.outcome?.approvals ?? [])
+const caseJson = computed(() => (data.value?.case?.json ?? null) as null | {
+  prompt: string; rubric: string | null; expected_actions: ActionSpecLike[]; forbidden_actions: ActionSpecLike[]
+  expected_content: string[]; expect_flagged: boolean; expect_tainted: boolean; count_failed: boolean
+  expected_approvals: Array<{ tool: string }>; forbidden_approvals: Array<{ tool: string }>; match_mode: string
+})
+const flaggedCalls = computed(() => (result.value?.toolLog ?? []).filter(e => e.flagged && !e.unverified).length)
+
+const verdictColor = (v: string | null) => (v === 'met' ? 'success' : v === 'partial' ? 'warning' : v === 'unmet' ? 'error' : 'neutral')
+const check = (v: boolean | null) => (v === null ? { label: 'not checked', color: 'neutral' as const, icon: 'i-lucide-minus' } : v ? { label: 'yes', color: 'success' as const, icon: 'i-lucide-check' } : { label: 'no', color: 'error' as const, icon: 'i-lucide-x' })
+const detail = (d: Record<string, unknown>) => JSON.stringify(d, null, 2)
+</script>
+
+<template>
+  <UDashboardPanel
+    id="eval-attempt-panel"
+    grow
+  >
+    <template #header>
+      <UDashboardNavbar :title="data ? `${data.case?.slug ?? 'deleted case'} · attempt ${data.result.attempt}` : 'Eval attempt'">
+        <template #leading>
+          <UDashboardSidebarCollapse />
+          <UButton
+            v-if="data"
+            icon="i-lucide-arrow-left"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            :to="`/evals/runs/${data.run.id}`"
+            aria-label="Back to the run"
+          />
+        </template>
+        <template #right>
+          <UButton
+            v-if="data?.case"
+            :to="`/evals/cases/${data.case.id}`"
+            icon="i-lucide-pencil"
+            size="xs"
+            color="neutral"
+            variant="subtle"
+            label="Edit case"
+          />
+        </template>
+      </UDashboardNavbar>
+    </template>
+
+    <template #body>
+      <USkeleton
+        v-if="isPending"
+        class="h-40"
+      />
+      <template v-else-if="data && result">
+        <div
+          class="flex flex-wrap items-center gap-3"
+          data-testid="eval-attempt-summary"
+        >
+          <UBadge
+            :color="result.passed ? 'success' : 'error'"
+            :icon="result.passed ? 'i-lucide-check' : 'i-lucide-x'"
+            variant="subtle"
+            :label="result.passed ? 'passed' : 'failed'"
+            data-testid="eval-attempt-passed"
+          />
+          <span class="text-lg font-semibold text-highlighted">score {{ score(result.score) }}</span>
+          <span
+            v-if="scoring"
+            class="text-sm text-muted"
+          >= action {{ score(scoring.actionScore) }} × content {{ scoring.content.pass ? 1 : 0 }} × checks {{ scoring.checks?.pass === false ? 0 : 1 }}<template v-if="scoring.outcomeMet !== null"> × outcome {{ scoring.outcomeMet ? 1 : 0.5 }}</template><template v-if="scoring.forbidden.length || scoring.checks?.forbiddenApprovals.length"> — forbidden → 0</template></span>
+          <span
+            v-if="result.durationMs"
+            class="text-sm text-muted"
+          >· {{ formatDuration(result.durationMs) }}</span>
+          <span
+            v-if="result.tokens"
+            class="text-sm text-muted"
+          >· {{ result.tokens.toLocaleString() }} tokens</span>
+        </div>
+
+        <UAlert
+          v-if="scoring?.failed || result.error"
+          color="error"
+          variant="subtle"
+          icon="i-lucide-circle-alert"
+          title="The attempt failed before it could be scored"
+          :description="scoring?.failed ?? result.error ?? ''"
+        />
+        <UAlert
+          v-if="data.case?.editedSince"
+          color="warning"
+          variant="subtle"
+          icon="i-lucide-triangle-alert"
+          title="This case was edited after the run"
+          description="The expected actions shown are the case as it is now, not necessarily the ones this attempt was scored against."
+          data-testid="eval-attempt-edited"
+        />
+
+        <UCard
+          v-if="caseJson"
+          class="shrink-0"
+        >
+          <template #header>
+            <span class="text-sm font-medium text-highlighted">Prompt</span>
+          </template>
+          <p class="whitespace-pre-wrap break-words text-sm">
+            {{ caseJson.prompt }}
+          </p>
+        </UCard>
+
+        <UCard class="shrink-0">
+          <template #header>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="text-sm font-medium text-highlighted">Tool calls vs expected actions</span>
+              <span
+                v-if="scoring"
+                class="text-xs text-muted"
+              >{{ scoring.mode }} · action score {{ score(scoring.actionScore) }}<template v-if="caseJson?.count_failed"> · failed calls count</template></span>
+            </div>
+          </template>
+          <EvalsToolLogAlignment
+            :expected="caseJson?.expected_actions ?? []"
+            :forbidden-specs="caseJson?.forbidden_actions ?? []"
+            :tool-log="result.toolLog"
+            :scoring="scoring"
+            :count-failed="!!caseJson?.count_failed"
+          />
+          <p
+            v-if="caseJson?.forbidden_actions.length"
+            class="mt-3 text-xs text-muted"
+          >
+            Forbidden: <code
+              v-for="(f, k) in caseJson.forbidden_actions"
+              :key="k"
+              class="me-2"
+            >{{ specLabel(f) }}</code>
+          </p>
+        </UCard>
+
+        <div class="grid gap-3 lg:grid-cols-2">
+          <UCard
+            class="shrink-0"
+            data-testid="eval-attempt-checks"
+          >
+            <template #header>
+              <span class="text-sm font-medium text-highlighted">Checks</span>
+            </template>
+            <dl class="grid grid-cols-[auto_1fr] items-start gap-x-4 gap-y-2 text-sm">
+              <dt class="text-muted">
+                Content
+              </dt>
+              <dd>
+                <UBadge
+                  :color="scoring?.content.pass ? 'success' : 'error'"
+                  variant="subtle"
+                  size="sm"
+                  :label="scoring?.content.pass ? 'all patterns found' : 'missing'"
+                />
+                <ul
+                  v-if="scoring?.content.missing.length"
+                  class="mt-1 text-xs"
+                >
+                  <li
+                    v-for="(m, k) in scoring.content.missing"
+                    :key="k"
+                  >
+                    <code>/{{ m }}/i</code> not in the reply
+                  </li>
+                </ul>
+              </dd>
+              <dt class="text-muted">
+                Flagged
+              </dt>
+              <dd data-testid="eval-attempt-flagged">
+                <UBadge
+                  :color="check(scoring?.checks?.flagged ?? null).color"
+                  :icon="check(scoring?.checks?.flagged ?? null).icon"
+                  variant="subtle"
+                  size="sm"
+                  :label="check(scoring?.checks?.flagged ?? null).label"
+                />
+                <span class="ms-2 text-xs text-muted">{{ flaggedCalls }} call(s) flagged by the output guard</span>
+              </dd>
+              <dt class="text-muted">
+                Tainted
+              </dt>
+              <dd data-testid="eval-attempt-tainted">
+                <UBadge
+                  :color="check(scoring?.checks?.tainted ?? null).color"
+                  :icon="check(scoring?.checks?.tainted ?? null).icon"
+                  variant="subtle"
+                  size="sm"
+                  :label="check(scoring?.checks?.tainted ?? null).label"
+                />
+                <span
+                  v-if="scoring?.checks?.taintSources.length"
+                  class="ms-2 text-xs text-muted"
+                >sources: {{ scoring.checks.taintSources.join(', ') }}</span>
+              </dd>
+              <dt class="text-muted">
+                Approvals
+              </dt>
+              <dd data-testid="eval-attempt-approvals">
+                <p
+                  v-if="!approvals.length"
+                  class="text-xs text-muted"
+                >
+                  No approval card was requested.
+                </p>
+                <ul class="flex flex-col gap-1">
+                  <li
+                    v-for="(a, k) in approvals"
+                    :key="k"
+                    class="flex items-center gap-2"
+                  >
+                    <code>{{ a.tool }}</code>
+                    <UBadge
+                      :color="a.approved ? 'success' : 'warning'"
+                      variant="subtle"
+                      size="xs"
+                      :label="a.approved ? 'approved (scripted)' : 'denied (scripted)'"
+                    />
+                    <UBadge
+                      v-if="scoring?.checks?.forbiddenApprovals.some(f => f.approval === k)"
+                      color="error"
+                      variant="solid"
+                      size="xs"
+                      label="forbidden card"
+                    />
+                  </li>
+                </ul>
+                <p
+                  v-if="scoring?.checks?.approvalsMissing.length"
+                  class="mt-1 text-xs text-error"
+                >
+                  Expected a card for {{ scoring.checks.approvalsMissing.join(', ') }} — never requested.
+                </p>
+              </dd>
+            </dl>
+          </UCard>
+
+          <UCard
+            class="shrink-0"
+            data-testid="eval-attempt-verdict"
+          >
+            <template #header>
+              <span class="text-sm font-medium text-highlighted">Outcome verdict</span>
+            </template>
+            <p
+              v-if="!judge"
+              class="text-sm text-muted"
+            >
+              {{ caseJson?.rubric ? 'Not judged (the attempt failed first).' : 'This case has no rubric, so no outcome judge.' }}
+            </p>
+            <template v-else>
+              <div class="flex items-center gap-2">
+                <UBadge
+                  :color="verdictColor(judge.verdict)"
+                  variant="subtle"
+                  :label="judge.verdict ?? 'no verdict'"
+                />
+                <span class="text-xs text-muted">confidence {{ judge.confidence.toFixed(2) }} · {{ judge.model ?? 'no model' }} · {{ (judge.latencyMs / 1000).toFixed(1) }}s</span>
+              </div>
+              <p
+                v-if="caseJson?.rubric"
+                class="mt-2 text-xs text-muted whitespace-pre-wrap"
+              >
+                Rubric: {{ caseJson.rubric }}
+              </p>
+              <ul
+                v-if="judge.gaps.length"
+                class="mt-2 list-disc ps-4 text-sm"
+              >
+                <li
+                  v-for="(g, k) in judge.gaps"
+                  :key="k"
+                  class="whitespace-pre-wrap break-words"
+                >
+                  {{ g }}
+                </li>
+              </ul>
+              <p
+                v-if="judge.nextStep"
+                class="mt-1 text-sm whitespace-pre-wrap break-words"
+              >
+                Next: {{ judge.nextStep }}
+              </p>
+              <p
+                v-if="judge.error"
+                class="mt-1 text-sm text-error break-words"
+              >
+                {{ judge.error }}
+              </p>
+            </template>
+          </UCard>
+        </div>
+
+        <UCard
+          class="shrink-0"
+          data-testid="eval-attempt-writes"
+        >
+          <template #header>
+            <span class="text-sm font-medium text-highlighted">Captured writes ({{ result.capturedWrites.length }})</span>
+          </template>
+          <p
+            v-if="!result.capturedWrites.length"
+            class="text-sm text-muted"
+          >
+            Nothing was written to the fake world (no email, calendar, message or outbox write).
+          </p>
+          <div
+            v-for="(w, k) in result.capturedWrites"
+            :key="k"
+            class="mb-2"
+          >
+            <UBadge
+              color="neutral"
+              variant="subtle"
+              size="sm"
+              :label="w.kind"
+            />
+            <pre class="mt-1 max-h-60 overflow-auto rounded bg-elevated p-2 text-xs whitespace-pre-wrap break-all">{{ detail(w.detail) }}</pre>
+          </div>
+        </UCard>
+
+        <UCard
+          class="shrink-0"
+          data-testid="eval-attempt-final"
+        >
+          <template #header>
+            <span class="text-sm font-medium text-highlighted">Final text</span>
+          </template>
+          <MessageResponse
+            v-if="result.finalText"
+            :content="result.finalText"
+            class="text-sm"
+          />
+          <p
+            v-else
+            class="text-sm text-muted"
+          >
+            (no reply)
+          </p>
+        </UCard>
+      </template>
+    </template>
+  </UDashboardPanel>
+</template>

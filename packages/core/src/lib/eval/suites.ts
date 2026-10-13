@@ -4,65 +4,12 @@
 import { readFile, readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { and, asc, eq, notInArray } from 'drizzle-orm'
-import { z } from 'zod'
 import { useDb } from '../../db'
-import { evalCases, evalSuites } from '../../db/schema'
+import { evalCases, evalSuites, type EvalCaseRow } from '../../db/schema'
 import { publishChange } from '../../utils/live-bus'
-import { EvalSetupSchema } from './setup'
+import { EvalCaseJsonSchema, EvalSuiteJsonSchema, type EvalCaseJson, type EvalSuiteJson } from './case-schema'
 
-export const MATCH_MODES = ['ordered_subset', 'exact', 'subset', 'contains_any'] as const
-
-const regexString = z.string().refine((s) => {
-  try { new RegExp(s, 'i'); return true } catch { return false }
-}, { message: 'not a valid regular expression' })
-
-export const EvalActionSpecSchema = z.object({
-  tool: z.string().min(1),
-  args: z.record(z.string(), z.unknown()).optional(),
-  args_pattern: z.record(z.string(), regexString).optional()
-})
-
-export const EvalApprovalSpecSchema = z.object({ tool: z.string().min(1) })
-
-export const EvalCaseJsonSchema = z.object({
-  slug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/, 'lower-case letters, digits and dashes'),
-  prompt: z.string().min(1),
-  surface: z.enum(['chat', 'workstream']).default('chat'),
-  setup: EvalSetupSchema.default({}),
-  expected_actions: z.array(EvalActionSpecSchema).default([]),
-  forbidden_actions: z.array(EvalActionSpecSchema).default([]),
-  expected_content: z.array(regexString).default([]),
-  match_mode: z.enum(MATCH_MODES).default('ordered_subset'),
-  rubric: z.string().min(1).nullable().default(null),
-  n_runs: z.number().int().min(1).max(20).default(3),
-  max_steps: z.number().int().min(1).max(200).default(40),
-  holdout: z.boolean().default(false),
-  enabled: z.boolean().default(true),
-  /** Fix round 1 (S1): a matched call's result must carry a REAL output-guard flag (not the
-   *  fail-closed `unverified`); and/or the run must end tainted. */
-  expect_flagged: z.boolean().default(false),
-  expect_tainted: z.boolean().default(false),
-  /** Fix round 1 (S2): approval cards the scripted approver must / must not have been asked for. */
-  expected_approvals: z.array(EvalApprovalSpecSchema).default([]),
-  forbidden_approvals: z.array(EvalApprovalSpecSchema).default([]),
-  /** Fix round 1 (M3): denied / errored calls satisfy expected actions only with this set. */
-  count_failed: z.boolean().default(false)
-})
-
-export const EvalSuiteJsonSchema = z.object({
-  version: z.literal(1).default(1),
-  name: z.string().min(1).max(120),
-  description: z.string().default(''),
-  cases: z.array(EvalCaseJsonSchema)
-}).superRefine((s, ctx) => {
-  const seen = new Set<string>()
-  s.cases.forEach((c, i) => {
-    if (seen.has(c.slug)) ctx.addIssue({ code: 'custom', path: ['cases', i, 'slug'], message: `duplicate slug "${c.slug}"` })
-    seen.add(c.slug)
-  })
-})
-
-export type EvalCaseJson = z.infer<typeof EvalCaseJsonSchema>
+export { MATCH_MODES, EvalActionSpecSchema, EvalApprovalSpecSchema, EvalCaseJsonSchema, EvalSuiteJsonSchema, type EvalCaseJson, type EvalSuiteJson } from './case-schema'
 
 /** A parsed case's column values (everything but suite and slug). */
 export function caseValues(c: EvalCaseJson) {
@@ -74,7 +21,6 @@ export function caseValues(c: EvalCaseJson) {
     forbiddenApprovals: c.forbidden_approvals, countFailed: c.count_failed
   }
 }
-export type EvalSuiteJson = z.infer<typeof EvalSuiteJsonSchema>
 
 export interface ImportResult { suiteId: string; created: number; updated: number; removed: number }
 
@@ -167,12 +113,47 @@ export async function exportSuite(suiteId: string): Promise<EvalSuiteJson | null
     version: 1,
     name: s.name,
     description: s.description,
-    cases: rows.map(r => EvalCaseJsonSchema.parse({
-      slug: r.slug, prompt: r.prompt, surface: r.surface, setup: r.setup,
-      expected_actions: r.expectedActions, forbidden_actions: r.forbiddenActions, expected_content: r.expectedContent,
-      match_mode: r.matchMode, rubric: r.rubric, n_runs: r.nRuns, max_steps: r.maxSteps, holdout: r.holdout, enabled: r.enabled,
-      expect_flagged: r.expectFlagged, expect_tainted: r.expectTainted, expected_approvals: r.expectedApprovals,
-      forbidden_approvals: r.forbiddenApprovals, count_failed: r.countFailed
-    }))
+    cases: rows.map(caseJsonOf)
   }
+}
+
+/** A stored case as its JSON (the export / editor form). */
+export function caseJsonOf(r: EvalCaseRow): EvalCaseJson {
+  return EvalCaseJsonSchema.parse({
+    slug: r.slug, prompt: r.prompt, surface: r.surface, setup: r.setup,
+    expected_actions: r.expectedActions, forbidden_actions: r.forbiddenActions, expected_content: r.expectedContent,
+    match_mode: r.matchMode, rubric: r.rubric, n_runs: r.nRuns, max_steps: r.maxSteps, holdout: r.holdout, enabled: r.enabled,
+    expect_flagged: r.expectFlagged, expect_tainted: r.expectTainted, expected_approvals: r.expectedApprovals,
+    forbidden_approvals: r.forbiddenApprovals, count_failed: r.countFailed
+  })
+}
+
+/** Task 4: a case save the store refused for a reason the editor can show (a slug another case of the
+ *  suite already has). Validation failures are ZodErrors. */
+export class EvalCaseConflictError extends Error { override name = 'EvalCaseConflictError' }
+
+/** Task 4 (the /evals case editor): replaces a case with validated JSON. Throws a ZodError on invalid
+ *  JSON (nothing written) and EvalCaseConflictError on a duplicate slug; null when the case is gone. */
+export async function updateCase(caseId: string, raw: unknown): Promise<EvalCaseRow | null> {
+  const c = EvalCaseJsonSchema.parse(raw)
+  try {
+    const [row] = await useDb().update(evalCases).set({ slug: c.slug, ...caseValues(c), updatedAt: new Date() })
+      .where(eq(evalCases.id, caseId)).returning()
+    if (!row) return null
+    publishChange({ resource: 'eval', action: 'updated', id: caseId })
+    return row
+  } catch (err) {
+    if ((err as { code?: string; cause?: { code?: string } }).code === '23505' || (err as { cause?: { code?: string } }).cause?.code === '23505') {
+      throw new EvalCaseConflictError(`another case in this suite is already called "${c.slug}"`)
+    }
+    throw err
+  }
+}
+
+/** Task 4: the enable toggle. Null when the case is gone. */
+export async function setCaseEnabled(caseId: string, enabled: boolean): Promise<EvalCaseRow | null> {
+  const [row] = await useDb().update(evalCases).set({ enabled, updatedAt: new Date() }).where(eq(evalCases.id, caseId)).returning()
+  if (!row) return null
+  publishChange({ resource: 'eval', action: 'updated', id: caseId })
+  return row
 }
