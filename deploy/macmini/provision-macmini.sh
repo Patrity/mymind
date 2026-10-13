@@ -102,12 +102,11 @@ else
     [ "$(val "$k")" = "$ROOT/data/uploads" ] && ok "$k $ROOT/data/uploads" || fail "$k must be $ROOT/data/uploads"
   done
   # The web reads runtimeConfig only through NUXT_* at runtime (prod-deploy gotcha #1): a plain key
-  # without its twin silently keeps the value baked at build in LXC 114.
-  while IFS= read -r k; do
-    case "$k" in DATABASE_URL|BETTER_AUTH_SECRET|BETTER_AUTH_URL|ALLOW_SIGNUP|STORAGE_*|MEMORY_AUTO_REVIEW_THRESHOLD)
-      grep -qE "^NUXT_$k=" "$ENV_FILE" || fail "env file sets $k but not NUXT_$k" ;;
-    esac
-  done < <(grep -oE '^[A-Z_][A-Z0-9_]*' "$ENV_FILE" | grep -v '^NUXT_' | sort -u)
+  # without its twin silently keeps the value baked at build. The pairs are derived from core's
+  # config-env mapper + nuxt.config (runtime-env-twins.txt, pinned by a test), not a hand-kept list.
+  while IFS= read -r line; do
+    case "$line" in "[FAIL] "*) fail "${line#\[FAIL\] }" ;; *) echo "$line" ;; esac
+  done < <(bash "$HERE/check-env-twins.sh" "$ENV_FILE" "$HERE/runtime-env-twins.txt" || true)
 fi
 
 # 6. Scripts launchd and CD run: ~/mymind/bin/{run,release}.sh, copied from this deploy dir.

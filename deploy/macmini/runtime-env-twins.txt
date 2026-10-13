@@ -1,0 +1,21 @@
+# Generated from the runtimeConfig mapping — DO NOT edit by hand; test/macmini-env-twins.test.ts derives
+# it from packages/core/src/config-env.ts (coreRuntimeConfig: every plain key it reads → NUXT_<key>)
+# plus nuxt.config.ts's own runtimeConfig env reads, and fails (printing the expected file) on drift.
+#
+# <plain key> <NUXT_ twin>: when the mini's env file sets the plain key, the twin must be set too —
+# the web reads runtimeConfig at RUNTIME only through NUXT_* (a plain key alone keeps the build value).
+ALLOW_SIGNUP NUXT_ALLOW_SIGNUP
+ALLOW_SIGNUP NUXT_PUBLIC_ALLOW_SIGNUP
+BETTER_AUTH_SECRET NUXT_BETTER_AUTH_SECRET
+BETTER_AUTH_URL NUXT_BETTER_AUTH_URL
+DATABASE_URL NUXT_DATABASE_URL
+MAX_UPLOAD_BYTES NUXT_MAX_UPLOAD_BYTES
+MEMORY_AUTO_REVIEW_THRESHOLD NUXT_MEMORY_AUTO_REVIEW_THRESHOLD
+MEMORY_DUPLICATE_THRESHOLD NUXT_MEMORY_DUPLICATE_THRESHOLD
+STORAGE_DRIVER NUXT_STORAGE_DRIVER
+STORAGE_LOCAL_DIR NUXT_STORAGE_LOCAL_DIR
+STORAGE_S3_ACCESS_KEY_ID NUXT_STORAGE_S3_ACCESS_KEY_ID
+STORAGE_S3_BUCKET NUXT_STORAGE_S3_BUCKET
+STORAGE_S3_ENDPOINT NUXT_STORAGE_S3_ENDPOINT
+STORAGE_S3_REGION NUXT_STORAGE_S3_REGION
+STORAGE_S3_SECRET_ACCESS_KEY NUXT_STORAGE_S3_SECRET_ACCESS_KEY
