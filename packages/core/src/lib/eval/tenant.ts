@@ -82,8 +82,8 @@ export interface EvalTenant {
 
 /** Thrown when a world's schema is gone: its pool refuses to run anything (N2b). */
 export class EvalTenantGoneError extends Error {
-  constructor(public schema: string) {
-    super(`eval: the tenant schema ${schema} no longer exists — refusing to run (writes would fall through to public)`)
+  constructor(public schema: string, why = 'no longer exists') {
+    super(`eval: the tenant schema ${schema} ${why} — refusing to run (writes would fall through to public)`)
     this.name = 'EvalTenantGoneError'
   }
 }
@@ -97,12 +97,18 @@ export class EvalTenantGoneError extends Error {
  * cooperating drop (sweep, cleanupEvalRun) is already excluded by the advisory lock (N2a).
  */
 export class TenantPool extends pg.Pool {
+  /** Fix round 3 (B2): set when the world's lock session died — refuse at once, no round trip. */
+  private goneReason: string | null = null
   constructor(config: pg.PoolConfig, private readonly tenantSchema: string) { super(config) }
+
+  markGone(reason: string): void { this.goneReason ??= reason }
+  get gone(): boolean { return this.goneReason !== null }
 
   override connect(): Promise<pg.PoolClient>
   override connect(cb: (err: Error | undefined, client: pg.PoolClient | undefined, done: (release?: unknown) => void) => void): void
   override connect(cb?: (err: Error | undefined, client: pg.PoolClient | undefined, done: (release?: unknown) => void) => void): Promise<pg.PoolClient> | void {
     const checked = (async () => {
+      if (this.goneReason) throw new EvalTenantGoneError(this.tenantSchema, this.goneReason)
       const client = await super.connect()
       try {
         const r = await client.query<{ ok: boolean }>('select to_regnamespace($1) is not null as ok', [this.tenantSchema])
@@ -119,27 +125,50 @@ export class TenantPool extends pg.Pool {
 }
 
 /** A session advisory lock on a dedicated connection (not the routed pool). */
-export interface TenantLock { release(): Promise<void> }
-
-const lockSql = 'select pg_advisory_lock(hashtext($1))'
-const tryLockSql = 'select pg_try_advisory_lock(hashtext($1)) as ok'
-const unlockSql = 'select pg_advisory_unlock(hashtext($1))'
-
-function lockClient(): pg.Client {
-  const c = new pg.Client({ connectionString: coreConfig().databaseUrl })
-  c.on('error', err => console.error('[eval] tenant lock connection error:', err.message))
-  return c
+export interface TenantLock {
+  release(): Promise<void>
+  /** The lock session's backend pid (tests). */
+  readonly pid: number | undefined
 }
 
-/** Takes (waits for) the world's lock — held until release(). */
-export function holdTenantLock(schema: string): Promise<TenantLock> {
+/**
+ * Fix round 3 (B4): the two-int advisory key space, under this eval namespace — disjoint from the
+ * single-bigint `hashtext(...)` keys the app's own transaction locks use, so a world's
+ * session-long lock can never collide with an agent-run claim or a workstream-tree spawn. Every
+ * acquire, try and release uses this same (EVAL_LOCK_NS, hashtext(schema)) pair.
+ */
+export const EVAL_LOCK_NS = 85_085
+const lockSql = `select pg_advisory_lock(${EVAL_LOCK_NS}, hashtext($1))`
+const tryLockSql = `select pg_try_advisory_lock(${EVAL_LOCK_NS}, hashtext($1)) as ok`
+const unlockSql = `select pg_advisory_unlock(${EVAL_LOCK_NS}, hashtext($1))`
+
+function lockClient(): pg.Client {
+  return new pg.Client({ connectionString: coreConfig().databaseUrl })
+}
+
+/**
+ * Takes (waits for) the world's lock — held until release(). Fix round 3 (B2): if the lock session
+ * dies before release() (a Postgres restart, a reset, idle_session_timeout), `onLost` is called
+ * once — the caller marks the tenant gone (a world without its lock could be dropped under it).
+ */
+export function holdTenantLock(schema: string, onLost: (why: string) => void = () => {}): Promise<TenantLock> {
   assertSchema(schema)
   return outsideEvalScope(async () => {
     const c = lockClient()
-    await c.connect()
-    try { await c.query(lockSql, [schema]) } catch (err) { await c.end().catch(() => {}); throw err }
     let released = false
+    let lost = false
+    const lose = (why: string) => {
+      if (released || lost) return
+      lost = true
+      console.error(`[eval] tenant ${schema} lost its lock (${why}) — the world fails closed`)
+      onLost(why)
+    }
+    c.on('error', err => lose(`lock connection error: ${err.message}`))
+    c.on('end', () => lose('lock connection ended'))
+    await c.connect()
+    try { await c.query(lockSql, [schema]) } catch (err) { released = true; await c.end().catch(() => {}); throw err }
     return {
+      pid: (c as unknown as { processID?: number }).processID,
       release: async () => {
         if (released) return
         released = true
@@ -156,6 +185,7 @@ export function withTenantLock(schema: string, fn: () => Promise<void>): Promise
   assertSchema(schema)
   return outsideEvalScope(async () => {
     const c = lockClient()
+    c.on('error', err => console.error(`[eval] tenant ${schema} try-lock connection error:`, err.message))
     await c.connect()
     try {
       const r = await c.query<{ ok: boolean }>(tryLockSql, [schema])
@@ -185,42 +215,51 @@ export async function shadowableTables(): Promise<string[]> {
 export async function createEvalTenant(runId: string): Promise<EvalTenant> {
   const schema = assertSchema(newEvalSchemaName(runId))
   const s = ident(schema)
-  await outsideEvalScope(async () => {
-    const tables = await shadowableTables()
-    await adminDb().transaction(async (tx) => {
-      await tx.execute(sql.raw(`create schema ${s}`))
-      // Fix round 1 (I2): the creation time, for the boot sweep's age rule.
-      await tx.execute(sql.raw(`comment on schema ${s} is 'created=${new Date().toISOString()}'`))
-      for (const t of tables) {
-        await tx.execute(sql.raw(`create table ${s}.${ident(t)} (like public.${ident(t)} including all)`))
-      }
-      for (const t of EVAL_REFERENCE_TABLES) {
-        if (!tables.includes(t)) continue
-        const cols = await tx.execute(sql`select column_name from information_schema.columns
-          where table_schema = 'public' and table_name = ${t} and is_generated = 'NEVER' order by ordinal_position`)
-        const list = (cols.rows as { column_name: string }[]).map(c => `"${c.column_name.replace(/"/g, '""')}"`).join(', ')
-        if (!list) continue
-        const where = t === 'settings' ? ` where key in (${EVAL_SETTINGS_KEYS.map(k => `'${k.replace(/'/g, "''")}'`).join(', ')})` : ''
-        await tx.execute(sql.raw(`insert into ${s}.${ident(t)} (${list}) select ${list} from public.${ident(t)}${where}`))
-      }
-      // Foreign keys (LIKE copies none): re-pointed at the world's own tables. NOT VALID — the
-      // reference rows copied above may point at rows a world does not carry; new rows are checked.
-      const fks = await tx.execute(sql`select r.relname as tbl, c.conname as name, pg_get_constraintdef(c.oid) as def
-        from pg_constraint c join pg_class r on r.oid = c.conrelid join pg_namespace n on n.oid = r.relnamespace
-        where c.contype = 'f' and n.nspname = 'public' order by r.relname, c.conname`)
-      for (const fk of fks.rows as { tbl: string, name: string, def: string }[]) {
-        if (!tables.includes(fk.tbl)) continue
-        const def = retargetForeignKey(fk.def, schema)
-        await tx.execute(sql.raw(`alter table ${s}.${ident(fk.tbl)} add constraint "${fk.name.replace(/"/g, '""')}" ${def} not valid`))
-      }
+  // Fix round 3 (B3): the lock first — no drop path can slip in between CREATE SCHEMA and the lock.
+  let pool: TenantPool | null = null
+  const lostBeforePool: string[] = []
+  const lock = await holdTenantLock(schema, (why) => { if (pool) pool.markGone(`lost its lock (${why})`); else lostBeforePool.push(why) })
+  try {
+    await outsideEvalScope(async () => {
+      const tables = await shadowableTables()
+      await adminDb().transaction(async (tx) => {
+        await tx.execute(sql.raw(`create schema ${s}`))
+        // Fix round 1 (I2): the creation time, for the boot sweep's age rule.
+        await tx.execute(sql.raw(`comment on schema ${s} is 'created=${new Date().toISOString()}'`))
+        for (const t of tables) {
+          await tx.execute(sql.raw(`create table ${s}.${ident(t)} (like public.${ident(t)} including all)`))
+        }
+        for (const t of EVAL_REFERENCE_TABLES) {
+          if (!tables.includes(t)) continue
+          const cols = await tx.execute(sql`select column_name from information_schema.columns
+            where table_schema = 'public' and table_name = ${t} and is_generated = 'NEVER' order by ordinal_position`)
+          const list = (cols.rows as { column_name: string }[]).map(c => `"${c.column_name.replace(/"/g, '""')}"`).join(', ')
+          if (!list) continue
+          const where = t === 'settings' ? ` where key in (${EVAL_SETTINGS_KEYS.map(k => `'${k.replace(/'/g, "''")}'`).join(', ')})` : ''
+          await tx.execute(sql.raw(`insert into ${s}.${ident(t)} (${list}) select ${list} from public.${ident(t)}${where}`))
+        }
+        // Foreign keys (LIKE copies none): re-pointed at the world's own tables. NOT VALID — the
+        // reference rows copied above may point at rows a world does not carry; new rows are checked.
+        const fks = await tx.execute(sql`select r.relname as tbl, c.conname as name, pg_get_constraintdef(c.oid) as def
+          from pg_constraint c join pg_class r on r.oid = c.conrelid join pg_namespace n on n.oid = r.relnamespace
+          where c.contype = 'f' and n.nspname = 'public' order by r.relname, c.conname`)
+        for (const fk of fks.rows as { tbl: string, name: string, def: string }[]) {
+          if (!tables.includes(fk.tbl)) continue
+          const def = retargetForeignKey(fk.def, schema)
+          await tx.execute(sql.raw(`alter table ${s}.${ident(fk.tbl)} add constraint "${fk.name.replace(/"/g, '""')}" ${def} not valid`))
+        }
+      })
     })
-  })
-  const lock = await holdTenantLock(schema)
-  const pool = new TenantPool({
+  } catch (err) {
+    await lock.release()
+    throw err
+  }
+  pool = new TenantPool({
     connectionString: coreConfig().databaseUrl,
     max: 4,
     options: `-c search_path=${schema},public`
   }, schema)
+  if (lostBeforePool.length) pool.markGone(`lost its lock (${lostBeforePool[0]})`)
   pool.on('error', err => console.error(`[eval] tenant ${schema} idle client error:`, err.message))
   return { schema, pool, lock }
 }
@@ -235,7 +274,7 @@ export function retargetForeignKey(def: string, schema: string): string {
 /** Ends the world's pool, releases its lock and drops its schema (under the lock). Idempotent. */
 export async function dropEvalTenant(t: EvalTenant): Promise<void> {
   const schema = assertSchema(t.schema)
-  await t.pool.end().catch(() => {})
+  await endPool(t.pool, schema)
   await t.lock.release()
   await withTenantLock(schema, () => dropSchemaNow(schema))
 }
@@ -321,4 +360,28 @@ export function dropEvalSchema(schema: string): Promise<boolean> {
 export async function schemaExists(schema: string): Promise<boolean> {
   const r = await outsideEvalScope(() => adminDb().execute(sql`select to_regnamespace(${schema}) is not null as ok`))
   return (r.rows[0] as { ok: boolean } | undefined)?.ok === true
+}
+
+/** Seams (tests). */
+export const evalTenantDeps = { poolEndTimeoutMs: 10_000 }
+
+/**
+ * `pool.end()` waits for every checked-out client — a leaked one (never released) would hang
+ * dispose forever, holding the lock. Out-of-scope fix: after `poolEndTimeoutMs`, destroy the
+ * remaining clients' sockets and move on.
+ */
+async function endPool(pool: pg.Pool, schema: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const ended = pool.end().then(() => 'ended' as const, () => 'ended' as const)
+  const timeout = new Promise<'timeout'>((r) => { timer = setTimeout(() => r('timeout'), evalTenantDeps.poolEndTimeoutMs) })
+  const how = await Promise.race([ended, timeout])
+  clearTimeout(timer)
+  if (how === 'ended') return
+  console.warn(`[eval] tenant ${schema}: pool.end timed out (a client was never released) — destroying its connections`)
+  for (const c of (pool as unknown as { _clients?: { on?: (e: string, f: () => void) => void; connection?: { stream?: { destroy?: () => void } } }[] })._clients ?? []) {
+    try {
+      c.on?.('error', () => {}) // a checked-out client has no listener: its forced end must not crash the process
+      c.connection?.stream?.destroy?.()
+    } catch { /* already gone */ }
+  }
 }

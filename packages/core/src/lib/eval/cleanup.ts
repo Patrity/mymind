@@ -21,6 +21,7 @@ export const evalCleanupDeps = {
   rmDir: (dir: string) => rm(dir, { recursive: true, force: true }),
   listDir: (dir: string) => readdir(dir).catch(() => [] as string[]),
   deleteUpload: (key: string) => storage().delete(key),
+  listUploads: (schema: string) => tenantOnlyStorageKeys(schema),
   workspacesBase: () => sandboxSettings().workspacesDir,
   log: console as Pick<Console, 'info' | 'warn'>
 }
@@ -66,7 +67,7 @@ export function removeEvalWorkspaceDir(worldId: string): Promise<void> {
 export function deleteEvalUploads(schema: string): Promise<string[]> {
   return outsideEvalScope(async () => {
     const done: string[] = []
-    for (const key of await tenantOnlyStorageKeys(schema)) {
+    for (const key of await evalCleanupDeps.listUploads(schema)) {
       try { await evalCleanupDeps.deleteUpload(key); done.push(key) } catch (err) {
         evalCleanupDeps.log.warn(`[eval] could not delete upload ${key}: ${(err as Error).message}`)
       }
@@ -94,15 +95,17 @@ export interface SweepResult { schemas: string[]; containers: string[]; dirs: st
  * removed only while holding its advisory lock — false (nothing touched) when a live world, in any
  * process, holds it.
  */
-export async function dropWorldIfFree(schema: string): Promise<{ dropped: boolean; containers: string[] }> {
+export async function dropWorldIfFree(schema: string): Promise<{ dropped: boolean; containers: string[]; dirRemoved: boolean }> {
   let containers: string[] = []
+  let dirRemoved = false
   const dropped = await withTenantLock(schema, async () => {
     try { containers = await removeEvalContainers({ worldId: schema }) } catch (err) { evalCleanupDeps.log.warn(`[eval] containers of ${schema}: ${(err as Error).message}`) }
-    try { await removeEvalWorkspaceDir(schema) } catch (err) { evalCleanupDeps.log.warn(`[eval] dir of ${schema}: ${(err as Error).message}`) }
-    await deleteEvalUploads(schema) // reads the schema: before the drop
+    try { await removeEvalWorkspaceDir(schema); dirRemoved = true } catch (err) { evalCleanupDeps.log.warn(`[eval] dir of ${schema}: ${(err as Error).message}`) }
+    // Reads the schema: before the drop. A failure here never stops the drop (fix round 3).
+    try { await deleteEvalUploads(schema) } catch (err) { evalCleanupDeps.log.warn(`[eval] uploads of ${schema}: ${(err as Error).message}`) }
     await dropSchemaNow(schema)
   })
-  return { dropped, containers }
+  return { dropped, containers, dirRemoved }
 }
 
 /** Containers / dirs labelled with a world whose schema no longer exists anywhere (a crash between
@@ -134,6 +137,8 @@ export async function sweepEvalLeftovers(o: { now?: number; keep?: Set<string>; 
     }
     const dropped: string[] = []
     const containers: string[] = []
+    // Fix round 3: only dirs really removed are reported.
+    const dirs: string[] = []
     for (const t of infos) {
       const age = t.createdAt ? now - t.createdAt.getTime() : Infinity
       const status = runs.get(t.runId)
@@ -142,7 +147,7 @@ export async function sweepEvalLeftovers(o: { now?: number; keep?: Set<string>; 
       if (!drop) continue
       try {
         const r = await dropWorldIfFree(t.schema)
-        if (r.dropped) { dropped.push(t.schema); containers.push(...r.containers) }
+        if (r.dropped) { dropped.push(t.schema); containers.push(...r.containers); if (r.dirRemoved) dirs.push(t.schema) }
       } catch (err) {
         evalCleanupDeps.log.warn(`[eval] sweep could not drop ${t.schema}: ${(err as Error).message}`)
       }
@@ -150,10 +155,9 @@ export async function sweepEvalLeftovers(o: { now?: number; keep?: Set<string>; 
     try {
       containers.push(...await removeContainers(await ghostContainers()))
     } catch (err) { evalCleanupDeps.log.warn(`[eval] sweep could not list sandbox containers: ${(err as Error).message}`) }
-    const dirs: string[] = dropped.slice()
     const base = path.join(evalCleanupDeps.workspacesBase(), '.eval')
     for (const name of await evalCleanupDeps.listDir(base)) {
-      if (dirs.includes(name) || !/^eval_[0-9a-f]{32}_[0-9a-f]{8}$/.test(name) || await schemaExists(name)) continue
+      if (dropped.includes(name) || !/^eval_[0-9a-f]{32}_[0-9a-f]{8}$/.test(name) || await schemaExists(name)) continue
       try { await evalCleanupDeps.rmDir(path.join(base, name)); dirs.push(name) } catch (err) {
         evalCleanupDeps.log.warn(`[eval] sweep could not remove ${name}: ${(err as Error).message}`)
       }

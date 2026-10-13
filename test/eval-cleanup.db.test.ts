@@ -182,6 +182,22 @@ describe('boot sweep (I2)', () => {
     }
   })
 
+  it('fix round 3: a failing upload listing never stops the drop; a dir that could not be removed is not reported', async () => {
+    const a = await createEvalTenant(randomUUID()); await a.pool.end(); await a.lock.release(); mySchemas.push(a.schema)
+    const b = await createEvalTenant(randomUUID()); await b.pool.end(); await b.lock.release(); mySchemas.push(b.schema)
+    for (const t of [a, b]) await db().execute(sql.raw(`comment on schema "${t.schema}" is 'created=${new Date(Date.now() - 3 * 3600_000).toISOString()}'`))
+    const saved = { listUploads: evalCleanupDeps.listUploads, rmDir: evalCleanupDeps.rmDir }
+    evalCleanupDeps.listUploads = async () => { throw new Error('db hiccup') }
+    evalCleanupDeps.rmDir = async (d: string) => { if (d.includes(b.schema)) throw new Error('EBUSY'); removedDirs.push(d) }
+    dirListing = []
+    try {
+      const r = await sweepEvalLeftovers()
+      expect(r.schemas).toEqual(expect.arrayContaining([a.schema, b.schema]))
+      expect(r.dirs).toContain(a.schema)
+      expect(r.dirs).not.toContain(b.schema)
+    } finally { Object.assign(evalCleanupDeps, saved) }
+  })
+
   it('without the creation stamp a tenant counts as stale', async () => {
     const t = await createEvalTenant(randomUUID())
     await t.pool.end()

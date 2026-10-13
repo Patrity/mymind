@@ -330,70 +330,126 @@ function idsOf(scope: object): Set<string> {
   return s
 }
 
-/** Subcommands that address an existing container (their positional args are container refs). */
-const TARGETING = new Set(['exec', 'start', 'stop', 'rm', 'kill', 'restart', 'inspect', 'logs', 'attach', 'wait', 'pause', 'unpause', 'update', 'rename', 'commit', 'export', 'top', 'port', 'diff', 'stats'])
-/** Flags of those subcommands that take a value (the value is not a target). */
-const VALUE_FLAGS = new Set(['--user', '-u', '--workdir', '-w', '--env', '-e', '--env-file', '--detach-keys', '--time', '-t', '--signal', '-s', '--format', '--since', '--until', '--tail', '-n'])
-/** exec: boolean flags (anything else before the container is refused). */
-const EXEC_BOOL = new Set(['-i', '--interactive', '-d', '--detach'])
+/** Fix round 3 (B1): what an eval world's sandbox may mount and run — registered by its manager
+ *  (createEvalSandboxManager). A world with nothing registered may mount nothing. */
+const evalSandboxes = new Map<string, { workspacesDir: string; image: string }>()
+export function registerEvalSandbox(worldId: string, v: { workspacesDir: string; image: string }): void { evalSandboxes.set(worldId, v) }
+export function unregisterEvalSandbox(worldId: string): void { evalSandboxes.delete(worldId) }
+
+type Check = (v: string) => boolean
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const eq = (...ok: string[]): Check => v => ok.includes(v)
+const re = (r: RegExp): Check => v => r.test(v)
+
+/**
+ * Per subcommand: EXACTLY the flags the eval sandbox manager emits (manager.ts / docker.ts argv
+ * builders) — booleans, and value flags with a check on their value. Anything else (another flag,
+ * an inline `--flag=value`, `-v`, `--env-file`, `--pid`, `--device`, `--cap-add SYS_ADMIN`, …) is
+ * refused. Flags parse until the first positional.
+ */
+function flagSpec(sub: string, ctx: { prefix: string; mountOk: Check }): { bools: Set<string>; values: Record<string, Check> } | null {
+  const baseEnvOk: Check = v => { const i = v.indexOf('='); return i > 0 && v.slice(0, i) in SANDBOX_BASE_ENV && v.slice(i + 1) === SANDBOX_BASE_ENV[v.slice(0, i)] }
+  const container: Record<string, Check> = {
+    '--user': eq(`${SANDBOX_UID}:${SANDBOX_UID}`, '0:0'),
+    '--cap-drop': eq('ALL'),
+    '--cap-add': eq('CHOWN'),
+    '--security-opt': eq('no-new-privileges'),
+    '--pids-limit': re(/^\d+$/),
+    '--memory': re(/^\d+[kmg]?$/),
+    '--memory-swap': re(/^\d+[kmg]?$/),
+    '--cpus': re(/^\d+(\.\d+)?$/),
+    '--ulimit': re(/^fsize=\d+:\d+$/),
+    '--sysctl': re(/^net\.ipv6\.conf\.(all|default)\.disable_ipv6=1$/),
+    '--tmpfs': re(/^\/(tmp|home\/agent):[a-z0-9=,]+$/),
+    '--mount': ctx.mountOk,
+    '--workdir': eq(WORKSPACE_MOUNT),
+    '--hostname': eq('sandbox'),
+    '--env': baseEnvOk,
+    '--label': (v: string) => /^[a-z0-9.]+=[A-Za-z0-9._:-]*$/.test(v),
+    '--name': (v: string) => v.startsWith(ctx.prefix) && /^[A-Za-z0-9_.-]+$/.test(v),
+    '--network': eq('none'),
+    '--restart': eq('no')
+  }
+  switch (sub) {
+    case 'create': return { bools: new Set(['--read-only', '--init']), values: container }
+    case 'run': return { bools: new Set(['--rm', '-i', '--read-only', '--init']), values: container }
+    case 'exec': return { bools: new Set(['-i']), values: { '--user': eq(`${SANDBOX_UID}:${SANDBOX_UID}`), '--workdir': eq(WORKSPACE_MOUNT), '--env': baseEnvOk } }
+    case 'start': return { bools: new Set(['-a']), values: {} }
+    case 'stop': case 'restart': return { bools: new Set(), values: { '-t': re(/^\d+$/) } }
+    case 'rm': return { bools: new Set(['-f']), values: {} }
+    case 'kill': return { bools: new Set(), values: {} }
+    case 'container inspect': return { bools: new Set(), values: { '--format': re(/^\{\{[^\n]*\}\}$/) } }
+    case 'image inspect': return { bools: new Set(), values: { '--format': eq('{{.Id}}') } }
+    case 'ps': return { bools: new Set(['-a', '-q', '-aq', '--no-trunc']), values: { '--filter': re(/^label=[a-z0-9.]+(=[A-Za-z0-9._:-]+)?$/), '--format': re(/^[^\n]*$/) } }
+    case 'version': case 'info': return { bools: new Set(), values: { '--format': re(/^\{\{[^\n]*\}\}$/) } }
+    default: return null
+  }
+}
 
 /**
  * Cycle 85 (fail closed): inside an eval world the docker CLI may only touch that world's own,
- * OFFLINE containers. Checked at the lowest level, below the manager, so no caller can reach a
- * networked container (or Tony's) from a world:
- *   - `create` / `run` must say `--network none`, carry the world's eval labels and (when named)
- *     a world-prefixed name; nothing with `--privileged`;
- *   - a container-targeting subcommand (exec, start, stop, rm, kill, inspect, logs, …) must name
- *     ONLY world-prefixed containers or ids the world itself created / listed under its label
- *     (fix round 2, N1);
- *   - `ps` / `version` / `info` / `image inspect` are read-only; every other subcommand (cp — host
- *     files in or out —, network, volume, system, build, pull, login, …) is refused;
- *   - no secret passthrough (`--env NAME` without a value, or a CLI env).
+ * OFFLINE containers — checked at the lowest level, below the manager. Fix round 3 (B1): an
+ * ALLOW-list per subcommand of exactly the argv the eval manager emits (flagSpec):
+ *   - `create` / `run`: `--network none`, the world's eval labels, a world-prefixed `--name` (when
+ *     named), the image the world registered, and a `--mount` of exactly `type=bind,src=<the
+ *     world's own workspace dir>/<uuid|.limits-probe>,dst=/workspace` — no other host path, no
+ *     docker socket, no `-v`, no extra capabilities;
+ *   - `exec` / `start` / `stop` / `restart` / `rm` / `kill` / `container inspect`: every target is a
+ *     world-prefixed name or an id the world created / listed under its own label (N1);
+ *   - `image inspect` (the world's image), `ps`, `version`, `info`: read-only;
+ *   - nothing else: no inline `--flag=value`, no `--env-file`, no `--env NAME` passthrough, no CLI
+ *     env (secrets), no `cp` / `logs` / `network` / `volume` / … subcommand.
  */
 export function assertEvalDockerArgs(args: string[], scope: Pick<EvalScope, 'runId' | 'worldId'>, env?: Record<string, string>): void {
   const refuse = (why: string) => { throw new SandboxUnavailableError(`eval: docker ${args[0] ?? ''} refused in an eval world (${why})`) }
   if (env && Object.keys(env).length) refuse('secrets are never passed to an eval sandbox')
   const prefix = evalContainerPrefix(scope.worldId)
   const own = idsOf(scope)
-  const allowedTarget = (t: string) => t.startsWith(prefix) || own.has(t)
+  const box = evalSandboxes.get(scope.worldId)
+  const mountOk: Check = (v) => {
+    if (!box) return false
+    const m = /^type=bind,src=([^,]+),dst=\/workspace$/.exec(v)
+    if (!m) return false
+    const src = m[1]!
+    const base = box.workspacesDir.replace(/\/+$/, '')
+    if (!src.startsWith(`${base}/`)) return false
+    const leaf = src.slice(base.length + 1)
+    return UUID_RE.test(leaf) || leaf === '.limits-probe'
+  }
   let sub = args[0] ?? ''
   let rest = args.slice(1)
-  if (sub === 'container') { sub = rest[0] ?? ''; rest = rest.slice(1); if (sub === 'ls' || sub === 'list') sub = 'ps' }
-  if (args.includes('--privileged')) refuse('no privileged containers')
-  const passthroughEnv = rest.some((x, i) => (x === '--env' || x === '-e') && !(rest[i + 1] ?? '').includes('='))
-  if (passthroughEnv) refuse('no secret env passthrough')
-  const hasPair = (flag: string, value: string) => rest.some((x, i) => x === flag && rest[i + 1] === value)
+  if (sub === 'container' || sub === 'image') { sub = `${sub} ${rest[0] ?? ''}`; rest = rest.slice(1) }
+  const spec = flagSpec(sub, { prefix, mountOk })
+  if (!spec) refuse('not allowed in an eval world')
+  const seen: [string, string][] = []
+  let i = 0
+  for (; i < rest.length; i++) {
+    const x = rest[i]!
+    if (!x.startsWith('-')) break
+    if (x.includes('=')) refuse(`inline flag values are not allowed (${x.split('=')[0]})`)
+    if (spec!.bools.has(x)) { seen.push([x, '']); continue }
+    const check = spec!.values[x]
+    if (!check) refuse(`flag ${x} is not allowed`)
+    const v = rest[i + 1]
+    if (v === undefined || !check!(v)) refuse(`${x} ${v ?? ''} is not allowed`)
+    seen.push([x, v!])
+    i++
+  }
+  const positionals = rest.slice(i)
+  const values = (f: string) => seen.filter(([k]) => k === f).map(([, v]) => v)
   if (sub === 'create' || sub === 'run') {
-    if (!hasPair('--network', 'none')) refuse('an eval sandbox is always --network none')
-    if (rest.some((x, i) => (x === '--network' || x === '--net') && rest[i + 1] !== 'none') || rest.some(x => /^--net(work)?=/.test(x) && x !== '--network=none')) refuse('an eval sandbox is always --network none')
-    if (!hasPair('--label', `${LABEL_EVAL_RUN}=${scope.runId}`) || !hasPair('--label', `${LABEL_EVAL_WORLD}=${scope.worldId}`)) refuse('missing the eval labels')
-    const ni = rest.indexOf('--name')
-    if (ni !== -1 && !(rest[ni + 1] ?? '').startsWith(prefix)) refuse(`a container name must start with ${prefix}`)
+    if (!values('--network').includes('none')) refuse('an eval sandbox is always --network none')
+    const labels = values('--label')
+    if (!labels.includes(`${LABEL_EVAL_RUN}=${scope.runId}`) || !labels.includes(`${LABEL_EVAL_WORLD}=${scope.worldId}`)) refuse('missing the eval labels')
+    if (!box || positionals[0] !== box.image) refuse('not the world\'s sandbox image')
     return
   }
-  if (sub === 'ps' || sub === 'version' || sub === 'info') return
-  if (sub === 'image' && rest[0] === 'inspect') return
-  if (!TARGETING.has(sub)) refuse('not allowed in an eval world')
-  const targets: string[] = []
-  if (sub === 'exec') {
-    let i = 0
-    for (; i < rest.length; i++) {
-      const x = rest[i]!
-      if (VALUE_FLAGS.has(x)) { i++; continue }
-      if (x.startsWith('-')) { if (!EXEC_BOOL.has(x) && !/^--(user|workdir|env)=/.test(x)) refuse(`unexpected exec flag ${x}`); continue }
-      break
-    }
-    if (rest[i] !== undefined) targets.push(rest[i]!)
-  } else {
-    for (let i = 0; i < rest.length; i++) {
-      const x = rest[i]!
-      if (VALUE_FLAGS.has(x)) { i++; continue }
-      if (x.startsWith('-')) continue
-      targets.push(x)
-    }
-  }
+  if (sub === 'image inspect') { if (!box || positionals.length !== 1 || positionals[0] !== box.image) refuse('not the world\'s sandbox image'); return }
+  if (sub === 'ps' || sub === 'version' || sub === 'info') { if (positionals.length) refuse('unexpected arguments'); return }
+  // Container-targeting: exec names ONE container (the rest is its command); the others name only containers.
+  const targets = sub === 'exec' ? positionals.slice(0, 1) : positionals
   if (!targets.length) refuse('no container named')
-  for (const t of targets) if (!allowedTarget(t)) refuse(`${t} is not this world's container`)
+  for (const t of targets) if (!(t.startsWith(prefix) || own.has(t))) refuse(`${t} is not this world's container`)
 }
 
 /** After a successful in-world call: remember the ids the world created (`create` prints it) or

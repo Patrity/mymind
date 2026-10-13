@@ -33,7 +33,7 @@ const { eq, inArray, sql } = await import('drizzle-orm')
 const { useDb, RoutingPool } = await import('@mymind/core/db')
 const { tasks, channelDeliveries, activityLog } = await import('@mymind/core/db/schema')
 const { installEvalWorld, cleanupEvalRun } = await import('@mymind/core/lib/eval/world')
-const { shadowableTables, listEvalTenants, evalRunPrefix, createEvalTenant, dropEvalSchema, dropEvalRunTenants, EVAL_REFERENCE_TABLES, EVAL_SETTINGS_KEYS } = await import('@mymind/core/lib/eval/tenant')
+const { shadowableTables, listEvalTenants, evalRunPrefix, createEvalTenant, dropEvalSchema, dropEvalRunTenants, evalTenantDeps, EVAL_LOCK_NS, EVAL_REFERENCE_TABLES, EVAL_SETTINGS_KEYS } = await import('@mymind/core/lib/eval/tenant')
 const { setBusNs } = await import('@mymind/core/lib/bus/ns')
 const { createTask, getTask, listTasks } = await import('@mymind/core/services/tasks')
 const { createMemory, getMemory, listMemories, searchMemories } = await import('@mymind/core/services/memory')
@@ -332,6 +332,75 @@ describe('eval tenant: fix round 2 (N2)', () => {
       expect(await w.run(() => createTask({ title: `${TAG} still mine` }))).toMatchObject({ title: `${TAG} still mine` })
     } finally { await w.dispose() }
     expect(await listEvalTenants()).not.toContain(w.schema)
+  })
+})
+
+describe('eval tenant: fix round 3 (B2, B3, B4, pool.end)', () => {
+  const lockRow = (schema: string) => db().execute(sql`select pid, classid::bigint as ns, objsubid from pg_locks
+    where locktype = 'advisory' and granted and objsubid = 2 and classid = ${EVAL_LOCK_NS}::oid
+      and objid = ((hashtext(${schema})::bigint + 4294967296) % 4294967296)::oid`)
+
+  it('B4: the world lock lives in the two-int key space under the eval namespace', async () => {
+    const r = await lockRow(world.schema)
+    expect(r.rows).toEqual([expect.objectContaining({ ns: String(EVAL_LOCK_NS), objsubid: 2 })])
+    // …and nothing in the single-bigint space for it.
+    const single = await db().execute(sql`select 1 from pg_locks where locktype = 'advisory' and objsubid = 1 and objid = ((hashtext(${world.schema})::bigint + 4294967296) % 4294967296)::oid`)
+    expect(single.rows).toEqual([])
+  })
+
+  it('B3: the lock is held before the schema is ever visible', async () => {
+    const run = randomUUID()
+    const prefix = evalRunPrefix(run)
+    const sightings: { vis: string; locked: boolean }[] = []
+    let done = false
+    const poll = (async () => {
+      while (!done) {
+        const r = await db().execute(sql`select n.nspname as vis, exists (select 1 from pg_locks l where l.locktype = 'advisory' and l.granted and l.objsubid = 2
+            and l.classid = ${EVAL_LOCK_NS}::oid and l.objid = ((hashtext(n.nspname)::bigint + 4294967296) % 4294967296)::oid) as locked
+          from pg_namespace n where n.nspname like ${`${prefix}%`}`)
+        for (const row of r.rows as { vis: string; locked: boolean }[]) sightings.push(row)
+      }
+    })()
+    const t = await createEvalTenant(run)
+    done = true
+    await poll
+    try {
+      expect(sightings.length).toBeGreaterThan(0)
+      expect(sightings.every(x => x.locked)).toBe(true)
+    } finally {
+      await t.pool.end(); await t.lock.release(); await dropEvalSchema(t.schema)
+    }
+  })
+
+  it('B2: a world whose lock session dies fails closed at once — even with its schema still there', async () => {
+    const w = await installEvalWorld(randomUUID(), {})
+    try {
+      await w.run(() => createTask({ title: `${TAG} before the lock loss` }))
+      const [row] = (await lockRow(w.schema)).rows as { pid: number }[]
+      expect(row).toBeDefined()
+      await db().execute(sql`select pg_terminate_backend(${row!.pid})`)
+      for (let i = 0; i < 50 && (await lockRow(w.schema)).rows.length; i++) await new Promise(r => setTimeout(r, 20))
+      await new Promise(r => setTimeout(r, 50)) // the client sees the end
+      expect(await listEvalTenants()).toContain(w.schema) // not dropped — the pool refuses anyway
+      const why = async (p: Promise<unknown>) => { try { await p; return 'no error' } catch (e) { const err = e as Error & { cause?: Error }; return `${err.message} ${err.cause?.message ?? ''}` } }
+      expect(await why(w.run(() => createTask({ title: `${TAG} after the lock loss` })))).toEqual(expect.stringContaining('lost its lock'))
+      const leaked = await db().select({ id: tasks.id }).from(tasks).where(eq(tasks.title, `${TAG} after the lock loss`))
+      expect(leaked).toEqual([])
+    } finally { await w.dispose() }
+    expect(await listEvalTenants()).not.toContain(w.schema)
+  })
+
+  it('pool.end times out on a leaked client, destroys it, and dispose still drops the world', async () => {
+    const w = await installEvalWorld(randomUUID(), {})
+    const before = evalTenantDeps.poolEndTimeoutMs
+    evalTenantDeps.poolEndTimeoutMs = 300
+    try {
+      await w.run(async () => { await createTask({ title: `${TAG} leak` }); await (await import('@mymind/core/db')).useDb().$client.connect() }) // never released
+      const t0 = Date.now()
+      await w.dispose()
+      expect(Date.now() - t0).toBeLessThan(5_000)
+      expect(await listEvalTenants()).not.toContain(w.schema)
+    } finally { evalTenantDeps.poolEndTimeoutMs = before }
   })
 })
 

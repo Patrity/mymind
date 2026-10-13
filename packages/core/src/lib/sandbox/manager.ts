@@ -24,7 +24,7 @@ import { chown, mkdir, rmdir, statfs } from 'node:fs/promises'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import {
-  LABEL_EVAL_RUN, LABEL_EVAL_WORLD, LABEL_FLAGS, evalContainerPrefix, LABEL_TAINTED, LABEL_TEST, LABEL_WORKSPACE, SANDBOX_UID, SandboxStoppedError, SandboxUnavailableError,
+  LABEL_EVAL_RUN, LABEL_EVAL_WORLD, LABEL_FLAGS, evalContainerPrefix, registerEvalSandbox, LABEL_TAINTED, LABEL_TEST, LABEL_WORKSPACE, SANDBOX_UID, SandboxStoppedError, SandboxUnavailableError,
   assertSecretName, createArgs, createDockerCli, dockerAvailable, ensureNetwork, execArgs, flagsHash, killExecArgs,
   limitsProbeArgs, limitsProblems, parseExecStatus, taintedRunArgs, verifyNetworkIsolation,
   type DockerResult, type DockerRunner, type ExecStatus
@@ -1234,6 +1234,8 @@ export function evalSandboxLabels(scope: Pick<EvalScope, 'runId' | 'worldId'>): 
 /** An eval world's manager: offline, labelled with the run + world, its own dir and slots. */
 export function createEvalSandboxManager(scope: Pick<EvalScope, 'runId' | 'worldId'>, opts: SandboxManagerOptions = {}): SandboxManager {
   const h = () => evalHooks.get(scope) ?? {}
+  // Fix round 3 (B1): the docker guard lets this world mount only its own dir and run its image.
+  registerEvalSandbox(scope.worldId, { workspacesDir: evalWorkspacesDir(scope.worldId, opts.settings?.workspacesDir), image: opts.settings?.image ?? sandboxSettings().image })
   return createSandboxManager({
     isBusy: id => h().isBusy?.(id) ?? false,
     hasLiveShell: id => h().hasLiveShell?.(id) ?? false,

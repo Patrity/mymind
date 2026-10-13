@@ -406,6 +406,7 @@ export function buildEvalWorld(args: { runId: string; schema: string; pool: Pool
       scope.active = false
       // Fix round 2 (N6): the world's watch timers stop before its containers / schema go.
       try { (await import('../sandbox/runtime')).stopEvalWorkspaceRuntime(scope) } catch (err) { console.warn('[eval] stopping the world runtime failed:', (err as Error).message) }
+      try { (await import('../sandbox/docker')).unregisterEvalSandbox(schema) } catch { /* never registered */ }
       await args.dispose?.()
     })()
   }

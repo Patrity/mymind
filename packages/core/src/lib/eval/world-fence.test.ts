@@ -61,7 +61,7 @@ const { parseEvalSetup } = await import('./setup')
 const { EvalNetworkBlockedError, processCache, runInEvalScope, currentEvalScope } = await import('./context')
 const { execTool } = await import('../agent/tools/exec')
 const { runConstrained, ExecDisabledError } = await import('../exec/run')
-const { createDockerCli, createArgs, evalContainerPrefix, LABEL_EVAL_RUN, LABEL_EVAL_WORLD } = await import('../sandbox/docker')
+const { createDockerCli, createArgs, taintedRunArgs, limitsProbeArgs, execArgs, killExecArgs, registerEvalSandbox, evalContainerPrefix, LABEL_EVAL_RUN, LABEL_EVAL_WORLD } = await import('../sandbox/docker')
 const { sandboxManager, _evalSandboxHooksFor } = await import('../sandbox/manager')
 const { workspaceRuntime } = await import('../sandbox/runtime')
 const { sandboxSecretEnv } = await import('../sandbox/secrets')
@@ -101,65 +101,93 @@ describe('C1: no host process from a world', () => {
   })
 })
 
-describe('C1 / N1: the docker CLI only touches the world\'s own offline containers', () => {
+describe('C1 / N1 / B1: the docker CLI only touches the world\'s own offline containers', () => {
   const prefix = evalContainerPrefix(SCHEMA)
-  const spec = { name: `${prefix}ws-11111111-1111-1111-1111-111111111111`, image: 'img', workspaceId: '11111111-1111-1111-1111-111111111111', hostDir: '/tmp/x' }
+  const WSDIR = `/srv/ws/.eval/${SCHEMA}`
+  const WS = '11111111-1111-1111-1111-111111111111'
+  const spec = { name: `${prefix}ws-${WS}`, image: 'mymind-sandbox:current', workspaceId: WS, hostDir: `${WSDIR}/${WS}` }
   const labels = { [LABEL_EVAL_RUN]: RUN, [LABEL_EVAL_WORLD]: SCHEMA }
   const TONY = 'mymind-ws-22222222-2222-2222-2222-222222222222' // shaped like a real workspace container
+  beforeAll(() => registerEvalSandbox(SCHEMA, { workspacesDir: WSDIR, image: 'mymind-sandbox:current' }))
+  const good = () => createArgs({ ...spec, network: 'none', dns: [], labels })
+  /** `good()` with one flag pair inserted before the image. */
+  const withFlag = (...extra: string[]) => { const a = good(); const i = a.indexOf('mymind-sandbox:current'); a.splice(i, 0, ...extra); return a }
 
-  it('refuses a networked container, a missing label, a foreign name, network commands and secret passthrough — before spawning', async () => {
+  it('the manager\'s own argv passes: create, taintedRun, probe, exec, start/stop/rm/kill/restart, inspect, ps', async () => {
     const w = world()
     const cli = createDockerCli()
-    await expect(w.run(() => cli(createArgs({ ...spec, labels })))).rejects.toThrow(/--network none/)               // default network
-    await expect(w.run(() => cli(createArgs({ ...spec, network: 'none' })))).rejects.toThrow(/eval labels/)
-    await expect(w.run(() => cli(createArgs({ ...spec, network: 'none', labels: { ...labels, [LABEL_EVAL_RUN]: 'other' } })))).rejects.toThrow(/eval labels/)
-    await expect(w.run(() => cli(createArgs({ ...spec, name: TONY, network: 'none', labels })))).rejects.toThrow(/must start with/)
-    await expect(w.run(() => cli(['network', 'connect', 'bridge', spec.name]))).rejects.toThrow(/not allowed/)
-    await expect(w.run(() => cli(['exec', '-i', '--env', 'GITHUB_TOKEN', spec.name, 'env']))).rejects.toThrow(/secret env/)
-    await expect(w.run(() => cli(['exec', spec.name, 'env'], { env: { GITHUB_TOKEN: 'x' } }))).rejects.toThrow(/secrets are never/)
-    expect(spawned).toEqual([])
+    const ok = [
+      good(),
+      taintedRunArgs({ ...spec, name: `${prefix}wst-11111111-abc`, network: 'none', labels, command: 'ls', execId: 'abc', timeoutSec: 10 }),
+      limitsProbeArgs({ ...spec, name: `${prefix}wsprobe-01020304`, hostDir: `${WSDIR}/.limits-probe`, labels, probe: true }),
+      ['run', '--rm', '--network', 'none', '--user', '10001:10001', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--label', `mymind.workspace=${WS}`, '--label', `${LABEL_EVAL_RUN}=${RUN}`, '--label', `${LABEL_EVAL_WORLD}=${SCHEMA}`, '--mount', `type=bind,src=${WSDIR}/${WS},dst=/workspace`, 'mymind-sandbox:current', 'find', '/workspace', '-mindepth', '1', '-delete'],
+      execArgs({ container: spec.name, command: 'ls', execId: 'abc', timeoutSec: 10 }),
+      killExecArgs(spec.name, 'abc'),
+      ['exec', '--user', '10001:10001', '--workdir', '/workspace', spec.name, '/bin/sh', '-c', 'du'],
+      ['start', '-a', spec.name], ['start', spec.name], ['stop', '-t', '3', spec.name], ['restart', '-t', '0', spec.name], ['rm', '-f', spec.name], ['kill', spec.name],
+      ['container', 'inspect', spec.name], ['container', 'inspect', '--format', '{{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}', spec.name],
+      ['image', 'inspect', '--format', '{{.Id}}', 'mymind-sandbox:current'],
+      ['ps', '-aq', '--no-trunc', '--filter', 'label=mymind.workspace', '--filter', `label=${LABEL_EVAL_WORLD}=${SCHEMA}`],
+      ['version', '--format', '{{.Server.Version}}']
+    ]
+    for (const args of ok) await w.run(() => cli(args))
+    expect(spawned).toHaveLength(ok.length)
   })
 
-  it('N1: every container-targeting subcommand at a non-world target is refused — incl. rm -f of a real-looking name', async () => {
+  it('refuses every reviewer probe (and more) before spawning', async () => {
     const w = world()
     const cli = createDockerCli()
-    const refused = [
-      ['rm', '-f', TONY],
-      ['kill', TONY],
-      ['stop', '-t', '3', TONY],
-      ['start', TONY],
+    const refused: string[][] = [
+      // networks / labels / names / images
+      createArgs({ ...spec, dns: [], labels }),                                              // default network
+      createArgs({ ...spec, network: 'none', dns: [] }),                                     // no eval labels
+      createArgs({ ...spec, network: 'none', dns: [], labels: { ...labels, [LABEL_EVAL_RUN]: 'other' } }),
+      createArgs({ ...spec, name: TONY, network: 'none', dns: [], labels }),                 // foreign --name
+      good().map(x => x === '--name' ? `--name=${TONY}` : x).filter(x => x !== spec.name),   // --name= inline form
+      good().map(x => x === 'mymind-sandbox:current' ? 'alpine' : x),                        // another image
+      // B1 probes: mounts and host access
+      withFlag('-v', '/var/run/docker.sock:/s'),
+      withFlag('--volume', '/:/host'),
+      withFlag('--mount', 'type=bind,src=/var/run/docker.sock,dst=/s'),
+      good().map(x => x.startsWith('type=bind,src=') ? 'type=bind,src=/opt/mymind,dst=/workspace' : x),            // another host path
+      good().map(x => x.startsWith('type=bind,src=') ? `type=bind,src=${WSDIR}/../../x,dst=/workspace` : x),        // escape the world dir
+      good().map(x => x.startsWith('type=bind,src=') ? `type=bind,src=/srv/ws/.eval/eval_00000000000040008000000000000bad_0badcafe/${WS},dst=/workspace` : x), // another world's dir
+      good().map(x => x.startsWith('type=bind,src=') ? `type=bind,src=${WSDIR}/${WS},dst=/etc` : x),
+      withFlag('--pid', 'host'), withFlag('--cap-add', 'SYS_ADMIN'), withFlag('--device', '/dev/sda'), withFlag('--privileged'),
+      withFlag('--security-opt', 'seccomp=unconfined'), withFlag('--user', '0:0', '--group-add', 'docker'),
+      // B1 probes: env passthrough
+      withFlag('--env', 'DATABASE_URL'), withFlag('--env=DATABASE_URL'), withFlag('-e', 'DATABASE_URL'),
+      withFlag('--env-file', '/opt/mymind/.env.native'), withFlag('--env', 'DATABASE_URL=postgres://x'),
+      ['exec', '--env=DATABASE_URL', spec.name, 'env'],
+      ['exec', '--env-file', '/opt/mymind/.env.native', spec.name, 'env'],
+      ['exec', '-i', '--env', 'GITHUB_TOKEN', spec.name, 'env'],
+      ['exec', '-it', spec.name, 'sh'], ['exec', '--privileged', spec.name, 'id'], ['exec', '--user', '0:0', spec.name, 'id'],
+      // B1 probes: value flags swallowing a foreign target
+      ['container', 'inspect', '-s', TONY, spec.name],
+      ['inspect', '-s', TONY, spec.name],
+      ['logs', '-t', TONY, spec.name],
+      ['stop', '-t', TONY, spec.name],
+      ['container', 'inspect', '--format', TONY, spec.name],
+      // N1: foreign / missing targets, other subcommands
+      ['rm', '-f', TONY], ['kill', TONY], ['stop', '-t', '3', TONY], ['start', TONY],
       ['exec', '-i', '--user', '10001:10001', TONY, '/bin/sh', '-c', 'id'],
-      ['exec', '--privileged', spec.name, 'id'],
-      ['exec', '-it', spec.name, 'sh'],                                // an exec flag outside the known set
-      ['create', '--privileged', '--network', 'none', '--label', `${LABEL_EVAL_RUN}=${RUN}`, '--label', `${LABEL_EVAL_WORLD}=${SCHEMA}`, '--name', spec.name, 'img'],
-      ['container', 'inspect', '--format', '{{.Id}}', TONY],
-      ['container', 'rm', '-f', TONY],
-      ['cp', `${TONY}:/workspace/x`, '/tmp/x'],
-      ['cp', `${spec.name}:/workspace/x`, '/tmp/x'],                   // cp moves host files: never in a world
-      ['cp', `${spec.name}:/workspace/x`, `${prefix}copied-to-the-host-cwd`], // …even when every arg looks like the world's
-      ['logs', TONY],
-      ['rm', '-f', spec.name, TONY],                                   // one foreign target is enough
-      ['rm', '-f', 'a'.repeat(64)],                                    // an id the world never created
-      ['rm', '-f'],                                                    // no target at all
-      ['volume', 'rm', 'x'], ['system', 'prune', '-af'], ['build', '.'], ['pull', 'alpine']
+      ['container', 'rm', '-f', TONY], ['rm', '-f', spec.name, TONY], ['rm', '-f', 'a'.repeat(64)], ['rm', '-f'],
+      ['cp', `${TONY}:/workspace/x`, '/tmp/x'], ['cp', `${spec.name}:/workspace/x`, `${prefix}x`],
+      ['image', 'inspect', 'alpine'], ['ps', '-a', TONY],
+      ['network', 'connect', 'bridge', spec.name], ['volume', 'rm', 'x'], ['system', 'prune', '-af'], ['build', '.'], ['pull', 'alpine']
     ]
     for (const args of refused) await expect(w.run(() => cli(args)), args.join(' ')).rejects.toThrow(/refused in an eval world/)
+    await expect(w.run(() => cli(['exec', spec.name, 'env'], { env: { GITHUB_TOKEN: 'x' } }))).rejects.toThrow(/secrets are never/)
     expect(spawned).toEqual([])
-  })
-
-  it('lets the world\'s own containers through (by prefix, and by an id it created or listed under its label)', async () => {
-    const w = world()
-    const cli = createDockerCli()
-    await w.run(() => cli(createArgs({ ...spec, network: 'none', labels })))
-    await w.run(() => cli(['rm', '-f', spec.name]))
-    await w.run(() => cli(['exec', '-i', '--user', '10001:10001', '--workdir', '/workspace', '--env', 'HOME=/home/agent', spec.name, '/bin/sh', '-c', 'id']))
-    await w.run(() => cli(['container', 'inspect', '--format', '{{.Id}}', spec.name]))
-    await w.run(() => cli(['ps', '-aq', '--filter', 'label=mymind.workspace']))
-    await w.run(() => cli(['version']))
-    expect(spawned).toHaveLength(6)
     spawned.length = 0
     await cli(['rm', '-f', TONY]) // outside any world: untouched
     expect(spawned).toHaveLength(1)
+  })
+
+  it('a world with no registered sandbox can mount nothing', async () => {
+    const other = buildEvalWorld({ runId: RUN, schema: 'eval_000000000000400080000000000000aa_00000003', pool: deadPool, setup: parseEvalSetup({}) })
+    await expect(other.run(() => createDockerCli()(createArgs({ ...spec, name: `${evalContainerPrefix('eval_000000000000400080000000000000aa_00000003')}ws-${WS}`, network: 'none', dns: [], labels: { [LABEL_EVAL_RUN]: RUN, [LABEL_EVAL_WORLD]: 'eval_000000000000400080000000000000aa_00000003' } })))).rejects.toThrow(/--mount/)
+    expect(spawned).toEqual([])
   })
 
   it('ids: one returned by an in-world create / own-label ps is allowed; another world\'s is not', async () => {
@@ -168,7 +196,7 @@ describe('C1 / N1: the docker CLI only touches the world\'s own offline containe
     const id = 'c'.repeat(64)
     stdoutNext = `${id}\n`
     const cli = createDockerCli()
-    await w.run(() => cli(createArgs({ ...spec, network: 'none', labels })))
+    await w.run(() => cli(good()))
     await w.run(() => cli(['start', id]))
     await expect(other.run(() => cli(['start', id]))).rejects.toThrow(/not this world's container/)
     const listed = 'd'.repeat(64)
