@@ -381,9 +381,7 @@ const detail = (d: Record<string, unknown>) => JSON.stringify(d, null, 2)
               <p
                 v-if="wsVerification.nextStep"
                 class="mt-1 text-sm whitespace-pre-wrap break-words"
-              >
-                Next: {{ wsVerification.nextStep }}
-              </p>
+              >Next: {{ wsVerification.nextStep }}</p>
               <p
                 v-if="wsVerification.error"
                 class="mt-1 text-sm text-error break-words"
