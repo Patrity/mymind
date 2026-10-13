@@ -663,10 +663,26 @@ packages' full dependency closure), not from the tree that CD wipes and `pnpm in
 930 MB at peak during a deploy, so run `df -h /` before deploying.
 
 **Deploy order (CD, `deploy.yml`):** sync → db/searxng up → provision → install + **web build** +
-`worker-release.sh stage` + migrate → `systemctl restart mymind` → `/api/health` → `worker-release.sh
-activate && systemctl restart mymind-worker` → worker health (unit active + a fresh
-`worker_heartbeat` row from the new boot). The web is cut over first. Between the two restarts
-nothing executes (about 1–2 min); queued runs wait in the DB and nothing is lost.
+`worker-release.sh stage` + **cancel running evals** + migrate → `systemctl restart mymind` →
+`/api/health` → `worker-release.sh activate && systemctl restart mymind-worker` → worker health
+(unit active + a fresh `worker_heartbeat` row from the new boot). The web is cut over first.
+Between the two restarts nothing executes (about 1–2 min); queued runs wait in the DB and nothing
+is lost.
+
+**Cancel running evals before migrating (cycle 85).** Right before `pnpm db:migrate`, CD runs
+(sourcing `.env.native`): `NODE_ENV=production pnpm eval --cancel-all --wait 60 || echo "eval cancel
+failed (continuing)"`. This is wrapped in `|| echo`, so it can **never** fail the deploy — a
+migration that runs anyway is still safe, because every eval attempt checks for schema drift both
+before and after it runs and fails closed if the world doesn't match `public` anymore (see
+[`wiki/eval.md`](wiki/eval.md)). **Eval runs use the same prod Postgres instance and the same
+`DATABASE_URL` as the app** — each live eval world is its own temporary schema
+(`eval_<run>_<suffix>`) inside the `mymind` database, never a separate database or server, so a
+migration during an eval run would otherwise be touching the exact schemas (`public`'s tables, and
+every world's shadow of them) that eval worlds are built from. Dropped schemas and the eval
+tables (`eval_suites`/`eval_cases`/`eval_runs`/`eval_results`) are ordinary rows/objects in the
+normal nightly DB dump — nothing eval-specific is excluded from backups. See the ops section in
+[`.claude/skills/prod-deploy/SKILL.md`](../.claude/skills/prod-deploy/SKILL.md#evals-on-prod) for
+running one safely, checking for leftover `eval_*` schemas/containers, and cancelling by hand.
 
 **Drain.** `systemctl restart|stop mymind-worker` sends SIGTERM. The worker stops claiming, lets
 in-flight runs finish for up to 60 s (`WORKER_DRAIN_MS`, inside `TimeoutStopSec=90`), then exits.

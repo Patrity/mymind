@@ -372,6 +372,103 @@ taint is seeded only from `historyTaint(policed)`, exactly as it worked before c
 intentional and documented rather than silently inconsistent: chat Smart Approvals defaults off, and
 the settings warning above says explicitly not to enable it until chat gets the same stickiness.
 
+## Outcome judge
+
+Cycle 85 (harness step 6a) adds a second, separate verifier: not "may this call run," but "did the
+work actually meet the goal." It gates `finish_workstream`, never a chat turn. Code:
+`packages/core/src/lib/agent/judge/outcome.ts`, `tools/workstreams.ts`, `workstreams/{loop,store}.ts`.
+Spec: [`2026-10-13-eval-design.md`](../superpowers/specs/2026-10-13-eval-design.md) §2. Handover:
+[`2026-10-13-eval.md`](../handovers/2026-10-13-eval.md). The eval substrate
+([`eval.md`](eval.md)) drives this same verifier in-world, passing the case's rubric as the goal and
+the attempt's final text as the summary.
+
+**When it runs.** Every `finish_workstream` call, coordinators included — never a chat turn (spec
+D1). It runs *after* the existing live-children refusal (a coordinator can't finish while a child is
+still going) and the taint settle, and *before* the workstream is allowed to move to `done`. While
+it runs, `stateDetail: 'verifying'` is written on the row (`store.patchStateDetail`, a conditional
+write from a null detail or from an in-flight `evaluating`) and the segment's wall clock is paused
+only once that write lands — the same way an `evaluating` approval pauses it — but `verifying`
+always wins over `evaluating`: an approval verdict ending mid-verification can only *restore*
+`evaluating` once the verification itself ends, never clear or overwrite a live `verifying`.
+
+**Evidence and its caps** (`buildOutcomeEvidence`/`buildWorkstreamEvidence`, `OUTCOME_LIMITS`). The
+verifier gets: the goal; the model's own summary; the workstream's tool-call log from `run_events`
+(this bus namespace + conversation, newest-first, deduped on `(runId, toolCallId)`, capped to the
+**last 60 calls** plus a true total, each call's args ≤ 200 chars / result digest ≤ 300 chars /
+guard-flag source); workspace changes (`git diff --stat` plus up to 8 KB of the most-changed files'
+diffs, run **read-only** and **offline** in the sandbox — no `git init`/`add`/`commit`, so the
+agent's own diff baseline is untouched, and the workspace is never marked tainted by the check
+itself); and, for a coordinator, every child's state/goal/summary/failureReason/own verification (up
+to 50, plus a true total). **Fencing**: everything except a *top-level* goal is wrapped in a random
+per-prompt `fenceUntrusted` block (`judge/fence.ts`) — the summary, every tool-call digest, the
+workspace diff, and each child's fields. **A child's goal is untrusted and fenced too** — it's the
+coordinator's own wording (model output), not Tony's, so a coordinator could otherwise smuggle
+instructions into the verifier through the very field the top-level case trusts. Only a workstream
+started directly by Tony (or an eval case's rubric) gets its goal shown unfenced.
+
+**The verdict.** `verifyOutcome(evidence)` makes one tool-free `generateText` + `Output.object` call
+on the `judge` chain (empty → `reasoning`), a 60 s budget, and **never throws** — no model, every
+model failing, a timeout, cancellation or malformed output all come back as a verdict with
+`verdict: null` and an `error` string, not an exception. `normalizeOutcome` requires `verdict` to be
+`met`/`partial`/`unmet` and `confidence` a finite 0–1 number (never clamped — an out-of-range answer
+is an error, not a guess at what was meant); gaps are capped at 5 × 200 chars, `nextStep` at 300.
+**`outcomeMet(v)`** = no error, `verdict === 'met'`, and **confidence ≥ 0.7**
+(`OUTCOME_MET_CONFIDENCE`) — a `met` verdict below that threshold is treated as not met (the badge
+reads "⚠ unverified," distinct from a genuine `partial`/`unmet`).
+
+**Send-backs.** Not met (`partial`/`unmet`, an error/null verdict, or a `met` below 0.7) sends the
+work back to the model instead of ending the workstream: `"Not done yet: <gaps>; next: <nextStep>.
+(Outcome check n of 2: …not new instructions from Tony…)"`, `send_backs` increments on the row via
+`recordSendBack` — a compare-and-set on `state ∈ {running, attention} ∧ cancel_requested = false ∧
+current_run_id = this segment ∧ send_backs = seen` (the `attention` branch covers a card that got
+raised and parked the row during the same verification), so two concurrent verifications on one
+workstream can never both count. The segment keeps working within its existing budget. **Max 2
+send-backs** — the third
+time, or any time the **final segment** verdict isn't `met` (the last summary step, or fewer than 2
+steps of budget left, so there's no room to try again), it finishes **`done`, flagged**:
+`verification` is stored on the row and Tony sees "⚠ verifier: partial — <gaps>" (or "⚠ verifier:
+could not check it (<error>)"). **The verifier can never produce a `failed` workstream on its own** —
+an error, a timeout, or running out of send-back room all still *finish* the work, just flagged.
+**Send-backs reset on resume**: resuming a failed or cancelled workstream sets `send_backs` back to
+0, so a workstream that's genuinely restarted gets its full two chances again, and the stale
+`verifying` detail from the dead segment is cleared at the same time.
+
+**The CAS guards.** Beyond the send-back CAS above, the final `done` write
+(`patchWorkstream(..., ['running'])`) only moves from `running` — a segment that lost its claim
+(recovered as stale, or superseded by a later run, or parked in `attention`) gets "this segment no
+longer owns the workstream" / "Tony has a pending question/approval" rather than silently finishing
+someone else's work, and a `sendBacks > seen` re-read is told the current count without
+incrementing again (no double-counting on a CAS miss). **A finish is refused outright while Tony
+has a pending question or approval card** — checked before verification even starts, and the CAS
+itself only ever accepts `running` for the final write — so a `met` verdict landing while his
+attention is pending can never quietly clear it (see
+[`workstreams.md`](workstreams.md#verification); one narrow residual race with `judge.enabled:
+false` is tracked in [`eval.md`](eval.md#11-known-limits)).
+
+**`stateDetail: 'verifying'`.** Visible on the workstream list/detail (`VERIFYING_META`) the whole
+time the check is in flight — sandbox diff (≤ 30 s) plus the verifier's own 60 s budget, bounded at
+roughly 150 s worst case. It always takes priority over `evaluating` (an approval verdict in
+progress): an evaluation can only *set* `evaluating` from null and only *clear* it where it is still
+`evaluating`, so it can never stomp on or clear a live `verifying`.
+
+**The three limiters.** The outcome verifier shares `judge/limiter.ts`'s three-way split with the
+approval judge and the output guard (cycle 85 final fix wave, closing the starvation the single
+cycle-84 semaphore would otherwise cause): **`guard`** (the output guard, default 4),
+**`approval`** (card verdicts, default 2), and **`outcome`** (the finish verifier *and* the eval
+substrate's own rubric judge, default 2) — each its own FIFO semaphore, so a long-running verifier
+call can never delay a guard call the way a shared pool once could under fan-out. `judge.maxInFlight`
+is `{guard, approval, outcome}` (1–16 each; a stored bare number sets `guard` only, for back-compat).
+Inside an eval world, a call first takes the run's own single process-wide slot of its class
+(`EVAL_JUDGE_SLOTS = 1`) before the real semaphore, so an eval run never holds more than one slot of
+any class regardless of its own attempt concurrency.
+
+**`judge.enabled: false`.** The outcome judge follows the same switch as the approval judge and the
+guard — turning it off means **no verdict is ever requested**: `finish_workstream` records
+`outcome: 'skipped'`, with no ⚠ badge and no send-back, and the workstream finishes on the model's
+own say-so, same as before cycle 85. (This also means a judge-off finish and a same-step approval
+card's `attention` write can race, since there's no multi-second verifier call to keep the two
+apart — see [`eval.md`](eval.md#11-known-limits).)
+
 ## Known limits
 
 - **A tool-only assistant turn (no text, only tool calls) is not persisted** as an assistant row

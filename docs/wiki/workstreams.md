@@ -1,8 +1,8 @@
 ---
 title: Workstreams (long-running background agent work)
 status: shipped
-cycle: 81 (workspace integration: cycle 82; coordinator + child workstreams: cycle 83; sticky taint: cycle 84)
-updated: 2026-10-12
+cycle: 81 (workspace integration: cycle 82; coordinator + child workstreams: cycle 83; sticky taint: cycle 84; outcome-judge verification: cycle 85)
+updated: 2026-10-13
 mymind_id: a5fa582b-9998-41b3-a9b3-53a41c8a0642
 mymind_hash: e1e54a62356e287a0759b440dfe50c29f0b27d542f8923e653ed5f735d2784a5
 ---
@@ -46,6 +46,7 @@ The code is the source of truth:
 | `queued` | created; first segment not claimed yet | — | — |
 | `running` | a segment is executing, or the next one is queued | — | — |
 | `running` + `stateDetail: 'evaluating'` (cycle 84) | the judge is still deciding a Smart-Approvals-eligible call — no new state, just a detail on `running` | no | no |
+| `running` + `stateDetail: 'verifying'` (cycle 85) | `finish_workstream` is on the judge's `outcome` chain, checking whether the goal was actually met — see [Verification](#verification) | no | no |
 | `attention` + `{kind:'question'}` | `ask_tony` | **yes** (tagged `#k` when several are open — see [Coordinator](#coordinator-cycle-83)) | yes, ≤ 3 |
 | `attention` + `{kind:'approval'}` | a tool call waits on Tony's approval card | no | yes, ≤ 3 |
 | `paused` + `{kind:'paused', text}` | Tony pressed **Stop** in its thread, **two idle segments** in a row, or (cycle 83) a coordinator waiting on its children/a watch | **no** | **no** |
@@ -87,6 +88,40 @@ away). Stop tells nobody, because it was his own act.
   for the next worker.
 - **Stalled sweep.** A `queued` or `running` workstream with no live segment gets its next one.
   This covers a crash between one segment finishing and the next being inserted.
+
+## Verification
+
+Cycle 85 (harness step 6a): `finish_workstream` no longer ends the workstream on the model's say-so
+alone. `workstreams.verification jsonb` and `workstreams.send_backs int` (migration
+`0084_workstream_verification`, additive) hold the outcome judge's latest verdict and how many
+times it has sent the work back. Full mechanism — the evidence it sees and its caps, the fencing
+(a child's goal included — it's the coordinator's own wording, untrusted), the `met` ≥ 0.7
+threshold, send-backs (max 2, a flagged finish on the final segment or an error/timeout), the CAS
+guards, and the three judge limiters it shares with the approval judge and the output guard — is in
+[`judge.md` § Outcome judge](judge.md#outcome-judge). What's local to workstreams:
+
+- The verdict and gap text ride the workstream DTO (`verification`, `sendBacks`) and render on
+  `/workstreams` (a ⚠ badge for a flagged finish) and the detail page
+  (`VerificationPanel.vue` — a spinner while `stateDetail: 'verifying'`, then the latest verdict,
+  gaps and next step as **escaped plain text**, never markdown). Each send-back also lands as a
+  thread note (`⚖ Verifier sent this back (n/2): <gaps> — next: <nextStep>`), written when its
+  segment ends (tool-only turns aren't persisted mid-segment — a pre-existing cycle-84 limit).
+- `judge:outcome` is the activity row (`meta: {workstreamId, outcome, verdict, confidence,
+  gaps(count), sendBacks, model, latencyMs, error?}`); severity is `warn` only for a flagged finish
+  with no verdict at all.
+- `judge.enabled: false` skips verification entirely — the finish records `outcome: 'skipped'` with
+  no ⚠, same as the model finishing today.
+- **A finish is refused outright while Tony has a pending question or approval card** (cycle 85
+  final fix wave) — checked before verification even starts, and the final `done` write's CAS only
+  moves from `running`, so a verifier that comes back `met` while his `ask_tony`/approval attention
+  is still open can never quietly clear it out from under him. The refusal names the real reason
+  ("the workstream already ended," "is being cancelled," "is gone," or "Tony has a pending
+  question/approval — stop here: you resume when he does, then finish"). Resuming a failed or
+  cancelled workstream resets `send_backs` to 0 and clears a stale `verifying` detail, so a genuine
+  restart gets its full two send-backs again rather than inheriting a dead segment's count.
+- The eval substrate ([`eval.md`](eval.md)) drives this exact verifier for its rubric-scored cases,
+  in-world, passing the case's prompt as the goal and the attempt's final text as the summary — the
+  same `outcomeMet`/`decideOutcome` logic, the same 60 s budget, the same `outcome` judge slot.
 
 ## Budgets
 

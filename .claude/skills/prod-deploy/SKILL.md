@@ -172,6 +172,55 @@ lxc 'cd /opt/mymind && bash deploy/sandbox/install-network.sh install'   # rebui
 lxc 'cd /opt/mymind && bash deploy/sandbox/build-image.sh'               # rebuild the image (needs >= 6 GB free)
 ```
 
+### Evals on prod (cycle 85 — `docs/wiki/eval.md`)
+
+An eval run uses the **same** prod Postgres instance as the app — each live world is its own
+temporary schema (`eval_<run>_<suffix>`) inside the `mymind` database, dropped when the run ends.
+Models, the judge's semaphores, Postgres connections and docker all come from the shared, capacity-
+limited pools Tony's own runs use (isolation covers *data*, not *capacity*), so run one only when
+Tony is idle (no open chat, no live workstreams), and **never during a deploy** — CD already
+cancels running evals right before `pnpm db:migrate`, but don't rely on that as the only guard.
+
+**Run one safely:**
+```bash
+# From /opt/mymind, sourcing .env.native — NODE_ENV=production is already set by the unit.
+lxc 'cd /opt/mymind && set -a && . ./.env.native && set +a && pnpm eval bridget-core --n 1'
+```
+- `pnpm eval <suite>` enqueues on the real worker (job `eval:run-suite`) and tails progress;
+  `--local` is refused on prod (`NODE_ENV=production` alone blocks it — `lib/eval/local-guard.ts`).
+- Start small: `--case <slug> --n 1` before a full suite. The `/evals` dashboard
+  (`https://brain.costanzoclan.com/evals`, session auth) shows the same run live.
+- Only **one** eval run is active globally (a 409 names the other suite if one is already going);
+  cancel it first if you need to run something else.
+- Settings `eval.concurrency` (default 1 on prod) and `eval.maxTokensPerRun` (default 5,000,000)
+  bound how much of the shared model/judge/connection capacity one run can take — don't raise
+  `eval.concurrency` on prod without also checking `max_connections` (each attempt opens ~3
+  Postgres connections: a 2-connection tenant pool plus its advisory-lock session).
+
+**Check for leftover eval schemas and containers** (should be empty whenever no eval is running):
+```bash
+lxc 'docker exec -i mymind-db psql -U mymind -d mymind -Atc "select nspname from pg_namespace where nspname like \$\$eval\_%\$\$;"'
+lxc 'docker ps -a --filter "label=mymind.eval.run" --format "table {{.Names}}\t{{.Status}}\t{{.Labels}}"'
+lxc 'ls /opt/mymind/.workspaces/.eval 2>/dev/null'
+lxc 'docker exec -i mymind-db psql -U mymind -d mymind -Atc "select id,suite_id,status,alive_at,error from eval_runs where status in (\$\$queued\$\$,\$\$running\$\$);"'
+```
+A leftover schema/container with no matching `queued`/`running` row is a ghost — the worker's boot
+sweep and its every-minute housekeeping tick drop these on their own within about 2 hours (or
+~2 minutes past a stale heartbeat); nothing needs to be force-removed by hand except right before a
+manual deploy (see below).
+
+**Cancel.**
+```bash
+# Cancel everything (what CD itself runs before db:migrate) and wait up to 60s for worlds to drop:
+lxc 'cd /opt/mymind && set -a && . ./.env.native && set +a && NODE_ENV=production pnpm eval --cancel-all --wait 60'
+# Cancel one run by id:
+lxc 'cd /opt/mymind && set -a && . ./.env.native && set +a && pnpm eval --cancel <runId>'
+```
+`--cancel-all` is exactly the deploy-time command (`.github/workflows/deploy.yml`, right before
+`pnpm db:migrate`), wrapped there in `|| echo …` so it can never fail the deploy — run it by hand
+first if you're doing a [manual deploy](#when-cd-never-fires-manual-deploy), since that runbook
+replicates every other CD step but not this one.
+
 ### "There are errors in prod" — AI/provider errors are in `activity_log`, NOT the journal
 
 The journal only carries request-level `[request error]` lines and job progress. Every AI

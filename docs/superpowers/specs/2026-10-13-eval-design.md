@@ -2,7 +2,7 @@
 title: "Outcome judge + eval substrate — verified finishes, scored test suites against a fake world (cycle 85, harness step 6a)"
 cycle: 85
 date: 2026-10-13
-status: spec
+status: built  # see handover 2026-10-13-eval.md
 supersedes: null
 builds_on: 2026-10-12-judge-design.md
 ---
