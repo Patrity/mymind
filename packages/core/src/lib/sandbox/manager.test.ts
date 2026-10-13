@@ -335,3 +335,20 @@ describe('fix round 1: minors', () => {
     expect((await clean).confined).toEqual({ reason: 'tainted-workspace' })
   })
 })
+
+describe('fix round 1 (C1): the manager confines with Bridget\'s credential paths unreadable', () => {
+  it.runIf(darwin)('a tainted command can\'t read ~/.ssh, ~/.config/gh or MyMind\'s env file; a clean one can', async () => {
+    const home = await realpath(await mkdtemp(path.join(os.tmpdir(), 'mm-home-')))
+    try {
+      await mkdir(path.join(home, '.ssh')); await writeFile(path.join(home, '.ssh/id_ed25519'), 'KEY')
+      await mkdir(path.join(home, '.config/gh'), { recursive: true }); await writeFile(path.join(home, '.config/gh/hosts.yml'), 'GH')
+      const envFile = path.join(home, 'app.env'); await writeFile(envFile, 'DATABASE_URL=x')
+      const { m } = mgr({ switchOn: true, home, secretPaths: [envFile] })
+      const cmd = `cat ${home}/.ssh/id_ed25519 ${home}/.config/gh/hosts.yml ${envFile} 2>/dev/null; echo "|$?"`
+      expect((await m.exec(W2, cmd)).stdout).toBe('KEYGHDATABASE_URL=x|0\n')
+      const t = await m.exec(WS, cmd, { tainted: true })
+      expect(t.confined).toEqual({ reason: 'tainted-run' })
+      expect(t.stdout).toBe('|1\n')
+    } finally { await rm(home, { recursive: true, force: true }) }
+  })
+})
