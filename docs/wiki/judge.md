@@ -3,6 +3,8 @@ title: Judge (approval verdicts, Smart Approvals, output guard, sticky taint)
 status: shipped
 cycle: 84
 updated: 2026-10-12
+mymind_id: 656db4aa-3cae-47cc-9153-c9abf559e040
+mymind_hash: 5b724c8e0ae2cd1c42a96814b3fe81f1095fd2793efe0dd3ac2cdf7956a7e102
 ---
 
 # Judge (cycle 84 — harness step 5)

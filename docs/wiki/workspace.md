@@ -4,7 +4,7 @@ status: shipped
 cycle: 82 (output-guard workspace taint: cycle 84)
 updated: 2026-10-11
 mymind_id: 63317625-315e-4c8d-afab-8014d4dfeeda
-mymind_hash: a391a34511ead9a4deabc89f7f3c97fe19300e137c492a8cc0e84767d9164c40
+mymind_hash: 554a4d3e449022f711fc17d1cafefed3990f90cc149c6ce6b9f2997f982d04d6
 ---
 
 # Sandboxed workspace

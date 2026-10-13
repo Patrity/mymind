@@ -4,7 +4,7 @@ status: shipped
 cycle: 73 (toolsets: cycle 78; workspace/admin toolsets: cycle 82; coordinator toolset: cycle 83; judge + taint sources: cycle 84)
 updated: 2026-10-12
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
-mymind_hash: 36640a49b370f00e956d28a7c48c838437439970c2244d64e2afbdaa04b987e7
+mymind_hash: 5f4c33757325e5d29f572533332c877a74f7eaf68523e05483bfcc50de8471dc
 ---
 
 # Agent Surface (`/agent`)

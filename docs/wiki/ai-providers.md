@@ -4,7 +4,7 @@ status: shipped
 cycle: 72 (`subagents` model class + per-model pools: cycle 83; `judge` usage: cycle 84)
 updated: 2026-10-12
 mymind_id: fcdcdbb4-a794-4642-9cc7-379e57e93f58
-mymind_hash: 79a0fd4dd41d0b457684ce62e3c18353f9094495de9e0a72ed4cd4549a2e1a20
+mymind_hash: fd1bbd2e597e84ac57506d4b00c26f6ac6a01da9d2dd807d7280b6f816d00d00
 ---
 
 # AI Model Providers
