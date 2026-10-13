@@ -136,6 +136,7 @@ describe('C1 / N1: the docker CLI only touches the world\'s own offline containe
       ['container', 'rm', '-f', TONY],
       ['cp', `${TONY}:/workspace/x`, '/tmp/x'],
       ['cp', `${spec.name}:/workspace/x`, '/tmp/x'],                   // cp moves host files: never in a world
+      ['cp', `${spec.name}:/workspace/x`, `${prefix}copied-to-the-host-cwd`], // …even when every arg looks like the world's
       ['logs', TONY],
       ['rm', '-f', spec.name, TONY],                                   // one foreign target is enough
       ['rm', '-f', 'a'.repeat(64)],                                    // an id the world never created
