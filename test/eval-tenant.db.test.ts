@@ -413,6 +413,68 @@ describe('eval tenant: fix round 3 (B2, B3, B4, pool.end)', () => {
   })
 })
 
+describe('eval tenant: final fix wave (M2) — the build never holds every public table at once', () => {
+  const saved = { ...evalTenantDeps }
+  const restore = () => Object.assign(evalTenantDeps, saved)
+  const publicLocksOf = async (prefix: string) => {
+    const r = await db().execute(sql`select count(distinct l.relation)::int as n from pg_locks l
+      join pg_stat_activity a on a.pid = l.pid join pg_class c on c.oid = l.relation join pg_namespace n on n.oid = c.relnamespace
+      where l.granted and n.nspname = 'public' and c.relkind = 'r' and a.query like ${`%${prefix}%`}`)
+    return (r.rows[0] as { n: number }).n
+  }
+
+  it('a public table another session holds is waited out per statement (short lock_timeout, retried); meanwhile no other public table stays locked', async () => {
+    Object.assign(evalTenantDeps, { buildLockTimeoutMs: 100, buildLockRetries: 40, buildRetryPauseMs: 20 })
+    const other = new pg.Client({ connectionString: process.env.DATABASE_URL })
+    await other.connect()
+    const run = randomUUID()
+    const prefix = evalRunPrefix(run)
+    let t: Awaited<ReturnType<typeof createEvalTenant>> | null = null
+    try {
+      await other.query('begin')
+      await other.query('lock table public.model_prices in access exclusive mode')
+      let settled = false
+      const p = createEvalTenant(run).then((x) => { settled = true; t = x; return x })
+      let maxLocked = 0
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 40))
+        maxLocked = Math.max(maxLocked, await publicLocksOf(prefix))
+      }
+      expect(settled).toBe(false) // waiting on model_prices…
+      expect(maxLocked).toBeLessThanOrEqual(1) // …without the ~30 tables before it still locked (one transaction did)
+      await other.query('commit')
+      await p
+      const r = await db().execute(sql`select 1 from pg_tables where schemaname = ${t!.schema} and tablename = 'model_prices'`)
+      expect(r.rows).toHaveLength(1)
+    } finally {
+      restore()
+      await other.query('rollback').catch(() => {})
+      await other.end()
+      if (t) { const x = t as Awaited<ReturnType<typeof createEvalTenant>>; await x.pool.end(); await x.lock.release(); await dropEvalSchema(x.schema) }
+    }
+  }, 30_000)
+
+  it('a lock held past every retry fails the build — the half-built schema is dropped and its lock released', async () => {
+    Object.assign(evalTenantDeps, { buildLockTimeoutMs: 50, buildLockRetries: 1, buildRetryPauseMs: 10 })
+    const other = new pg.Client({ connectionString: process.env.DATABASE_URL })
+    await other.connect()
+    const run = randomUUID()
+    try {
+      await other.query('begin')
+      await other.query('lock table public.model_prices in access exclusive mode')
+      await expect(createEvalTenant(run)).rejects.toThrow(/lock timeout/i)
+      expect((await listEvalTenants()).filter(x => x.startsWith(evalRunPrefix(run)))).toEqual([])
+      const held = await db().execute(sql`select 1 from pg_locks where locktype = 'advisory' and granted and classid = ${EVAL_LOCK_NS}::oid and objsubid = 2
+        and pid <> pg_backend_pid() and objid in (select ((hashtext(nspname)::bigint + 4294967296) % 4294967296)::oid from pg_namespace where nspname like ${`${evalRunPrefix(run)}%`})`)
+      expect(held.rows).toEqual([])
+    } finally {
+      restore()
+      await other.query('rollback').catch(() => {})
+      await other.end()
+    }
+  }, 30_000)
+})
+
 describe('eval tenant: cleanup', () => {
   it('dispose drops the schema; cleanupEvalRun drops live worlds and orphans; a dropped world writes nowhere', async () => {
     const run2 = randomUUID()

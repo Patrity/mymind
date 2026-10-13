@@ -257,35 +257,40 @@ export async function createEvalTenant(runId: string): Promise<EvalTenant> {
   try {
     await outsideEvalScope(async () => {
       const tables = await shadowableTables()
-      await adminDb().transaction(async (tx) => {
-        await tx.execute(sql.raw(`create schema ${s}`))
-        // Fix round 1 (I2): the creation time, for the boot sweep's age rule.
-        await tx.execute(sql.raw(`comment on schema ${s} is 'created=${new Date().toISOString()}'`))
-        for (const t of tables) {
-          await tx.execute(sql.raw(`create table ${s}.${ident(t)} (like public.${ident(t)} including all)`))
-        }
-        for (const t of EVAL_REFERENCE_TABLES) {
-          if (!tables.includes(t)) continue
-          const cols = await tx.execute(sql`select column_name from information_schema.columns
-            where table_schema = 'public' and table_name = ${t} and is_generated = 'NEVER' order by ordinal_position`)
-          const list = (cols.rows as { column_name: string }[]).map(c => `"${c.column_name.replace(/"/g, '""')}"`).join(', ')
-          if (!list) continue
-          const where = t === 'settings' ? ` where key in (${EVAL_SETTINGS_KEYS.map(k => `'${k.replace(/'/g, "''")}'`).join(', ')})` : ''
-          await tx.execute(sql.raw(`insert into ${s}.${ident(t)} (${list}) select ${list} from public.${ident(t)}${where}`))
-        }
-        // Foreign keys (LIKE copies none): re-pointed at the world's own tables. NOT VALID — the
-        // reference rows copied above may point at rows a world does not carry; new rows are checked.
-        const fks = await tx.execute(sql`select r.relname as tbl, c.conname as name, pg_get_constraintdef(c.oid) as def
-          from pg_constraint c join pg_class r on r.oid = c.conrelid join pg_namespace n on n.oid = r.relnamespace
-          where c.contype = 'f' and n.nspname = 'public' order by r.relname, c.conname`)
-        for (const fk of fks.rows as { tbl: string, name: string, def: string }[]) {
-          if (!tables.includes(fk.tbl)) continue
-          const def = retargetForeignKey(fk.def, schema)
-          await tx.execute(sql.raw(`alter table ${s}.${ident(fk.tbl)} add constraint "${fk.name.replace(/"/g, '""')}" ${def} not valid`))
-        }
-      })
+      // Final fix wave (M2): NOT one transaction over every table (it held AccessShare on all ~65
+      // public tables for the whole build, so a deploy's ALTER — and every query of Tony's behind it —
+      // queued for seconds). Each statement runs alone under a short lock_timeout and is retried; a
+      // public table is locked only for its own copy. A table a migration adds mid-build is caught by
+      // the drift check (before and after each attempt).
+      await buildStep(sql.raw(`create schema ${s}`))
+      // Fix round 1 (I2): the creation time, for the boot sweep's age rule.
+      await buildStep(sql.raw(`comment on schema ${s} is 'created=${new Date().toISOString()}'`))
+      for (const t of tables) {
+        await buildStep(sql.raw(`create table ${s}.${ident(t)} (like public.${ident(t)} including all)`))
+      }
+      for (const t of EVAL_REFERENCE_TABLES) {
+        if (!tables.includes(t)) continue
+        const cols = await adminDb().execute(sql`select column_name from information_schema.columns
+          where table_schema = 'public' and table_name = ${t} and is_generated = 'NEVER' order by ordinal_position`)
+        const list = (cols.rows as { column_name: string }[]).map(c => `"${c.column_name.replace(/"/g, '""')}"`).join(', ')
+        if (!list) continue
+        const where = t === 'settings' ? ` where key in (${EVAL_SETTINGS_KEYS.map(k => `'${k.replace(/'/g, "''")}'`).join(', ')})` : ''
+        await buildStep(sql.raw(`insert into ${s}.${ident(t)} (${list}) select ${list} from public.${ident(t)}${where}`))
+      }
+      // Foreign keys (LIKE copies none): re-pointed at the world's own tables. NOT VALID — the
+      // reference rows copied above may point at rows a world does not carry; new rows are checked.
+      const fks = await adminDb().execute(sql`select r.relname as tbl, c.conname as name, pg_get_constraintdef(c.oid) as def
+        from pg_constraint c join pg_class r on r.oid = c.conrelid join pg_namespace n on n.oid = r.relnamespace
+        where c.contype = 'f' and n.nspname = 'public' order by r.relname, c.conname`)
+      for (const fk of fks.rows as { tbl: string, name: string, def: string }[]) {
+        if (!tables.includes(fk.tbl)) continue
+        const def = retargetForeignKey(fk.def, schema)
+        await buildStep(sql.raw(`alter table ${s}.${ident(fk.tbl)} add constraint "${fk.name.replace(/"/g, '""')}" ${def} not valid`))
+      }
     })
   } catch (err) {
+    // A half-built world (the build is no longer one transaction): dropped while we still hold its lock.
+    await dropSchemaNow(schema).catch(e => console.warn(`[eval] dropping the half-built ${schema} failed:`, (e as Error).message))
     await lock.release()
     throw err
   }
@@ -297,6 +302,28 @@ export async function createEvalTenant(runId: string): Promise<EvalTenant> {
   if (lostBeforePool.length) pool.markGone(`lost its lock (${lostBeforePool[0]})`)
   pool.on('error', err => console.error(`[eval] tenant ${schema} idle client error:`, err.message))
   return { schema, pool, lock }
+}
+
+/** M2: one world-build statement in its own short transaction under `lock_timeout`; a lock timeout
+ *  (SQLSTATE 55P03) is retried after a short pause, up to `buildLockRetries` times. */
+async function buildStep(statement: ReturnType<typeof sql.raw>): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await adminDb().transaction(async (tx) => {
+        await tx.execute(sql.raw(`set local lock_timeout = '${Math.max(1, Math.floor(evalTenantDeps.buildLockTimeoutMs))}ms'`))
+        await tx.execute(statement)
+      })
+      return
+    } catch (err) {
+      const code = (err as { code?: string; cause?: { code?: string } }).code ?? (err as { cause?: { code?: string } }).cause?.code
+      if (code !== '55P03') throw err
+      if (attempt >= evalTenantDeps.buildLockRetries) {
+        const why = (err as { cause?: { message?: string } }).cause?.message ?? (err as Error).message
+        throw new Error(`eval: building a world gave up after ${attempt + 1} lock waits of ${evalTenantDeps.buildLockTimeoutMs} ms (${why})`, { cause: err })
+      }
+      await new Promise(r => setTimeout(r, evalTenantDeps.buildRetryPauseMs * (attempt + 1)))
+    }
+  }
 }
 
 /** `FOREIGN KEY (x) REFERENCES [public.]t(id) …` → `… REFERENCES "<schema>".t(id) …` (an `eval_*`
@@ -398,7 +425,13 @@ export async function schemaExists(schema: string): Promise<boolean> {
 }
 
 /** Seams (tests). */
-export const evalTenantDeps = { poolEndTimeoutMs: 10_000 }
+export const evalTenantDeps = {
+  poolEndTimeoutMs: 10_000,
+  /** M2: how long one world-build statement waits for a table lock before it is retried. */
+  buildLockTimeoutMs: 2_000,
+  buildLockRetries: 5,
+  buildRetryPauseMs: 250
+}
 
 /**
  * `pool.end()` waits for every checked-out client — a leaked one (never released) would hang
