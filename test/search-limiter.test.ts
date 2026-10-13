@@ -72,6 +72,20 @@ describe('TokenBucket abort + queue bound', () => {
     expect(clock.t).toBe(2000)
   })
 
+  it('an aborted waiter leaves the queue immediately, even behind a sleeping one', async () => {
+    let wake!: () => void
+    const clock: LimiterClock = { now: () => 0, sleep: () => new Promise<void>((r) => { wake = r }) }
+    const b = new TokenBucket(1, 1, clock)
+    await b.acquire()
+    const sleeper = b.acquire()
+    const ac = new AbortController()
+    const queued = b.acquire(ac.signal)
+    await Promise.resolve()
+    ac.abort()
+    await expect(queued).rejects.toThrow() // settles while `sleeper` is still blocked
+    wake(); sleeper.catch(() => {})
+  })
+
   it('rejects at once for an already-aborted signal', async () => {
     const b = new TokenBucket(1, 3, fakeClock())
     const ac = new AbortController(); ac.abort()
