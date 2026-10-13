@@ -22,6 +22,7 @@ import { discardSegment, nudgeWaitingWorkstreams, onSegmentFinished, onSegmentHa
 import { workstreamForConversation } from '../workstreams/store'
 import type { AgentRun } from '../../../db/schema'
 import type { ReplyTo, RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
+import { currentEvalScope } from '../../eval/context'
 
 export const HEADLESS_WALL_CLOCK_MS = 300_000
 export const ALIVE_BUMP_MS = 10_000
@@ -377,6 +378,10 @@ let pumping = false
 let again = false
 function kick(run?: RunFn): void {
   if (claimingStopped) return
+  // Cycle 85 (M2): an eval world never kicks the process pump — it would start Tony's pump in the
+  // world's context (draining the tenant while his own kicks coalesce into it). The eval runner
+  // drives its attempts itself.
+  if (currentEvalScope()) return
   if (executionMode() === 'remote') {
     void sendCommand('kick', {}).catch(err => console.error('[runtime] kick command failed:', err))
     return

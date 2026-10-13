@@ -5,6 +5,7 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { DEFAULT_SANDBOX_DNS, SANDBOX_NETWORK, checkIsolation, networkCreateArgs, type IsolationCheck } from './network'
+import { currentEvalScope, type EvalScope } from '../eval/context'
 
 export const SANDBOX_UID = 10001
 export const WORKSPACE_MOUNT = '/workspace'
@@ -14,6 +15,10 @@ export const LABEL_TEST = 'mymind.test'
 /** Follow-up N5: the limits-probe container's own label — NOT mymind.workspace, so the boot
  *  reconcile (which lists by mymind.workspace) never removes a probe mid-run. */
 export const LABEL_PROBE = 'mymind.probe'
+/** Cycle 85: every container an eval world creates carries its run and world (tenant schema). The
+ *  production manager never touches them; cleanupEvalRun and the boot sweep remove them. */
+export const LABEL_EVAL_RUN = 'mymind.eval.run'
+export const LABEL_EVAL_WORLD = 'mymind.eval.world'
 export const SANDBOX_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
 /** The base env of every sandbox process — nothing else unless a secret is opted in (spec §6). */
@@ -311,8 +316,31 @@ export class TailBuffer {
   }
 }
 
+/**
+ * Cycle 85 (fail closed): inside an eval world the docker CLI may only make OFFLINE containers of
+ * that world — `create`/`run` must say `--network none` and carry the world's eval labels; no
+ * `network …` command; no secret passthrough (`--env NAME` without a value, or CLI env). Checked at
+ * the lowest level, below the manager, so no caller can start a networked container from a world.
+ */
+export function assertEvalDockerArgs(args: string[], scope: Pick<EvalScope, 'runId' | 'worldId'>, env?: Record<string, string>): void {
+  const refuse = (why: string) => { throw new SandboxUnavailableError(`eval: docker ${args[0] ?? ''} refused in an eval world (${why})`) }
+  if (env && Object.keys(env).length) refuse('secrets are never passed to an eval sandbox')
+  const sub = args[0]
+  if (sub === 'network') refuse('no network commands')
+  const hasPair = (flag: string, value: string) => args.some((x, i) => x === flag && args[i + 1] === value)
+  const passthroughEnv = args.some((x, i) => x === '--env' && !(args[i + 1] ?? '').includes('='))
+  if (sub === 'create' || sub === 'run') {
+    if (!hasPair('--network', 'none')) refuse('an eval sandbox is always --network none')
+    if (args.some((x, i) => x === '--network' && args[i + 1] !== 'none')) refuse('an eval sandbox is always --network none')
+    if (!hasPair('--label', `${LABEL_EVAL_RUN}=${scope.runId}`) || !hasPair('--label', `${LABEL_EVAL_WORLD}=${scope.worldId}`)) refuse('missing the eval labels')
+  }
+  if ((sub === 'create' || sub === 'run' || sub === 'exec') && passthroughEnv) refuse('no secret env passthrough')
+}
+
 export function createDockerCli(bin = 'docker', baseEnv: NodeJS.ProcessEnv = process.env): DockerRunner {
   return (args, opts = {}) => new Promise<DockerResult>((resolve) => {
+    const scope = currentEvalScope()
+    if (scope) assertEvalDockerArgs(args, scope, opts.env)
     const cap = opts.capBytes ?? 16 * 1024 * 1024
     const out = new TailBuffer(cap)
     const err = new TailBuffer(cap)

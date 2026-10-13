@@ -8,6 +8,7 @@
 //   Boot: after the container reconcile, running background shells are re-attached (or marked
 //   lost/exited) and armed watches re-armed. The manager's isBusy (no idle stop while a shell runs
 //   or a watch is armed) and onOverQuota (kill shells, cancel watches) hooks are installed here.
+import { currentEvalScope } from '../eval/context'
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { agentRuns, workspaces, workspaceShells, workspaceWatches, workstreams } from '../../db/schema'
@@ -94,9 +95,18 @@ export interface WorkspaceRuntime {
 }
 
 let shared: WorkspaceRuntime | null = null
+const evalRuntimes = new WeakMap<object, WorkspaceRuntime>()
 
-/** The worker's workspace runtime (lazily bound to the shared manager). */
+/** The worker's workspace runtime (lazily bound to the shared manager). Inside an eval world: that
+ *  world's own runtime over its offline manager (cycle 85) — checked before the test seam, so not
+ *  even a pinned runtime is reachable from a world. */
 export function workspaceRuntime(): WorkspaceRuntime {
+  const scope = currentEvalScope()
+  if (scope) {
+    let rt = evalRuntimes.get(scope)
+    if (!rt) evalRuntimes.set(scope, rt = createWorkspaceRuntime(sandboxManager()))
+    return rt
+  }
   return shared ??= createWorkspaceRuntime(sandboxManager())
 }
 

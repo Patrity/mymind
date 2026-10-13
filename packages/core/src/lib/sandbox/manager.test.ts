@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { DockerResult, DockerRunner } from './docker'
 import { SANDBOX_BRIDGE, chainRules, jumpRules, ruleLine } from './network'
-import { createSandboxManager, sandboxSettings, setSandboxRuntimeHooks, SandboxUnavailableError, type SandboxManagerOptions } from './manager'
+import { createEvalSandboxManager, createSandboxManager, sandboxSettings, setSandboxRuntimeHooks, SandboxUnavailableError, type SandboxManagerOptions } from './manager'
 import type { WorkspaceRow, WorkspaceStore } from './store'
 
 const WS = '22222222-2222-2222-2222-222222222222'
@@ -967,5 +967,48 @@ describe('follow-up (re-review N1–N3)', () => {
     expect(Date.now() - t0).toBeLessThan(1500)
     expect(stops).toBeLessThanOrEqual(1)
     expect(store.rows.get(WS)!.state).toBe('running') // never marked stopped
+  })
+})
+
+// Cycle 85 fix round 1 (C1): an eval world's manager — offline, eval-labelled, never secrets — and
+// the production manager never touching an eval world's containers.
+describe('eval sandbox manager (cycle 85)', () => {
+  const RUN = '00000000-0000-4000-8000-0000000000bb'
+  const WORLD = 'eval_000000000000400080000000000000bb_12345678'
+
+  it('creates --network none containers with the eval labels, no DNS, and no network preflight', async () => {
+    const d = fakeDocker()
+    const m = createEvalSandboxManager({ runId: RUN, worldId: WORLD }, {
+      docker: d.run, store: memStore(), uid: 1000, platform: 'darwin', log: { info: () => {}, warn: () => {}, error: () => {} },
+      settings: { workspacesDir: '/tmp/mm-sbx-unit-never-created', firewall: 'enforce', limits: 'off', maxRunning: 10, dns: ['1.1.1.1'] }
+    })
+    expect(m.settings.workspacesDir).toBe(`/tmp/mm-sbx-unit-never-created/.eval/${WORLD}`)
+    await m.ensureContainer(WS)
+    const create = d.calls.find(c => c[0] === 'create')!
+    expect(create[create.indexOf('--network') + 1]).toBe('none')
+    expect(create).not.toContain('--dns')
+    expect(create).toEqual(expect.arrayContaining(['--label', `mymind.eval.run=${RUN}`, '--label', `mymind.eval.world=${WORLD}`]))
+    // firewall 'enforce' would need iptables + the sandbox network — an offline manager needs neither.
+    expect(d.calls.some(c => c[0] === 'network')).toBe(false)
+  })
+
+  it('refuses a command with secrets (fail closed), before docker exec', async () => {
+    const d = fakeDocker()
+    const m = createEvalSandboxManager({ runId: RUN, worldId: WORLD }, { docker: d.run, store: memStore(), uid: 1000, platform: 'darwin', log: { info: () => {}, warn: () => {}, error: () => {} }, settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] } })
+    await expect(m.exec(WS, 'env', { secrets: { GITHUB_TOKEN: 'abcdef' } })).rejects.toThrow(/never available in an eval world/)
+    expect(d.calls.some(c => c[0] === 'exec')).toBe(false)
+    await m.exec(WS, 'echo hi')
+    expect(d.calls.some(c => c[0] === 'exec')).toBe(true)
+  })
+
+  it('the production manager leaves eval containers alone (reconcile, low-disk stop)', async () => {
+    const d = fakeDocker()
+    const store = memStore([])
+    const evalM = createEvalSandboxManager({ runId: RUN, worldId: WORLD }, { docker: d.run, store: memStore(), uid: 1000, platform: 'darwin', log: { info: () => {}, warn: () => {}, error: () => {} }, settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] } })
+    await evalM.ensureContainer(WS)
+    const prod = mgr(d, store)
+    const r = await prod.reconcile()
+    expect(r.removed).toEqual([]) // no row in Tony's store — an orphan, were it in his scope
+    expect([...d.containers.values()].filter(c => c.State.Running)).toHaveLength(1)
   })
 })

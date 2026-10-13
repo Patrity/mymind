@@ -14,6 +14,7 @@ import { useDb } from '../../db'
 import { settings } from '../../db/schema'
 import { DEFAULT_JUDGE_SETTINGS, JUDGE_CONFIDENCE_LIMITS, type JudgeSettings } from './judge/types'
 import { DEFAULT_JUDGE_MAX_IN_FLIGHT, JUDGE_MAX_IN_FLIGHT_LIMITS, setJudgeMaxInFlight } from './judge/limiter'
+import { currentEvalScope, processCache } from '../eval/context'
 
 export const AGENT_SETTINGS_KEY = 'agent_settings'
 
@@ -132,14 +133,17 @@ export function mergeAgentSettings(current: AgentSettings, patch: AgentSettingsP
   }
 }
 
-let cache: AgentSettings | null = null
+// Cycle 85: an eval world bypasses this process cache (lib/eval/context.ts processCache).
+const cache = processCache<AgentSettings>()
 
 export async function getAgentSettings(): Promise<AgentSettings> {
-  if (cache) return cache
+  const hit = cache.get()
+  if (hit) return hit
   const [row] = await useDb().select().from(settings).where(eq(settings.key, AGENT_SETTINGS_KEY)).limit(1)
-  cache = readAgentSettings(row?.value)
-  setJudgeMaxInFlight(cache.judge.maxInFlight)
-  return cache
+  const loaded = readAgentSettings(row?.value)
+  if (!currentEvalScope()) setJudgeMaxInFlight(loaded.judge.maxInFlight)
+  cache.set(loaded)
+  return loaded
 }
 
 /** The judge / Smart Approvals settings (Tasks 2 and 3 read these). */
@@ -158,13 +162,13 @@ export async function readJudgeSettingsFresh(): Promise<JudgeSettings> {
  *  save, and refresh this process's cache. Returns the saved settings. */
 export async function saveAgentSettings(patch: unknown): Promise<AgentSettings> {
   const p = agentSettingsPatchSchema.parse(patch)
-  cache = null
+  cache.set(null)
   const next = mergeAgentSettings(await getAgentSettings(), p)
   await useDb().insert(settings).values({ key: AGENT_SETTINGS_KEY, value: next, updatedAt: new Date() })
     .onConflictDoUpdate({ target: settings.key, set: { value: next, updatedAt: new Date() } })
-  cache = next
-  setJudgeMaxInFlight(next.judge.maxInFlight)
+  cache.set(next)
+  if (!currentEvalScope()) setJudgeMaxInFlight(next.judge.maxInFlight)
   return next
 }
 
-export function invalidateAgentSettings(): void { cache = null }
+export function invalidateAgentSettings(): void { cache.set(null) }

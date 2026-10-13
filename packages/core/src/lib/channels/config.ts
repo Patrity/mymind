@@ -15,6 +15,7 @@ import { settings } from '../../db/schema'
 import { encryptSecret, decryptSecret } from '../ai/registry/crypto'
 import { normaliseHandle } from './handles'
 import { loadObsConfig } from '../observability/config'
+import { processCache } from '../eval/context'
 
 const KEY_IMESSAGE = 'channel_imessage'
 const KEY_EMAIL = 'channel_email'
@@ -180,7 +181,7 @@ export function mergeChannelsPut(existing: ChannelsConfig, body: ChannelsPutBody
   }
 }
 
-let cache: ChannelsConfig | null = null
+const cache = processCache<ChannelsConfig>() // cycle 85: bypassed in an eval world
 
 /** The pool, or an open transaction — a caller inside a transaction passes it so a cold load
  *  does not take a second pooled connection while its transaction holds one. */
@@ -224,7 +225,8 @@ async function readRows(db: ChannelsDb = useDb()): Promise<Map<string, unknown>>
 // Note: a cold load can WRITE (first-time token generation / repair of a bad token). It is
 // idempotent after that first write, so read paths like isAway() calling it are safe.
 export async function loadChannelsConfig(db?: ChannelsDb): Promise<ChannelsConfig> {
-  if (cache) return cache
+  const hit = cache.get()
+  if (hit) return hit
   const exec = db ?? useDb()
   let byKey = await readRows(exec)
   let c = parseChannelsConfig({ imessage: byKey.get(KEY_IMESSAGE), email: byKey.get(KEY_EMAIL), presenceAwayMinutes: byKey.get(KEY_PRESENCE) })
@@ -241,7 +243,7 @@ export async function loadChannelsConfig(db?: ChannelsDb): Promise<ChannelsConfi
   }
   // A token written inside the caller's transaction is not durable until that commits (it may
   // roll back), so it is not cached; the next load outside a transaction persists and caches.
-  if (!wrote || !db) cache = c
+  if (!wrote || !db) cache.set(c)
   return c
 }
 
@@ -254,7 +256,7 @@ export async function saveChannelsConfig(c: ChannelsConfig): Promise<void> {
   await upsertIMessageKeepingToken(validated.imessage)
   await upsert(KEY_EMAIL, validated.email)
   await upsert(KEY_PRESENCE, validated.presenceAwayMinutes)
-  cache = null // the stored token may differ from c's; the next load reads the truth
+  cache.set(null) // the stored token may differ from c's; the next load reads the truth
 }
 
 /** Replace the webhook token with a fresh one; the old token stops verifying immediately. */
@@ -264,11 +266,11 @@ export async function rotateWebhookToken(): Promise<string> {
   await useDb().update(settings)
     .set({ value: sql`jsonb_set("settings"."value", '{webhookToken}', to_jsonb(${token}::text))`, updatedAt: new Date() })
     .where(eq(settings.key, KEY_IMESSAGE))
-  cache = null
+  cache.set(null)
   return token
 }
 
-export function invalidateChannelsConfig(): void { cache = null }
+export function invalidateChannelsConfig(): void { cache.set(null) }
 
 /** Constant-time check of the BlueBubbles webhook token; false while iMessage is disabled. */
 export async function verifyWebhookToken(token: string | undefined): Promise<boolean> {

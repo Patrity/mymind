@@ -2,13 +2,15 @@ import { eq } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { settings } from '../../db/schema'
 import { encryptSecret, decryptSecret } from '../ai/registry/crypto'
+import { currentEvalScope } from '../eval/context'
+import { processCache } from '../eval/context'
 
 const KEY = 'exec_secrets'
 // stored shape: { version: 1, secrets: Record<name, encryptedBase64>, sandbox?: name[] }
 // `sandbox` (cycle 82, spec §6): the names Tony opted in to the workspace sandbox — default off. It
 // lives in the same settings doc as the secrets (no table of its own), so an absent list = none.
 type Doc = { version: 1; secrets: Record<string, string>; sandbox?: string[] }
-let cache: Doc | null = null
+const cache = processCache<Doc>() // cycle 85: bypassed in an eval world (and load() refuses there)
 
 export function isValidSecretName(name: string): boolean {
   return /^[A-Z_][A-Z0-9_]*$/.test(name) // valid env var name; shell-safe
@@ -18,18 +20,24 @@ export function lastFour(value: string): string {
 }
 
 async function load(): Promise<Doc> {
-  if (cache) return cache
+  // Cycle 85 (fail closed): an eval world has no exec secrets — never Tony's (the process cache
+  // would otherwise hand them over whatever the tenant holds).
+  if (currentEvalScope()) return { version: 1, secrets: {} }
+  const hit = cache.get()
+  if (hit) return hit
   const [row] = await useDb().select().from(settings).where(eq(settings.key, KEY)).limit(1)
-  cache = (row?.value as Doc) ?? { version: 1, secrets: {} }
-  return cache
+  const loaded = (row?.value as Doc) ?? { version: 1, secrets: {} }
+  cache.set(loaded)
+  return loaded
 }
 /** Forget the cached doc (cycle 81: the web's secret PUT/DELETE tell the worker via `invalidate`). */
-export function invalidateExecSecrets(): void { cache = null }
+export function invalidateExecSecrets(): void { cache.set(null) }
 
 async function save(doc: Doc): Promise<void> {
+  if (currentEvalScope()) throw new Error('eval: exec secrets cannot be changed from an eval world')
   await useDb().insert(settings).values({ key: KEY, value: doc, updatedAt: new Date() })
     .onConflictDoUpdate({ target: settings.key, set: { value: doc, updatedAt: new Date() } })
-  cache = doc
+  cache.set(doc)
 }
 
 export async function listSecretNames(): Promise<{ name: string; lastFour: string; sandbox: boolean }[]> {

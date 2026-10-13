@@ -52,7 +52,13 @@ let sandboxHealth: import('@mymind/core/shared/types/workspaces').SandboxHealth 
 console.info(`[worker] boot ${BOOT_ID} pid=${process.pid} ns=${busNs()} dev=${settings.core.dev}`)
 
 const worker = createWorkerProcess({
-  boot: stopped => bootAgentRuntime(undefined, { ...DEFAULT_BOOT_RETRY, stopped }),
+  boot: async (stopped) => {
+    const r = await bootAgentRuntime(undefined, { ...DEFAULT_BOOT_RETRY, stopped })
+    // Cycle 85 (fix round 1, I2): eval tenants / sandboxes / dirs left by a crash or redeploy —
+    // in the background (docker can be slow), never a live run's young world. Never throws.
+    void import('@mymind/core/lib/eval/world').then(m => m.bootSweepEval()).catch(err => console.warn('[eval] boot sweep failed:', err))
+    return r
+  },
   tick: () => queue.workerTick(),
   kick: () => queue.kickPump(),
   // abort, approval-decision, undo, presence, invalidate, imessage-health (command-deps.ts).

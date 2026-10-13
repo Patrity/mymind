@@ -33,7 +33,7 @@ const { eq, inArray, sql } = await import('drizzle-orm')
 const { useDb, RoutingPool } = await import('@mymind/core/db')
 const { tasks, channelDeliveries, activityLog } = await import('@mymind/core/db/schema')
 const { installEvalWorld, cleanupEvalRun } = await import('@mymind/core/lib/eval/world')
-const { shadowableTables, listEvalTenants, evalRunPrefix, createEvalTenant, EVAL_REFERENCE_TABLES } = await import('@mymind/core/lib/eval/tenant')
+const { shadowableTables, listEvalTenants, evalRunPrefix, createEvalTenant, EVAL_REFERENCE_TABLES, EVAL_SETTINGS_KEYS } = await import('@mymind/core/lib/eval/tenant')
 const { setBusNs } = await import('@mymind/core/lib/bus/ns')
 const { createTask, getTask, listTasks } = await import('@mymind/core/services/tasks')
 const { createMemory, getMemory, listMemories, searchMemories } = await import('@mymind/core/services/memory')
@@ -46,6 +46,8 @@ const { toolByName } = await import('@mymind/core/lib/agent/tools')
 const { insertDeliveries, deliveriesTick } = await import('@mymind/core/lib/channels/outbox')
 const { recordEvent, recorder } = await import('@mymind/core/lib/observability/record')
 const { subscribeChanges } = await import('@mymind/core/utils/live-bus')
+const { getDecryptedSecrets, getSandboxOptedSecrets } = await import('@mymind/core/lib/exec/secrets')
+const { sandboxSecretEnv } = await import('@mymind/core/lib/sandbox/secrets')
 const { getHome } = await import('../server/services/home')
 const { searchAll } = await import('../server/services/search')
 
@@ -113,9 +115,33 @@ describe('eval tenant: structure', () => {
     expect(shadow).toEqual(expect.arrayContaining(['tasks', 'memories', 'documents', 'conversations', 'conversation_messages', 'workstreams', 'run_events', 'activity_log', 'channel_deliveries', 'worker_commands']))
     expect(shadow.some(t => t.startsWith('eval_'))).toBe(false)
     const count = async (schema: string, t: string) => Number(((await db().execute(sql.raw(`select count(*)::int as n from "${schema}"."${t}"`))).rows[0] as { n: number }).n)
-    for (const t of EVAL_REFERENCE_TABLES) expect({ t, n: await count(world.schema, t) }).toEqual({ t, n: await count('public', t) })
+    for (const t of EVAL_REFERENCE_TABLES.filter(x => x !== 'settings')) expect({ t, n: await count(world.schema, t) }).toEqual({ t, n: await count('public', t) })
     expect(await count(world.schema, 'memories')).toBe(2) // seeded + written, none of Tony's
     expect(await count(world.schema, 'connections')).toBe(0)
+  })
+})
+
+describe('eval tenant: settings allow-list (fix round 1, I1)', () => {
+  const keys = async (schema: string) => ((await db().execute(sql.raw(`select key from "${schema}".settings order by key`))).rows as { key: string }[]).map(r => r.key)
+
+  it('copies only allow-listed keys — the agent config, never a secret-bearing one', async () => {
+    const pub = await keys('public')
+    const mine = await keys(world.schema)
+    expect(mine).toEqual(pub.filter(k => EVAL_SETTINGS_KEYS.includes(k)))
+    // Non-vacuous: the dev DB holds secret-bearing keys that a wholesale copy would have carried.
+    expect(pub).toEqual(expect.arrayContaining(['exec_secrets', 'channel_imessage']))
+    for (const secret of ['exec_secrets', 'channel_imessage', 'channel_email', 'search_config', 'observability_config', 'image_config', 'analytics_config']) {
+      expect(mine).not.toContain(secret)
+      expect(EVAL_SETTINGS_KEYS).not.toContain(secret)
+    }
+    expect(mine).toContain('ai_config') // the model chain is there
+  })
+
+  it('in-world secret readers get nothing, even with Tony\'s secrets in the process cache', async () => {
+    await getDecryptedSecrets() // warm the process cache from public (Tony's)
+    expect(await world.run(() => getDecryptedSecrets())).toEqual({})
+    expect(await world.run(() => getSandboxOptedSecrets())).toEqual({})
+    expect(await world.run(() => sandboxSecretEnv({ tainted: false }))).toEqual({})
   })
 })
 
@@ -227,6 +253,49 @@ describe('eval tenant: routing', () => {
     expect(await getTask(inside.id)).toBeNull()
     expect(await world.run(() => getTask(inside.id))).not.toBeNull()
     expect(await world.run(() => getTask(outside.id))).toBeNull()
+  })
+})
+
+describe('eval tenant: fix round 1 (M5, M1, Concern 5)', () => {
+  it('two live worlds never see each other\'s rows', async () => {
+    const other = await installEvalWorld(RUN, {})
+    try {
+      const mine = await world.run(() => createTask({ title: `${TAG} world-a only` }))
+      const theirs = await other.run(() => createTask({ title: `${TAG} world-b only` }))
+      expect(await other.run(() => getTask(mine.id))).toBeNull()
+      expect(await world.run(() => getTask(theirs.id))).toBeNull()
+      expect(await other.run(() => getTask(theirs.id))).not.toBeNull()
+      expect((await other.run(() => listMemories({ onlyIds: [ids.memory!] })))).toEqual([])
+    } finally { await other.dispose() }
+  })
+
+  it('drift: a public table added after install is reported (the runner fails the attempt)', async () => {
+    expect(await world.drift()).toEqual([])
+    const t = `zz_eval_drift_${TAG}`
+    await db().execute(sql.raw(`create table public."${t}" (id int)`))
+    try {
+      expect(await world.drift()).toEqual([t])
+    } finally {
+      await db().execute(sql.raw(`drop table public."${t}"`))
+    }
+    expect(await world.drift()).toEqual([])
+  })
+
+  it('a rolled-back outbox insert leaves no capture after settle(); a committed one stays', async () => {
+    const before = world.captured.filter(c => c.kind === 'outbox').length
+    await world.run(async () => {
+      await expect(useDb().transaction(async (tx) => {
+        await insertDeliveries(tx, [{ channel: 'imessage', target: `${TAG}-rolledback`, payload: { text: 'x' }, source: 'tool' }])
+        throw new Error('roll back')
+      })).rejects.toThrow('roll back')
+      await useDb().transaction(tx => insertDeliveries(tx, [{ channel: 'imessage', target: `${TAG}-kept`, payload: { text: 'y' }, source: 'tool' }]))
+    })
+    expect(world.captured.filter(c => c.kind === 'outbox')).toHaveLength(before + 2)
+    await world.settle()
+    const outbox = world.captured.filter(c => c.kind === 'outbox')
+    expect(outbox).toHaveLength(before + 1)
+    expect(outbox.some(c => c.detail.target === `${TAG}-rolledback`)).toBe(false)
+    expect(outbox.some(c => c.detail.target === `${TAG}-kept`)).toBe(true)
   })
 })
 

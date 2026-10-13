@@ -54,6 +54,10 @@ export interface EvalScope {
   imessage: BlueBubblesClient
   /** Whether an outbound request to `url` may leave the process (default: none may). */
   allowNetwork(url: string): boolean
+  /** Socket / DNS level (fix round 1, M4): the database host, or a host of an allowed URL. */
+  allowHost(host: string): boolean
+  /** Records a host an allowed URL reached (its sockets and lookups then pass). */
+  permitHost(host: string): void
   /** A blocked outbound request (the guard threw). */
   onBlockedNetwork(url: string): void
 }
@@ -80,5 +84,20 @@ export class EvalNetworkBlockedError extends Error {
   constructor(public url: string) {
     super(`eval: outbound network blocked (${url})`)
     this.name = 'EvalNetworkBlockedError'
+  }
+}
+
+/**
+ * Cycle 85: a process-wide cache cell that an eval world neither reads nor writes. Inside a world
+ * `get()` misses (the caller loads from the world's tenant) and `set()` is a no-op — so an in-world
+ * load, save or invalidation can never hand Tony's process the world's values, and the world never
+ * sees a value (or secret) Tony's process cached.
+ */
+export interface ProcessCache<T> { get(): T | null; set(v: T | null): void }
+export function processCache<T>(): ProcessCache<T> {
+  let v: T | null = null
+  return {
+    get: () => (als.getStore() ? null : v),
+    set: (x) => { if (!als.getStore()) v = x }
   }
 }

@@ -4,6 +4,7 @@ import { useDb } from '../../db'
 import { settings } from '../../db/schema'
 import { DEFAULT_CONFIG, type ObservabilityConfig } from './types'
 import { ACTIVITY_KINDS } from '../../shared/types/activity'
+import { processCache } from '../eval/context'
 
 const KEY = 'observability_config'
 
@@ -46,14 +47,16 @@ export function redactObsConfig(doc: ObservabilityConfig): RedactedObsConfig {
   return { ...doc, alerts: { ...doc.alerts, email: { ...email, hasKey: apiKeyEnc !== null } } }
 }
 
-let cache: ObservabilityConfig | null = null
+const cache = processCache<ObservabilityConfig>() // cycle 85: bypassed in an eval world
 
 export async function loadObsConfig(): Promise<ObservabilityConfig> {
-  if (cache) return cache
+  const hit = cache.get()
+  if (hit) return hit
   const db = useDb()
   const [row] = await db.select().from(settings).where(eq(settings.key, KEY)).limit(1)
-  cache = row ? parseObsConfig(row.value) : DEFAULT_CONFIG
-  return cache
+  const loaded = row ? parseObsConfig(row.value) : DEFAULT_CONFIG
+  cache.set(loaded)
+  return loaded
 }
 
 export async function saveObsConfig(doc: ObservabilityConfig): Promise<void> {
@@ -62,7 +65,7 @@ export async function saveObsConfig(doc: ObservabilityConfig): Promise<void> {
   await db.insert(settings)
     .values({ key: KEY, value: validated, updatedAt: new Date() })
     .onConflictDoUpdate({ target: settings.key, set: { value: validated, updatedAt: new Date() } })
-  cache = validated
+  cache.set(validated)
 }
 
-export function invalidateObsConfig(): void { cache = null }
+export function invalidateObsConfig(): void { cache.set(null) }

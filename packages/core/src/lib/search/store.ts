@@ -6,9 +6,10 @@ import { useDb } from '../../db'
 import { settings } from '../../db/schema'
 import { encryptSecret } from '../ai/registry/crypto'
 import type { SearchConfig } from './types'
+import { processCache } from '../eval/context'
 
 const KEY = 'search_config'
-let cache: SearchConfig | null = null
+const cache = processCache<SearchConfig>() // cycle 85: bypassed in an eval world
 
 function defaultConfig(): SearchConfig {
   return {
@@ -18,11 +19,13 @@ function defaultConfig(): SearchConfig {
 }
 
 export async function loadSearchConfig(): Promise<SearchConfig> {
-  if (cache) return cache
+  const hit = cache.get()
+  if (hit) return hit
   const db = useDb()
   const [row] = await db.select().from(settings).where(eq(settings.key, KEY)).limit(1)
-  cache = row ? (row.value as SearchConfig) : defaultConfig()
-  return cache
+  const loaded = row ? (row.value as SearchConfig) : defaultConfig()
+  cache.set(loaded)
+  return loaded
 }
 
 export async function saveSearchConfig(input: {
@@ -48,9 +51,9 @@ export async function saveSearchConfig(input: {
   await db.insert(settings)
     .values({ key: KEY, value: next, updatedAt: new Date() })
     .onConflictDoUpdate({ target: settings.key, set: { value: next, updatedAt: new Date() } })
-  cache = next
+  cache.set(next)
 }
 
 export function invalidateSearchConfig(): void {
-  cache = null
+  cache.set(null)
 }

@@ -1,7 +1,8 @@
 // server/lib/agent/tools/exec.ts
 import { z } from 'zod'
 import type { AgentTool } from '../types'
-import { runConstrained, ExecDisabledError } from '../../exec/run'
+import { runConstrained, ExecDisabledError, EVAL_EXEC_REFUSAL } from '../../exec/run'
+import { currentEvalScope } from '../../eval/context'
 import { proposedPattern, loadApprovals, execAutoApproveDecision } from '../../exec/approvals'
 import { getDecryptedSecrets } from '../../exec/secrets'
 import { isCatastrophic } from '../../exec/outbound'
@@ -31,11 +32,15 @@ export const execTool: AgentTool = {
     return { ...input, command: maskSecrets(String(input.command ?? ''), values) }
   },
   autoApprove: async (input) => {
+    // Cycle 85: in an eval world every exec asks (the scripted approver answers the card).
+    if (currentEvalScope()) return false
     const patterns = (await loadApprovals('exec')).map(a => a.pattern)
     return execAutoApproveDecision({ command: input.command as string, patterns }).allow
   },
   handler: async (a, ctx) => {
     const command = a.command as string
+    // Cycle 85: an approved exec in an eval world still never runs (refused before any secret read).
+    if (currentEvalScope()) return { result: { ok: false, disabled: true, error: EVAL_EXEC_REFUSAL }, summary: EVAL_EXEC_REFUSAL }
 
     // Both `result` and `summary` are DURABLE: they are persisted on
     // conversation_messages.tool_calls, replayed into model history, and shipped to the

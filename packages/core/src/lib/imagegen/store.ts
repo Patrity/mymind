@@ -6,9 +6,10 @@ import { eq } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { settings } from '../../db/schema'
 import type { ImageGenConfig } from './types'
+import { processCache } from '../eval/context'
 
 const KEY = 'image_config'
-let cache: ImageGenConfig | null = null
+const cache = processCache<ImageGenConfig>() // cycle 85: bypassed in an eval world
 
 export function defaultImageConfig(): ImageGenConfig {
   return {
@@ -63,10 +64,12 @@ export function parseImageConfigInput(raw: unknown): Partial<ImageGenConfig> {
 }
 
 export async function loadImageConfig(): Promise<ImageGenConfig> {
-  if (cache) return cache
+  const hit = cache.get()
+  if (hit) return hit
   const [row] = await useDb().select().from(settings).where(eq(settings.key, KEY)).limit(1)
-  cache = mergeImageConfig(row?.value as Partial<ImageGenConfig> | undefined)
-  return cache
+  const loaded = mergeImageConfig(row?.value as Partial<ImageGenConfig> | undefined)
+  cache.set(loaded)
+  return loaded
 }
 
 export async function saveImageConfig(input: Partial<ImageGenConfig>): Promise<ImageGenConfig> {
@@ -75,8 +78,8 @@ export async function saveImageConfig(input: Partial<ImageGenConfig>): Promise<I
   await useDb().insert(settings)
     .values({ key: KEY, value: next, updatedAt: new Date() })
     .onConflictDoUpdate({ target: settings.key, set: { value: next, updatedAt: new Date() } })
-  cache = next
+  cache.set(next)
   return next
 }
 
-export function invalidateImageConfig(): void { cache = null }
+export function invalidateImageConfig(): void { cache.set(null) }

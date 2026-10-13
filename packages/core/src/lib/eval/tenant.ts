@@ -37,6 +37,18 @@ export const EVAL_REFERENCE_TABLES: readonly string[] = [
   'prompt_commands', 'model_prices'
 ]
 
+/**
+ * Fix round 1 (I1): `settings` is copied by an explicit KEY allow-list — what the agent needs to run
+ * (its model chain, behaviour and persona), never a secret-bearing key: exec_secrets, channel_*
+ * (BlueBubbles password, webhook token, e-mail), search_config (Brave key), observability_config
+ * (Resend key), image_config (rig keys)… A key not listed here is never copied — a new
+ * secret-bearing key is safe by default.
+ */
+export const EVAL_SETTINGS_KEYS: readonly string[] = [
+  'ai_config', 'agent_settings', 'agent_persona', 'agent_skills_enabled', 'agent_timezone',
+  'self_improvement_mode', 'search_relevance', 'chunking'
+]
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SCHEMA = /^eval_[0-9a-f]{32}_[0-9a-f]{8}$/
 const IDENT = /^[a-z_][a-z0-9_]*$/
@@ -87,6 +99,8 @@ export async function createEvalTenant(runId: string): Promise<EvalTenant> {
     const tables = await shadowableTables()
     await adminDb().transaction(async (tx) => {
       await tx.execute(sql.raw(`create schema ${s}`))
+      // Fix round 1 (I2): the creation time, for the boot sweep's age rule.
+      await tx.execute(sql.raw(`comment on schema ${s} is 'created=${new Date().toISOString()}'`))
       for (const t of tables) {
         await tx.execute(sql.raw(`create table ${s}.${ident(t)} (like public.${ident(t)} including all)`))
       }
@@ -95,7 +109,9 @@ export async function createEvalTenant(runId: string): Promise<EvalTenant> {
         const cols = await tx.execute(sql`select column_name from information_schema.columns
           where table_schema = 'public' and table_name = ${t} and is_generated = 'NEVER' order by ordinal_position`)
         const list = (cols.rows as { column_name: string }[]).map(c => `"${c.column_name.replace(/"/g, '""')}"`).join(', ')
-        if (list) await tx.execute(sql.raw(`insert into ${s}.${ident(t)} (${list}) select ${list} from public.${ident(t)}`))
+        if (!list) continue
+        const where = t === 'settings' ? ` where key in (${EVAL_SETTINGS_KEYS.map(k => `'${k.replace(/'/g, "''")}'`).join(', ')})` : ''
+        await tx.execute(sql.raw(`insert into ${s}.${ident(t)} (${list}) select ${list} from public.${ident(t)}${where}`))
       }
       // Foreign keys (LIKE copies none): re-pointed at the world's own tables. NOT VALID — the
       // reference rows copied above may point at rows a world does not carry; new rows are checked.
@@ -148,4 +164,58 @@ export async function dropEvalRunTenants(runId: string): Promise<number> {
     await outsideEvalScope(() => adminDb().execute(sql.raw(`drop schema if exists ${ident(assertSchema(n))} cascade`)))
   }
   return mine.length
+}
+
+/** Fix round 1 (M1): public tables the world does not shadow (a migration applied after the world
+ *  was built). In-world SQL naming such a table would fall through the search_path to Tony's
+ *  public table — the runner fails the attempt instead. [] = no drift. */
+export async function tenantDrift(schema: string): Promise<string[]> {
+  assertSchema(schema)
+  const want = await shadowableTables()
+  const r = await outsideEvalScope(() => adminDb().execute(sql`select tablename from pg_tables where schemaname = ${schema}`))
+  const have = new Set((r.rows as { tablename: string }[]).map(x => x.tablename))
+  return want.filter(t => !have.has(t))
+}
+
+/** Storage-key columns: files a world may have uploaded (images, attachments, agent files, voice). */
+const STORAGE_KEY_COLUMNS: readonly [string, string][] = [
+  ['images', 'storage_key'], ['clip_attachments', 'storage_key'], ['agent_files', 'storage_key'], ['voice_presets', 'ref_storage_key']
+]
+
+/** Storage keys referenced in the world's tenant but by NO public row — the uploads the world made
+ *  (storage dedups by content, so a key Tony's rows also use is never returned). */
+export async function tenantOnlyStorageKeys(schema: string): Promise<string[]> {
+  const s = ident(assertSchema(schema))
+  const out = new Set<string>()
+  await outsideEvalScope(async () => {
+    for (const [t, c] of STORAGE_KEY_COLUMNS) {
+      const exists = await adminDb().execute(sql`select 1 from pg_tables where schemaname = ${schema} and tablename = ${t}`)
+      if (!exists.rows.length) continue
+      const r = await adminDb().execute(sql.raw(`select distinct w.${ident(c)} as k from ${s}.${ident(t)} w where w.${ident(c)} is not null
+        and not exists (${STORAGE_KEY_COLUMNS.map(([pt, pc]) => `select 1 from public.${ident(pt)} p where p.${ident(pc)} = w.${ident(c)}`).join(' union all ')})`))
+      for (const row of r.rows as { k: string }[]) out.add(row.k)
+    }
+  })
+  return [...out]
+}
+
+export interface EvalTenantInfo { schema: string; runId: string; createdAt: Date | null }
+
+/** Every tenant with its run id and creation time (null for a schema without the stamp). */
+export async function evalTenantInfo(): Promise<EvalTenantInfo[]> {
+  return outsideEvalScope(async () => {
+    const r = await adminDb().execute(sql`select nspname, obj_description(oid, 'pg_namespace') as note from pg_namespace where nspname like 'eval\\_%' order by nspname`)
+    return (r.rows as { nspname: string, note: string | null }[]).filter(x => SCHEMA.test(x.nspname)).map((x) => {
+      const hex = x.nspname.slice(EVAL_SCHEMA_PREFIX.length, EVAL_SCHEMA_PREFIX.length + 32)
+      const runId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+      const m = /created=(\S+)/.exec(x.note ?? '')
+      const at = m ? new Date(m[1]!) : null
+      return { schema: x.nspname, runId, createdAt: at && !Number.isNaN(at.getTime()) ? at : null }
+    })
+  })
+}
+
+/** Drops one tenant schema by name (the sweep). */
+export async function dropEvalSchema(schema: string): Promise<void> {
+  await outsideEvalScope(() => adminDb().execute(sql.raw(`drop schema if exists ${ident(assertSchema(schema))} cascade`)))
 }

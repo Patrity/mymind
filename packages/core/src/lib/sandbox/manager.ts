@@ -24,7 +24,7 @@ import { chown, mkdir, rmdir, statfs } from 'node:fs/promises'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import {
-  LABEL_FLAGS, LABEL_TAINTED, LABEL_TEST, LABEL_WORKSPACE, SANDBOX_UID, SandboxStoppedError, SandboxUnavailableError,
+  LABEL_EVAL_RUN, LABEL_EVAL_WORLD, LABEL_FLAGS, LABEL_TAINTED, LABEL_TEST, LABEL_WORKSPACE, SANDBOX_UID, SandboxStoppedError, SandboxUnavailableError,
   assertSecretName, createArgs, createDockerCli, dockerAvailable, ensureNetwork, execArgs, flagsHash, killExecArgs,
   limitsProbeArgs, limitsProblems, parseExecStatus, taintedRunArgs, verifyNetworkIsolation,
   type DockerResult, type DockerRunner, type ExecStatus
@@ -35,6 +35,7 @@ import { dbWorkspaceStore, type WorkspaceRow, type WorkspaceStore } from './stor
 import { coreConfig } from '../../config'
 import { sandboxRequireFirewall, sandboxRequireLimits } from '../../config-env'
 import type { SandboxHealth } from '../../shared/types/workspaces'
+import { currentEvalScope, type EvalScope } from '../eval/context'
 
 export { SandboxStoppedError, SandboxUnavailableError } from './docker'
 export { SandboxQuotaError, SandboxDiskLowError } from './quota'
@@ -214,6 +215,9 @@ export interface SandboxManagerOptions {
   now?: () => number
   uid?: number | undefined
   platform?: NodeJS.Platform
+  /** Cycle 85: an eval world's manager — every container `--network none` (no firewall preflight
+   *  needed), and a command with secrets is refused (fail closed). */
+  offline?: boolean
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -281,6 +285,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const store = opts.store ?? dbWorkspaceStore
   const s: SandboxSettings = { ...sandboxSettings(), ...opts.settings }
   const labels = opts.labels ?? {}
+  const offline = opts.offline === true
   const log = opts.log ?? console
   const now = opts.now ?? Date.now
   const uid = 'uid' in opts ? opts.uid : process.getuid?.()
@@ -333,7 +338,8 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     if (lowDisk) throw new SandboxDiskLowError(lowDisk.freeBytes, s.minFreeBytes, lowDisk.reason === 'inodes' ? lowDisk.freeInodes : undefined)
   }
 
-  async function preflight(needNetwork: boolean): Promise<void> {
+  async function preflight(wantNetwork: boolean): Promise<void> {
+    const needNetwork = wantNetwork && !offline
     if (preflightOk && now() - preflightOk.at < PREFLIGHT_TTL_MS && (preflightOk.network || !needNetwork)) return
     if (!await dockerAvailable(docker)) throw new SandboxUnavailableError('the workspace sandbox is unavailable: Docker is not running on this host')
     const img = await docker(['image', 'inspect', '--format', '{{.Id}}', s.image], { timeoutMs: 15_000 })
@@ -519,7 +525,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   function containerSpec(id: string) {
-    return { name: containerName(id), image: s.image, workspaceId: id, hostDir: hostDir(id), labels, dns: s.dns }
+    return { name: containerName(id), image: s.image, workspaceId: id, hostDir: hostDir(id), labels, dns: offline ? [] : s.dns, ...(offline ? { network: 'none' } : {}) }
   }
 
   async function inspect(nameOrId: string): Promise<Inspected | null> {
@@ -790,6 +796,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     const io = { capBytes, ...(o.input !== undefined ? { input: o.input } : {}) }
     const secrets = o.secrets ?? {}
     for (const k of Object.keys(secrets)) assertSecretName(k)
+    if (offline && Object.keys(secrets).length) throw new SandboxUnavailableError('eval: sandbox secrets are never available in an eval world')
     const row = await liveRow(id)
     if (o.noStart && (o.tainted || o.offline || row.tainted)) throw new SandboxStoppedError()
     const runTainted = async () => {
@@ -1018,7 +1025,9 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   function inScope(c: Inspected): boolean {
     const l = c.Config.Labels ?? {}
     if (Object.keys(labels).length) return Object.entries(labels).every(([k, v]) => l[k] === v)
-    return l[LABEL_TEST] === undefined // production never touches test containers
+    // Production never touches test containers, nor an eval world's (cycle 85: they are not its
+    // orphans, never count against its slots; cleanupEvalRun / the boot sweep remove them).
+    return l[LABEL_TEST] === undefined && l[LABEL_EVAL_RUN] === undefined
   }
 
   async function listLabelled(): Promise<Inspected[]> {
@@ -1153,6 +1162,9 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
 
   return {
     settings: s,
+    /** The labels scoping this manager, and whether it is an offline (eval) one. */
+    labels,
+    offline,
     hostDir,
     ensureDir,
     ensureContainer,
@@ -1183,9 +1195,37 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
 export type SandboxManager = ReturnType<typeof createSandboxManager>
 
 let shared: SandboxManager | null = null
-/** The worker's manager (lazily created from its env). */
+const evalManagers = new WeakMap<EvalScope, SandboxManager>()
+
+/** The worker's manager (lazily created from its env) — or, inside an eval world, that world's own
+ *  offline, eval-labelled manager (cycle 85): Tony's manager is never reachable from a world. */
 export function sandboxManager(): SandboxManager {
+  const scope = currentEvalScope()
+  if (scope) {
+    let m = evalManagers.get(scope)
+    if (!m) evalManagers.set(scope, m = createEvalSandboxManager(scope))
+    return m
+  }
   return shared ??= createSandboxManager()
+}
+
+/** Where an eval world's workspace dirs live (removed by cleanupEvalRun / the boot sweep). */
+export function evalWorkspacesDir(worldId: string, base = sandboxSettings().workspacesDir): string {
+  return path.join(base, '.eval', worldId)
+}
+
+export function evalSandboxLabels(scope: Pick<EvalScope, 'runId' | 'worldId'>): Record<string, string> {
+  return { [LABEL_EVAL_RUN]: scope.runId, [LABEL_EVAL_WORLD]: scope.worldId }
+}
+
+/** An eval world's manager: offline, labelled with the run + world, its own dir and slots. */
+export function createEvalSandboxManager(scope: Pick<EvalScope, 'runId' | 'worldId'>, opts: SandboxManagerOptions = {}): SandboxManager {
+  return createSandboxManager({
+    ...opts,
+    offline: true,
+    labels: evalSandboxLabels(scope),
+    settings: { ...opts.settings, workspacesDir: evalWorkspacesDir(scope.worldId, opts.settings?.workspacesDir) }
+  })
 }
 
 export interface HousekeepingOptions {

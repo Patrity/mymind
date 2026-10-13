@@ -3,10 +3,13 @@
 // Fails CLOSED when exec is not configured for native-root operation.
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+import { currentEvalScope } from '../eval/context'
 
 export class ExecDisabledError extends Error {
   constructor(message: string) { super(message); this.name = 'ExecDisabledError' }
 }
+
+export const EVAL_EXEC_REFUSAL = 'exec unavailable in eval'
 
 const DEFAULT_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
@@ -62,6 +65,8 @@ export async function runConstrained(
   const timeoutMs = opts.timeoutMs ?? Number(process.env.EXEC_TIMEOUT_MS ?? 60_000)
   const cap = opts.outputCapBytes ?? 64 * 1024
 
+  // Cycle 85: host exec never runs from an eval world (a child process is outside every seam).
+  if (currentEvalScope()) throw new ExecDisabledError(EVAL_EXEC_REFUSAL)
   const decided = selectExecMode({ uid: process.getuid?.(), nodeEnv: process.env.NODE_ENV, unconfined: process.env.EXEC_UNCONFINED === '1' })
   if (decided.mode === 'disabled') throw new ExecDisabledError(`exec is disabled: ${decided.reason}`)
   if (decided.mode === 'unconfined') {

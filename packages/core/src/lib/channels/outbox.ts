@@ -70,11 +70,12 @@ export async function insertDeliveries(tx: DbTx, rows: NewDelivery[]): Promise<s
     runId: d.runId ?? null
   })))
   if (!values.length) return []
-  // Cycle 85: inside an eval world the row still goes to the world's tenant (the flow is real),
-  // and the message is captured — it is never sent (deliveriesTick is inert in a world).
-  const scope = currentEvalScope()
-  if (scope) for (const v of values) scope.capture('outbox', { channel: v.channel, target: v.target, source: v.source, payload: v.payload as unknown as Record<string, unknown> })
   const inserted = await tx.insert(channelDeliveries).values(values).returning({ id: channelDeliveries.id })
+  // Cycle 85: inside an eval world the row still goes to the world's tenant (the flow is real),
+  // and the message is captured with its row id — it is never sent (deliveriesTick is inert in a
+  // world). A capture whose transaction rolls back is dropped by world.settle() (fix round 1).
+  const scope = currentEvalScope()
+  if (scope) values.forEach((v, i) => scope.capture('outbox', { deliveryId: inserted[i]?.id ?? null, channel: v.channel, target: v.target, source: v.source, payload: v.payload as unknown as Record<string, unknown> }))
   return inserted.map(r => r.id)
 }
 

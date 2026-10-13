@@ -12,6 +12,7 @@
 //   secrets from 6 chars (the host exec rule). Longest first, so a value containing another is
 //   replaced whole. Output that was CUT (a tail, a window, a cap) is masked before the cut, or the
 //   cut edge is trimmed of anything that could be the visible half of a secret (maskCut).
+import { currentEvalScope } from '../eval/context'
 import { getDecryptedSecrets, getSandboxOptedSecrets } from '../exec/secrets'
 import { assertSecretName } from './docker'
 
@@ -27,7 +28,8 @@ export function isSandboxSecretName(name: string): boolean {
 
 /** The env a sandbox command gets on top of HOME/PATH/LANG: opted-in secrets, unless tainted. */
 export async function sandboxSecretEnv(o: { tainted: boolean }): Promise<Record<string, string>> {
-  if (o.tainted) return {}
+  // Cycle 85: an eval sandbox never gets a secret (its manager also refuses any).
+  if (o.tainted || currentEvalScope()) return {}
   let opted: Record<string, string>
   try { opted = await getSandboxOptedSecrets() } catch (err) { throw new SecretStoreUnavailableError(err) }
   return Object.fromEntries(Object.entries(opted).filter(([k, v]) => isSandboxSecretName(k) && v.length >= MIN_SANDBOX_SECRET_CHARS))
