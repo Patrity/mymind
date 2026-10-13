@@ -141,13 +141,13 @@ const notFiredNotes = () => db().select().from(conversationMessages)
 
 describe('migration 0059', () => {
   it('creates the partial unique index and agent_job_fires.run_id', async () => {
-    const idx = await db().execute(sql`select indexdef from pg_indexes where indexname = 'agent_runs_one_active_per_job'`)
+    const idx = await db().execute(sql`select indexdef from pg_indexes where schemaname = 'public' and indexname = 'agent_runs_one_active_per_job'`)
     expect(idx.rows).toHaveLength(1)
     const def = (idx.rows[0] as { indexdef: string }).indexdef
     expect(def).toMatch(/CREATE UNIQUE INDEX agent_runs_one_active_per_job ON public\.agent_runs USING btree \(job_id\)/)
     expect(def).toMatch(/job_id IS NOT NULL/)
     expect(def).toMatch(/'queued'.*'running'/)
-    const col = await db().execute(sql`select is_nullable from information_schema.columns where table_name = 'agent_job_fires' and column_name = 'run_id'`)
+    const col = await db().execute(sql`select is_nullable from information_schema.columns where table_schema = 'public' and table_name = 'agent_job_fires' and column_name = 'run_id'`)
     expect(col.rows).toEqual([{ is_nullable: 'YES' }])
   })
 
@@ -164,7 +164,7 @@ describe('migration 0059', () => {
 
 describe('migration 0062', () => {
   it('indexes agent_runs on (job_id, created_at) for the sweep\'s "any run since" checks', async () => {
-    const idx = await db().execute(sql`select indexdef from pg_indexes where indexname = 'agent_runs_job_created_idx'`)
+    const idx = await db().execute(sql`select indexdef from pg_indexes where schemaname = 'public' and indexname = 'agent_runs_job_created_idx'`)
     expect(idx.rows).toEqual([{ indexdef: 'CREATE INDEX agent_runs_job_created_idx ON public.agent_runs USING btree (job_id, created_at)' }])
   })
 })

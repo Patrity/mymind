@@ -80,7 +80,7 @@ describe('channels schema (0057)', () => {
   })
 
   it('0058: channel_deliveries has an index on conversation_id (the per-thread deliveries read)', async () => {
-    const r = await useDb().execute(sql`select indexdef from pg_indexes where tablename = 'channel_deliveries' and indexname = 'channel_deliveries_conversation_idx'`)
+    const r = await useDb().execute(sql`select indexdef from pg_indexes where schemaname = 'public' and tablename = 'channel_deliveries' and indexname = 'channel_deliveries_conversation_idx'`)
     expect((r.rows[0] as { indexdef?: string } | undefined)?.indexdef).toMatch(/\(conversation_id\)/)
   })
 })
