@@ -12,7 +12,7 @@ import type { FieldIssue } from '~/lib/evals/display'
 export function evalErrorOf(e: unknown): { message: string, code: string | null, issues: FieldIssue[], runId: string | null } {
   const err = e as { data?: { data?: { message?: string, code?: string, issues?: FieldIssue[], runId?: string }, statusMessage?: string }, message?: string }
   return {
-    // Fix round 1: a 409 "this suite already has a run" names the active run (the dialog links it).
+    // Fix round 1 / final fix wave I4: a 409 "an eval run is already going" (one at a time, globally) names the active run (the dialog links it).
     runId: err?.data?.data?.runId ?? null,
     message: err?.data?.data?.message ?? err?.data?.statusMessage ?? err?.message ?? 'Something went wrong',
     code: err?.data?.data?.code ?? null,

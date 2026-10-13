@@ -82,17 +82,31 @@ const modelItems = computed(() => {
   ]
 })
 const slugItems = computed(() => cases.value.map(c => ({ label: c.enabled ? c.slug : `${c.slug} (disabled)`, value: c.slug })))
+const chosenCases = computed(() => runCases.value.length ? cases.value.filter(c => runCases.value.includes(c.slug)) : cases.value.filter(c => c.enabled))
 const plannedAttempts = computed(() => {
-  const chosen = runCases.value.length ? cases.value.filter(c => runCases.value.includes(c.slug)) : cases.value.filter(c => c.enabled)
   const n = nOverride()
-  return chosen.reduce((sum, c) => sum + (n !== undefined && Number.isInteger(n) && n > 0 ? n : c.nRuns), 0)
+  return chosenCases.value.reduce((sum, c) => sum + (n !== undefined && Number.isInteger(n) && n > 0 ? n : c.nRuns), 0)
 })
+// Final fix wave (I4): "3 cases × 3 attempts = 9 attempts", or "… = 9 attempts" when n differs per case.
+const plannedText = computed(() => {
+  const k = chosenCases.value.length
+  const n = nOverride()
+  const per = n !== undefined && Number.isInteger(n) && n > 0 ? n : (new Set(chosenCases.value.map(c => c.nRuns)).size === 1 ? chosenCases.value[0]?.nRuns : null)
+  const head = per ? `${k} case${k === 1 ? '' : 's'} × ${per} attempt${per === 1 ? '' : 's'}` : `${k} case${k === 1 ? '' : 's'}, each its own n`
+  return `${head} = ${plannedAttempts.value} attempt${plannedAttempts.value === 1 ? '' : 's'}`
+})
+// Above this many attempts the dialog asks Tony to confirm (each is a real model run).
+const CONFIRM_ABOVE = 50
+const needsConfirm = computed(() => plannedAttempts.value > CONFIRM_ABOVE)
+const runConfirmed = ref(false)
+watch(plannedAttempts, () => { runConfirmed.value = false })
 function openRun() {
   runCases.value = []
   runN.value = ''
   runModel.value = DEFAULT_MODEL
   runError.value = null
   runActiveId.value = null
+  runConfirmed.value = false
   runOpen.value = true
 }
 async function startRun() {
@@ -101,6 +115,10 @@ async function startRun() {
   const n = nOverride()
   if (n !== undefined && (!Number.isInteger(n) || n < 1 || n > 20)) {
     runError.value = 'Attempts must be a whole number from 1 to 20.'
+    return
+  }
+  if (needsConfirm.value && !runConfirmed.value) {
+    runError.value = `Confirm the ${plannedAttempts.value} attempts first.`
     return
   }
   try {
@@ -378,15 +396,26 @@ async function exportJson() {
                 data-testid="eval-run-model"
               />
             </UFormField>
-            <p class="text-sm text-muted">
-              {{ plannedAttempts }} attempt(s) in total.
+            <p
+              class="text-sm text-muted"
+              data-testid="eval-run-planned"
+            >
+              {{ plannedText }}.
             </p>
+            <UCheckbox
+              v-if="needsConfirm"
+              v-model="runConfirmed"
+              color="warning"
+              :label="`Run ${plannedAttempts} attempts — each is a real model run (over ${CONFIRM_ABOVE} needs a confirm)`"
+              description="One eval run at a time; it stops early if it passes its token budget (eval.maxTokensPerRun)."
+              data-testid="eval-run-confirm"
+            />
             <UAlert class="shrink-0"
               v-if="runError"
               :color="runActiveId ? 'warning' : 'error'"
               variant="subtle"
               icon="i-lucide-circle-alert"
-              :title="runActiveId ? 'A run of this suite is already going' : runError"
+              :title="runActiveId ? 'An eval run is already going' : runError"
               :description="runActiveId ? runError : undefined"
               :actions="runActiveId ? [{ label: 'Open that run', to: `/evals/runs/${runActiveId}`, color: 'neutral', variant: 'subtle' }] : undefined"
               data-testid="eval-run-error"
@@ -406,7 +435,7 @@ async function exportJson() {
               icon="i-lucide-play"
               label="Start run"
               :loading="runSuite.isPending.value"
-              :disabled="!plannedAttempts"
+              :disabled="!plannedAttempts || (needsConfirm && !runConfirmed)"
               data-testid="eval-run-submit"
               @click="startRun"
             />
