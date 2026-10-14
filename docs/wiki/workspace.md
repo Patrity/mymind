@@ -1,6 +1,6 @@
 ---
 title: Workspace (Bridget's own Mac — host runtime)
-status: shipped  # built on feat/macmini (cycle 86); live on the Mac mini after cutover — see the handover
+status: shipped  # cycle 86 deployed 2026-10-13/14; live on the Mac mini — see the handover
 cycle: 86 (cycle 82 built the Docker version this replaced; output-guard workspace taint: cycle 84)
 updated: 2026-10-13
 mymind_id: 63317625-315e-4c8d-afab-8014d4dfeeda

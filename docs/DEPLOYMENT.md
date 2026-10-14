@@ -3,7 +3,7 @@
 > Audience: an agent or operator deploying MyMind to the homelab (Proxmox + Docker), internet-exposed.
 > Source of truth for **how the app works** is `docs/wiki/`; this doc is **how to run it**. If anything here disagrees with the code, the code + the newest `docs/handovers/` win — update this doc.
 
-> **Cycle 86: prod moves to the Mac mini** (launchd, user `bridget` @ `192.168.2.35`, DB on `192.168.2.80`); LXC 114 becomes the CI build box. Status: **built, awaiting cutover** (see the [handover](handovers/2026-10-13-macmini-host.md)). See **§23** and the `prod-deploy` skill. §§17–21 describe the LXC 114 runtime (`DEPLOY_TARGET=lxc`), kept until cutover + 7 days; §14 (host `exec`) and §22 (the Docker sandbox) are **retired** and kept as history only.
+> **Cycle 86: prod moves to the Mac mini** (launchd, user `bridget` @ `192.168.2.35`, DB on `192.168.2.80`); LXC 114 becomes the CI build box. Status: **deployed 2026-10-13/14** (cutover done) (see the [handover](handovers/2026-10-13-macmini-host.md)). See **§23** and the `prod-deploy` skill. §§17–21 describe the LXC 114 runtime (`DEPLOY_TARGET=lxc`), kept until cutover + 7 days; §14 (host `exec`) and §22 (the Docker sandbox) are **retired** and kept as history only.
 
 ## 0. What you're deploying
 

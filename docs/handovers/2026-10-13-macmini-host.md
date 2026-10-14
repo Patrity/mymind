@@ -2,10 +2,10 @@
 title: "Mac mini host — Bridget owns the machine; native web + worker on the mini, central Postgres, Brave-only search (cycle 86, harness step 7)"
 cycle: 86
 date: 2026-10-13
-status: built  # awaiting cutover (Tony, 30-60 min window); not merged, not deployed
+status: deployed  # 2026-10-14 cutover; CD 38482662776 (f130f15); prod bridget-core 23/23
 branch: feat/macmini (worktree .claude/worktrees/feat+sandbox, base master 2cb28f7)
-merged: false
-deployed: false
+merged: true
+deployed: true
 specs:
   - ../superpowers/specs/2026-10-13-macmini-host-design.md
 plans:
@@ -21,7 +21,7 @@ wiki:
   - ../wiki/core-package.md
   - ../DEPLOYMENT.md
 migrations: none  # additive-free cycle; workspaces.container_id / bytes_used / inodes_used stay but are unused
-next: cutover (deploy/macmini/CUTOVER.md), then 7 days later retire LXC 114's runtime; harness step 6b (optimizer) is still open
+next: finish acceptance (inbound iMessage, reboot test, SearXNG + hermes key cleanup, Unmute LLM URL), then on/after 2026-10-20 retire LXC 114's mymind-db + runtime; harness step 6b (optimizer) is still open
 ---
 
 # Mac mini host (cycle 86)
@@ -33,7 +33,7 @@ against Tony's **central Postgres** (`192.168.2.80`, database `bridget`). LXC 11
 Mac and every command is a plain host process as `bridget`. Host `exec` and the `admin` toolset are
 gone. Search is Brave only.
 
-**Status: built, awaiting cutover.** Nothing is merged to master or deployed. Current-state reference:
+**Status: deployed (cutover 2026-10-13 23:00 UTC).** Current-state reference:
 [`wiki/workspace.md`](../wiki/workspace.md) and [`DEPLOYMENT.md` § 23](../DEPLOYMENT.md#23-mac-mini-host-cycle-86).
 
 ## Option C: Bridget owns the Mac, no agent confinement
@@ -152,6 +152,27 @@ The canonical, ordered checklist is **[`deploy/macmini/CUTOVER.md`](../../deploy
 
 Still unproved until W7: the first real linux-x64 -> darwin-arm64 build in `/opt/mymind-build` (a red deploy
 before any restart if it fails, not an outage).
+
+## Cutover result (2026-10-13/14)
+
+- **Window:** LXC units stopped 23:00:21Z; `pg_dump -Fc` 1.2 GB (`/root/db-backups/cutover-20261013-2300.dump`);
+  restore into `.80` in 126 s (4 expected extension-comment errors); 66 tables, every row count matched;
+  99 uploads (71,128,136 bytes) copied; `DEPLOY_TARGET=macmini`, `MYMIND_CUTOVER_DONE=true`.
+- **CD:** first run 38482036624 failed in `test` (two Linux-vs-mac assumptions: BSD `stat` in `run.sh`, the
+  prompt test reading the CI host's platform) — no restart happened. Fixed in `f130f15`; CD 38482662776 green,
+  web + worker at `f130f15` under launchd, worker `host runtime ok`.
+- **Pangolin:** the resource was retargeted to `http://192.168.2.35:3000` by Tony; it 503'd ("no available
+  server") until Tony fixed the target on the Pangolin side. Public `/api/health` now returns the sha.
+- **Acceptance (passed):** public health + MCP round trip; Brave `web_search` via prod; LAN from the mini
+  (`.80:5432`, LiteLLM `.85:4000`); outbound iMessage via BlueBubbles (`sent`); `gh` on the mini logged in as
+  Patrity (`repo`, `workflow`), `git ls-remote` ok; **prod bridget-core 23/23** (run `ea2edea5`, 68/68
+  attempts, mean 1.00, 2.33M tokens, 717 s; cycle-85 baseline was 20/21) — includes `mac-uptime`,
+  `workspace-*`, `task-delete-confirms` 3/3.
+- **Still open:** inbound iMessage reply; reboot test (no passwordless sudo — restart from the GUI or via
+  System Events); `docker rm -f mymind-searxng` on LXC 114; drop the `hermes@ct140` key from the mini's
+  `authorized_keys`; Unmute's `KYUTAI_LLM_URL` (no Unmute found on the rig `192.168.2.25` any more — location
+  unknown); retire LXC 114's `mymind-db` + runtime on/after 2026-10-20.
+- The rig's `:8004` refuses connections from the mini; prod routes through LiteLLM, so not a blocker.
 
 ## Open at write time
 
