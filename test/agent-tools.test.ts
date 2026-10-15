@@ -4,22 +4,22 @@ import { agentTools, toolByName } from '@mymind/core/lib/agent/tools'
 import { MCP_INSTRUCTIONS } from '../server/lib/mcp/server'
 
 describe('agent tool registry', () => {
-  it('exposes the expected 56 tools', () => {
+  it('exposes the expected 59 tools', () => {
     const names = agentTools.map(t => t.name).sort()
     expect(names).toEqual([
       'calendar_find_free_time', 'calendar_list_events', 'calendar_write_event',
       'contacts_search',
       'create_job', 'create_project', 'create_skill', 'create_task',
       'delete_document', 'delete_job', 'delete_skill', 'delete_task',
-      'edit_document', 'edit_image', 'edit_job', 'edit_project', 'edit_section', 'edit_skill', 'edit_task',
+      'edit_artifact', 'edit_document', 'edit_image', 'edit_job', 'edit_project', 'edit_section', 'edit_skill', 'edit_task',
       'forget_memory',
       'generate_image',
       'get_document', 'get_job', 'get_project', 'get_recent_memories',
       'gmail_draft', 'gmail_modify', 'gmail_read_thread', 'gmail_search',
       'grep_document',
-      'list_documents', 'list_improvements', 'list_jobs', 'list_reviews',
+      'list_artifacts', 'list_documents', 'list_improvements', 'list_jobs', 'list_reviews',
       'move_document',
-      'quick_capture', 'read_around_message', 'read_document', 'read_session', 'run_job',
+      'publish_artifact', 'quick_capture', 'read_around_message', 'read_document', 'read_session', 'run_job',
       'save_document', 'save_memory', 'schedule_wake',
       'search_docs', 'search_memories', 'search_messages', 'search_passages', 'search_projects', 'search_sessions', 'search_tasks',
       'send_message',

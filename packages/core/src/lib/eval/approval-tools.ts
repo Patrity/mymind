@@ -11,7 +11,7 @@ import type { EvalCaseJson } from './case-schema'
 export async function approvalCapableTools(): Promise<Set<string>> {
   const { workstreamProfile, bridgetProfile } = await import('../agent/profile')
   const tools = [...bridgetProfile.tools, ...workstreamProfile.tools]
-  return new Set(tools.filter(t => t.dangerous || t.outbound).map(t => t.name))
+  return new Set(tools.filter(t => t.dangerous || t.outbound || t.outboundWhen).map(t => t.name))
 }
 
 /** Throws a ZodError (a 400 on the routes) naming every approval spec whose tool can never raise a card. */

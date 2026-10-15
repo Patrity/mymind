@@ -136,6 +136,37 @@ describe('run-level taint gate (fix wave I3)', () => {
   })
 })
 
+describe('conditional outbound (outboundWhen, cycle 86)', () => {
+  const ran: unknown[] = []
+  const publish: AgentTool = {
+    name: 'publish_artifact', description: 'd', kind: 'create', toolset: 'artifacts', outboundWhen: a => a.public === true, schema: { public: z.boolean().optional() },
+    handler: async (a) => { ran.push(a); return { result: { ok: true }, summary: 'published' } }
+  }
+  function setupCond(requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>) {
+    ran.length = 0
+    const set = buildAiTools([gmailSearch, publish], { signal: new AbortController().signal, onEvent: () => {}, requestApproval })
+    return (name: string, input: Record<string, unknown> = {}) => (set[name]!.execute as Exec)(input, { toolCallId: `c-${name}` })
+  }
+  it('in a tainted run, public:true asks for approval (not allowlistable) and is not run when denied; public:false runs freely', async () => {
+    const ask = vi.fn(async (_r: ApprovalRequest) => ({ approved: false }))
+    const call = setupCond(ask)
+    await call('gmail_search')
+    expect(await call('publish_artifact', { public: false })).toEqual({ ok: true })
+    expect(await call('publish_artifact', {})).toEqual({ ok: true })
+    expect(ask).not.toHaveBeenCalled()
+    expect(await call('publish_artifact', { public: true })).toEqual({ denied: true })
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(ask.mock.calls[0]![0].allowlistable).toBe(false)
+    expect(ran).toHaveLength(2)
+  })
+  it('in an untainted run, public:true runs freely', async () => {
+    const ask = vi.fn(async () => ({ approved: false }))
+    const call = setupCond(ask)
+    expect(await call('publish_artifact', { public: true })).toEqual({ ok: true })
+    expect(ask).not.toHaveBeenCalled()
+  })
+})
+
 describe('taints / outbound flags on the real tools (79b c)', () => {
   const all = [...new Map([...agentTools, ...gmailTools, ...googleDangerousTools, ...calendarTools, ...calendarDangerousTools, ...bridgetProfile.tools, researchSubagent, brainSubagent].map(t => [t.name, t])).values()]
   const byName = (n: string) => all.find(t => t.name === n)

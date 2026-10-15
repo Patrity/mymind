@@ -16,6 +16,7 @@ import type { RuleFloor, RuleVerdict } from './types'
 export interface RuleTool {
   name: string
   outbound?: boolean
+  outboundWhen?: (args: Record<string, unknown>) => boolean
 }
 
 /** The draft revision a recipient check read: its message id (Gmail mints a new one per edit) and
@@ -329,7 +330,7 @@ export async function ruleVerdict(tool: RuleTool, input: Record<string, unknown>
       return await gmailSendRule(input, lookup)
     }
     if (CALENDAR_TOOLS.has(tool.name)) return calendarRule(tool.name, input)
-    if (JOB_TOOLS.has(tool.name) || tool.outbound) return outboundRule(tool.name, input)
+    if (JOB_TOOLS.has(tool.name) || tool.outbound || tool.outboundWhen?.(input) === true) return outboundRule(tool.name, input)
     return { floor: 'review', reasons: [] }
   } catch {
     // A rule that crashed has verified nothing.

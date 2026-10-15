@@ -101,7 +101,9 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   read_file: 'run', list_files: 'run', grep: 'run', diff: 'run', bash_output: 'run',
   write_file: 'run', edit_file: 'run', bash: 'run', kill_shell: 'run', watch: 'run', import_document: 'run', delete_files: 'run',
   // …except export_to_document, which writes into Tony's documents (it may replace one): proposed
-  export_to_document: 'propose'
+  export_to_document: 'propose',
+  // artifacts (cycle 86): list is a read; publish/edit run headless (a public call is proposed via proposeWhen); delete is dangerous
+  list_artifacts: 'run', publish_artifact: 'run', edit_artifact: 'run', delete_artifact: 'exclude'
 }
 
 // The workstream-only tools (cycle 81, spec §5.3) are not in bridgetProfile: they live only in a

@@ -307,7 +307,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
         // autoApprove fast-path clears it (allowlist-first). An outbound tool in a tainted run
         // (fix wave I3) is gated the same way, but never auto-approved and never allowlistable.
         const tainted = isTainted()
-        const outboundGated = t.outbound === true && tainted
+        const outboundGated = (t.outbound === true || t.outboundWhen?.(input) === true) && tainted
         // 79b fix round 1 (I2): exec's allowlist/LAN fast-path is skipped in a tainted run — an
         // allowlisted `curl`/`python3 *`/`git push *` is a network path too. Every exec then asks,
         // titled for it and NOT allowlistable (no "always allow" off an injected command);

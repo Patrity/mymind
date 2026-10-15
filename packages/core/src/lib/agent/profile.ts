@@ -7,6 +7,7 @@ import { loadToolsetsTool } from './tools/load-toolsets'
 import { googleDangerousTools } from './tools/gmail'
 import { calendarDangerousTools } from './tools/calendar'
 import { answerWorkstreamTool, startWorkstreamTool, workstreamOnlyTools } from './tools/workstreams'
+import { artifactDangerousTools } from './tools/artifacts'
 import { exportToCoordinatorTool, workspaceTools } from './tools/workspace'
 import { coordinatorTools, spawnToolWithModels, spawnWorkstreamsTool } from './tools/coordinator'
 import type { SubagentModelInfo } from '../ai/registry/resolve'
@@ -25,12 +26,13 @@ export interface AgentProfile { id: string; tools: AgentTool[]; personaKey: stri
 // googleDangerousTools (cycle 79 review, I1): gmail_send — and calendarDangerousTools (Task 5):
 // calendar_guest_event / calendar_rsvp — live here for the same reason: every agentTools consumer (MCP, replay,
 // subagents, toolByName) is otherwise one forgotten `dangerous` check away from a gateless send.
+// delete_artifact (cycle 86) lives here for the same reason (toolset 'artifacts').
 // They keep `toolset: 'gmail'`/`'calendar'` — toolset visibility runs over bridgetProfile.tools
 // (run.ts), not agentTools, so on-demand loading still works from here.
 export const bridgetProfile: AgentProfile = {
   id: 'bridget',
   // workspaceTools (cycle 82): Bridget's sandbox — profile-only like exec, so MCP never sees them.
-  tools: [...agentTools, execTool, ...subagentTools, decideReviewTool, ...googleDangerousTools, ...calendarDangerousTools, loadToolsetsTool, startWorkstreamTool, answerWorkstreamTool, ...workspaceTools],
+  tools: [...agentTools, execTool, ...subagentTools, decideReviewTool, ...googleDangerousTools, ...calendarDangerousTools, loadToolsetsTool, startWorkstreamTool, answerWorkstreamTool, ...workspaceTools, ...artifactDangerousTools],
   personaKey: 'agent_persona'
 }
 

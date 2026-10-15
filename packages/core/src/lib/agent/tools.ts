@@ -21,6 +21,7 @@ import { gmailTools } from './tools/gmail'
 import { calendarTools } from './tools/calendar'
 import { listReviewsTool } from './tools/reviews'
 import { improvementTools } from './tools/improvements'
+import { artifactTools } from './tools/artifacts'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
 import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/session-search'
 import { clampPaging, buildPage } from './paging'
@@ -1286,7 +1287,9 @@ export const agentTools: AgentTool[] = [
   // ---- review (cycle 76, Task 9): list only — decide_review is profile-only (profile.ts) ----
   listReviewsTool,
   // ---- self-improvement log (cycle 76, Task 10) ----
-  ...improvementTools
+  ...improvementTools,
+  // ---- artifacts (cycle 86) ----
+  ...artifactTools
 ]
 
 const byName = new Map(agentTools.map(t => [t.name, t]))
