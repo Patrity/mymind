@@ -21,7 +21,7 @@ wiki:
   - ../wiki/core-package.md
   - ../DEPLOYMENT.md
 migrations: none  # additive-free cycle; workspaces.container_id / bytes_used / inodes_used stay but are unused
-next: finish acceptance (inbound iMessage, reboot test, SearXNG + hermes key cleanup, Unmute LLM URL), then on/after 2026-10-20 retire LXC 114's mymind-db + runtime; harness step 6b (optimizer) is still open
+next: finish acceptance (reboot test, iMessage typing indicator), then on/after 2026-10-20 retire LXC 114's mymind-db + runtime; harness step 6b (optimizer) is still open
 ---
 
 # Mac mini host (cycle 86)
@@ -133,15 +133,15 @@ The canonical, ordered checklist is **[`deploy/macmini/CUTOVER.md`](../../deploy
   CD run (test job, clean cross-arch install, Nuxt build, ~711 MB tar, gates). Pre-building via CD is blocked
   on purpose; the optional pre-warm is to copy the branch into `/opt/mymind-build` and `pnpm install`.
 - **Before:** runner key, the mini's env file (twins per `runtime-env-twins.txt`),
-  `/opt/mymind-build/.env.macmini`, provision + `--check`, `.80` preflight, repoint `.89` consumers
-  (Unmute `KYUTAI_LLM_URL`), stage `compare-counts.sh` and `copy-uploads.sh`. Do not merge yet.
+  `/opt/mymind-build/.env.macmini`, provision + `--check`, `.80` preflight,
+  stage `compare-counts.sh` and `copy-uploads.sh`. Do not merge yet.
 - **Window:** W0 deny pending `exec` approvals and cancel evals; stop the LXC units; `pg_dump -Fc` and
   `pg_restore --no-owner --no-acl -j 4` (no `-1`, no `--exit-on-error`; "must be owner of extension" noise
   filtered); `compare-counts.sh`; `copy-uploads.sh`; set `DEPLOY_TARGET=macmini` and `MYMIND_CUTOVER_DONE`
-  **before** merging; merge and watch CD; LAN smoke test; Pangolin + Unmute to `.35`.
+  **before** merging; merge and watch CD; LAN smoke test; Pangolin to `.35`.
 - **Rollback (7 days, no workflow run):** boot out the mini's agents, `docker compose up -d db` and
   `systemctl enable --now mymind mymind-worker` in LXC 114 (cycle-85 code, old DB, untouched because
-  macmini builds use `/opt/mymind-build`), Pangolin and Unmute back to `.89`. **Leave `DEPLOY_TARGET=macmini`
+  macmini builds use `/opt/mymind-build`), Pangolin back to `.89`. **Leave `DEPLOY_TARGET=macmini`
   and `MYMIND_CUTOVER_DONE` set** (never switch to `lxc`: that would build new code onto the old DB; pushes
   fail harmlessly at `--build-only`). Rows written on `.80` since cutover are not in the old DB.
 
@@ -168,10 +168,15 @@ before any restart if it fails, not an outage).
   Patrity (`repo`, `workflow`), `git ls-remote` ok; **prod bridget-core 23/23** (run `ea2edea5`, 68/68
   attempts, mean 1.00, 2.33M tokens, 717 s; cycle-85 baseline was 20/21) — includes `mac-uptime`,
   `workspace-*`, `task-delete-confirms` 3/3.
-- **Still open:** inbound iMessage reply; reboot test (no passwordless sudo — restart from the GUI or via
-  System Events); `docker rm -f mymind-searxng` on LXC 114; drop the `hermes@ct140` key from the mini's
-  `authorized_keys`; Unmute's `KYUTAI_LLM_URL` (no Unmute found on the rig `192.168.2.25` any more — location
-  unknown); retire LXC 114's `mymind-db` + runtime on/after 2026-10-20.
+- **2026-10-15:** inbound iMessage works; `mymind-searxng` removed from LXC 114; `hermes@ct140` dropped from
+  the mini's `authorized_keys` (backup `authorized_keys.bak-20261015`). The Unmute step was stale: Unmute was
+  retired in cycle 18 (voice v2) and `/api/agent/llm` no longer exists — removed from CUTOVER.md.
+- **iMessage typing indicator not seen by Tony** after cutover. The app side is correct: BlueBubbles' log shows
+  `read` then `POST …/typing` 0.25 s later and `DELETE …/typing` just before the reply (12:31:26 → 12:31:45),
+  the read receipt lands, the worker heartbeat says `privateApi: true`, and `server/info` reports
+  `private_api: true, helper_connected: true`. Open — on the BlueBubbles/Messages side.
+- **Still open:** reboot test (no passwordless sudo — restart from the GUI or via System Events); the typing
+  indicator; retire LXC 114's `mymind-db` + runtime on/after 2026-10-20.
 - The rig's `:8004` refuses connections from the mini; prod routes through LiteLLM, so not a blocker.
 
 ## Open at write time

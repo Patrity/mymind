@@ -854,7 +854,7 @@ The ordered runbook is **`deploy/macmini/CUTOVER.md`** (window of **30 to 60 min
 **Rollback** within the 7-day window needs **no workflow run**, because macmini deploys build in
 `/opt/mymind-build` and never write `/opt/mymind`: `launchctl bootout` the mini's worker then web; in LXC
 114 `docker compose up -d db` and `systemctl enable --now mymind mymind-worker` (cycle-85 code, old
-database); point Pangolin (and Unmute's `KYUTAI_LLM_URL`) back at LXC 114. **`DEPLOY_TARGET` stays
+database); point Pangolin back at LXC 114. **`DEPLOY_TARGET` stays
 `macmini`** (and `MYMIND_CUTOVER_DONE` stays set): a push then fails harmlessly at `--build-only`, whereas
 switching to `lxc` would build new code onto the old database. Rows written on `.80` after cutover are not
 in the old database.

@@ -76,7 +76,6 @@ Prod is dark from step W1 (the units stop) until step W9 (Pangolin points at the
   - `show max_parallel_maintenance_workers;` and `show dynamic_shared_memory_type;` — record them. A parallel HNSW build puts its graph in dynamic shared memory, sized by `maintenance_work_mem` (1 GB in W3).
   - **Shared memory on the `.80` host.** Run `df -h /dev/shm` there. If Postgres runs in Docker, use `docker inspect -f '{{.HostConfig.ShmSize}}' <container>` instead (Docker's default is 64 MB). If it shows **less than 2 GB, or nobody can check it**, set `PMW=0` in W3, which builds without parallel workers: slower, but it cannot fail with `could not resize shared memory segment`.
 - [ ] **P6. Fix any LAN consumer of LXC 114's IP `192.168.2.89`.** The repo has none left outside history.
-  - Unmute's `KYUTAI_LLM_URL` on the rig (`ssh tony@192.168.2.25`, `~/unmute/docker-compose.yml`) must become `http://192.168.2.35:3000/api/agent/llm`. Restart Unmute at the window's end.
   - Check any firewall or LAN allowlist that names `.89`.
   - LiteLLM, the rig, Brave and BlueBubbles are already confirmed reachable from the mini. BlueBubbles' webhook uses the public `brain.costanzoclan.com`, which follows Pangolin.
 - [ ] **P7. Stage the cutover helpers from the branch.** Neither repo checkout on LXC 114 has them yet: `/opt/mymind` is cycle 85, and `/opt/mymind-build` is filled by the first macmini CD run. From Tony's Mac, in the repo:
@@ -169,7 +168,7 @@ Prod is dark from step W1 (the units stop) until step W9 (Pangolin points at the
   - An **outbound** iMessage. The mini reaches BlueBubbles directly.
   - On the mini, `bash ~/mymind/bin/release.sh status` shows both releases, and `tail ~/Library/Logs/mymind/worker.log` is clean.
   - **Not yet:** MCP and inbound iMessage both come in through the public `brain.costanzoclan.com`, which still points at the stopped `.89`. A failure there now is expected and is NOT a reason to roll back.
-- [ ] **W9. Point Pangolin at `192.168.2.35:3000`.** Check the external `https://brain.costanzoclan.com/api/health`. Restart Unmute with the new `KYUTAI_LLM_URL` (P6). Prod is back up.
+- [ ] **W9. Point Pangolin at `192.168.2.35:3000`.** Check the external `https://brain.costanzoclan.com/api/health`. Prod is back up.
 - [ ] **W10. Smoke test through the public URL:**
   - An MCP round trip, for example any `mcp__mymind__*` call from Claude Code.
   - An **inbound** iMessage: text Bridget and get a reply.
@@ -217,7 +216,7 @@ Find the last step that completed, and undo from there. Each block lists exactly
    2. Redo W0–W5 with a fresh `$DUMP`.
    3. Instead of merging (it is already merged), run `gh workflow run deploy.yml --ref master -f target=macmini`.
 
-**After W9:** use "Rollback" below. Pangolin, Unmute and the variables are covered there.
+**After W9:** use "Rollback" below. Pangolin and the variables are covered there.
 
 **U-R. Reset `.80` to empty (LXC, `pct enter 114`).** The script was staged in P7. It drops the `drizzle` schema, plus every relation, routine and type in `public` that `bridget` owns and that is not an extension member. The superuser-owned extensions stay. It never runs `drop owned`. It runs in one transaction, and refuses unless it gets `--i-know` and a DSN for `192.168.2.80/bridget`.
 ```
@@ -240,7 +239,7 @@ No workflow run is needed. Macmini deploys never write `/opt/mymind`, so its `.o
    cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d db
    systemctl enable --now mymind mymind-worker
    ```
-3. Point Pangolin back at `192.168.2.89:3000` and check the external `/api/health`. Point Unmute's `KYUTAI_LLM_URL` back at `.89`.
+3. Point Pangolin back at `192.168.2.89:3000` and check the external `/api/health`.
 4. **Leave `DEPLOY_TARGET=macmini` and `MYMIND_CUTOVER_DONE=true` set.**
    - A push then fails harmlessly at `--build-only`, because the LXC units are active.
    - Never switch to `lxc`: that would build new code onto the old database.
