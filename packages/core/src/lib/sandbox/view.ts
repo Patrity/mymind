@@ -30,10 +30,10 @@ export class WorkspaceViewError extends Error {
 // `-I` (fix round 1, M3): isolated mode — the cwd (/workspace) is NOT put on sys.path and user
 // site/PYTHON* env are ignored, so a workspace file named json.py / base64.py (or a usercustomize
 // under the writable /home/agent) can't run inside a UI read and forge its answer or the path check.
-const py = (lines: string[]) => `python3 -I -c ${shq(lines.join('\n'))}`
+export const py = (lines: string[]) => `python3 -I -c ${shq(lines.join('\n'))}`
 
 // Shared: read {..} from stdin, resolve a path INSIDE the container and refuse what leaves /workspace.
-const PRELUDE = [
+export const PRELUDE = [
   'import sys, os, json, stat',
   'sys.stdout.reconfigure(encoding="utf-8", errors="replace")',
   'a = json.load(sys.stdin)',
