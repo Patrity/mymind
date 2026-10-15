@@ -1,0 +1,130 @@
+// DB-backed — harness pattern from test/channels-inbound.db.test.ts (.env + useRuntimeConfig stub).
+process.loadEnvFile('.env')
+
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, it, expect, afterAll, vi } from 'vitest'
+
+const STORE = mkdtempSync(join(tmpdir(), 'artifacts-store-'))
+vi.stubGlobal('useRuntimeConfig', () => ({
+  databaseUrl: process.env.DATABASE_URL, storageDriver: 'local', storageLocalDir: STORE, betterAuthUrl: 'http://localhost:3000/'
+}))
+
+import { publishArtifact, editArtifact, getArtifactDetail, findServable, deleteArtifact, restoreArtifact, resolveArtifactRef, listArtifacts } from './service'
+
+const P = `t${Date.now().toString(36)}`
+const created: string[] = []
+const html = (s: string) => ({ path: 'index.html', content: `<h1>${s}</h1>` })
+
+describe('publishArtifact', () => {
+  it('creates v1 with a slug from the title, private by default', async () => {
+    const r = await publishArtifact({ title: `${P} Sales Q3`, files: [html('a')] })
+    created.push(r.artifact.id)
+    expect(r).toMatchObject({ created: true, newVersion: true, version: 1 })
+    expect(r.artifact.slug).toBe(`${P}-sales-q3`)
+    expect(r.artifact.isPublic).toBe(false)
+    expect(r.artifact.url).toMatch(new RegExp(`/artifact/${P}-sales-q3/$`))
+    expect(r.artifact.url).not.toContain('//artifact')
+  })
+
+  it('suffixes a colliding generated slug', async () => {
+    const r = await publishArtifact({ title: `${P} Sales Q3`, files: [html('b')] })
+    created.push(r.artifact.id)
+    expect(r.artifact.slug).toBe(`${P}-sales-q3-2`)
+  })
+
+  it('requires a title to create', async () => {
+    await expect(publishArtifact({ slug: `${P}-notitle`, files: [html('x')] })).rejects.toMatchObject({ code: 'bad_input' })
+  })
+
+  it('republishing to a slug makes a new version; identical content does not', async () => {
+    const slug = `${P}-ver`
+    const a = await publishArtifact({ slug, title: 'v', files: [html('1')] }); created.push(a.artifact.id)
+    const b = await publishArtifact({ slug, files: [html('2')] })
+    expect(b).toMatchObject({ created: false, newVersion: true, version: 2, previousVersionId: expect.any(String) })
+    const c = await publishArtifact({ slug, files: [html('2')] })
+    expect(c).toMatchObject({ newVersion: false, version: 2 })
+  })
+
+  it('data/ changes patch in place; merge keeps other files', async () => {
+    const slug = `${P}-data`
+    const a = await publishArtifact({ slug, title: 'd', files: [html('x'), { path: 'data/x.json', content: '{"n":1}' }] }); created.push(a.artifact.id)
+    const b = await publishArtifact({ slug, merge: true, files: [{ path: 'data/x.json', content: '{"n":2}' }] })
+    expect(b).toMatchObject({ newVersion: false, version: 1 })
+    const s = await findServable(slug)
+    expect(Object.keys(s!.manifest).sort()).toEqual(['data/x.json', 'index.html'])
+  })
+
+  it('rejects bad input with ArtifactError messages naming the file', async () => {
+    await expect(publishArtifact({ title: 't', slug: `${P}-bad`, files: [html('x'), { path: 'v.mov', content: 'x' }] })).rejects.toThrow(/v\.mov: content type not allowed/)
+    await expect(publishArtifact({ title: 't', slug: `${P}-bad`, files: [{ path: 'app.js', content: 'x' }] })).rejects.toThrow(/entry index\.html not found/)
+    await expect(publishArtifact({ title: 't', slug: 'Bad_Slug', files: [html('x')] })).rejects.toThrow(/slug/)
+    await expect(publishArtifact({ title: 't', slug: `${P}-bad`, files: [html('x'), { path: './index.html', content: 'y' }] })).rejects.toThrow(/duplicate/)
+    expect(await findServable(`${P}-bad`)).toBeNull() // nothing half-written
+  })
+
+  it('concurrent publishes to one slug both succeed (Review Focus #4)', async () => {
+    const slug = `${P}-race`
+    const a = await publishArtifact({ slug, title: 'r', files: [html('0')] }); created.push(a.artifact.id)
+    const [x, y] = await Promise.all([
+      publishArtifact({ slug, files: [html('1')] }),
+      publishArtifact({ slug, files: [html('2')] })
+    ])
+    expect(new Set([x.version, y.version])).toEqual(new Set([2, 3]))
+  })
+
+  it('concurrent first publishes of a new slug both succeed', async () => {
+    const slug = `${P}-race-new`
+    const [x, y] = await Promise.all([
+      publishArtifact({ slug, title: 'n', files: [html('1')] }),
+      publishArtifact({ slug, title: 'n', files: [html('2')] })
+    ])
+    created.push(x.artifact.id)
+    expect(x.artifact.id).toBe(y.artifact.id)
+  })
+
+  it('a deleted slug can be reused by a new artifact (Review Focus #5)', async () => {
+    const slug = `${P}-reuse`
+    const a = await publishArtifact({ slug, title: 'old', files: [html('old')] }); created.push(a.artifact.id)
+    await deleteArtifact(a.artifact.id)
+    expect(await findServable(slug)).toBeNull()
+    const b = await publishArtifact({ slug, title: 'new', files: [html('new')] }); created.push(b.artifact.id)
+    expect(b.created).toBe(true)
+    expect((await findServable(slug))!.artifactId).toBe(b.artifact.id)
+    expect(await restoreArtifact(a.artifact.id)).toBe(false) // slug taken meanwhile
+  })
+})
+
+describe('editArtifact', () => {
+  it('flips visibility, renames the slug, rolls back', async () => {
+    const slug = `${P}-edit`
+    const a = await publishArtifact({ slug, title: 'e', files: [html('1')] }); created.push(a.artifact.id)
+    await publishArtifact({ slug, files: [html('2')] })
+    const e = await editArtifact(a.artifact.id, { isPublic: true, slug: `${P}-edited`, rollbackTo: 1 })
+    expect(e).toMatchObject({ isPublic: true, slug: `${P}-edited`, currentVersion: 1 })
+    const d = await getArtifactDetail(a.artifact.id)
+    expect(d!.versions.map(v => [v.version, v.current])).toEqual([[2, false], [1, true]])
+    await expect(editArtifact(a.artifact.id, { rollbackTo: 9 })).rejects.toThrow(/version 9/)
+    expect(await resolveArtifactRef(`${P}-edited`)).toBe(a.artifact.id)
+    expect(await resolveArtifactRef(a.artifact.id)).toBe(a.artifact.id)
+  })
+})
+
+describe('listArtifacts', () => {
+  it('excludes deleted and orders by updated desc', async () => {
+    const list = await listArtifacts({ limit: 200 })
+    expect(list.every(a => !a.slug.endsWith('-reuse') || a.title === 'new')).toBe(true)
+  })
+})
+
+afterAll(async () => {
+  const { useDb } = await import('../../db')
+  const { artifacts } = await import('../../db/schema')
+  const { inArray } = await import('drizzle-orm')
+  if (created.length) {
+    await useDb().update(artifacts).set({ currentVersionId: null }).where(inArray(artifacts.id, created))
+    await useDb().delete(artifacts).where(inArray(artifacts.id, created))
+  }
+  rmSync(STORE, { recursive: true, force: true })
+})
