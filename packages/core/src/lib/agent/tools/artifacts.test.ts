@@ -18,14 +18,16 @@ import { artifactTools, artifactDangerousTools, publishArtifactTool, editArtifac
 import { ArtifactError } from '../../artifacts/limits'
 import { TOOLSETS } from '../toolsets'
 import { toolByName } from '../tools'
-import type { ToolContext } from '../types'
+import type { ToolContext, ApprovalRequest } from '../types'
+import { buildAiTools } from '../ai-tools'
+import { z } from 'zod'
 
 const ctx = (o: Partial<ToolContext> = {}): ToolContext => ({ signal: new AbortController().signal, runId: 'run-1', ...o })
 const art = { id: 'a1', slug: 'dash', title: 'Dash', url: 'https://x/artifact/dash/', isPublic: false, currentVersion: 1 }
 const published = (o: object = {}) => ({ artifact: art, version: 1, created: true, newVersion: true, previousVersionId: null, ...o })
 
 beforeEach(() => {
-  vi.clearAllMocks()
+  vi.resetAllMocks()
   run.conversationId = 'conv-1'
   run.resolve.mockResolvedValue({ workspaceId: 'ws-1' })
   svc.publishArtifact.mockResolvedValue(published())
@@ -127,7 +129,7 @@ describe('edit_artifact', () => {
     svc.resolveArtifactRef.mockResolvedValue('a1')
     svc.getArtifactDetail.mockResolvedValue({ ...art, description: 'd', projectId: null, versions: [{ id: 'v1', version: 1, current: true }] })
     svc.editArtifact.mockResolvedValue({ ...art, isPublic: true })
-    const ex = await editArtifactTool.handler({ artifact: 'dash', public: true }, ctx())
+    const ex = await editArtifactTool.handler({ artifact: 'dash', public: true, rollback_to: 1 }, ctx())
     expect(ex.result).toMatchObject({ ok: true, id: 'a1', slug: 'dash', title: 'Dash', url: art.url, isPublic: true, version: 1, warnings: [] })
     await ex.undo!()
     expect(svc.editArtifact).toHaveBeenLastCalledWith('a1', expect.objectContaining({ isPublic: false, title: 'Dash', projectId: null }))
@@ -172,5 +174,117 @@ describe('registration', () => {
     expect([...artifactTools, ...artifactDangerousTools].map(t => t.toolset)).toEqual(Array(4).fill('artifacts'))
     expect(artifactTools.some(t => t.dangerous)).toBe(false) // dangerous tools stay out of agentTools / MCP
     expect(toolByName('publish_artifact')).toBeDefined()
+  })
+})
+
+describe('fix round 1', () => {
+  const pubDetail = { ...art, isPublic: true, description: null, projectId: null, versions: [{ id: 'v1', version: 1, current: true }] }
+
+  describe('tainted run + already-public target (gate level)', () => {
+    const taintingRead = {
+      name: 'gmail_search', description: 'd', kind: 'read' as const, toolset: 'gmail' as const, taints: true as const, schema: {},
+      handler: async () => ({ result: { threads: [] }, summary: 's' })
+    }
+    function gate(ask?: (r: ApprovalRequest) => Promise<{ approved: boolean }>) {
+      const set = buildAiTools([taintingRead, publishArtifactTool, editArtifactTool], { signal: new AbortController().signal, onEvent: () => {}, requestApproval: ask })
+      return (n: string, i: Record<string, unknown>) => (set[n]!.execute as (i: unknown, o: unknown) => Promise<unknown>)(i, { toolCallId: `c-${n}` })
+    }
+    beforeEach(() => {
+      svc.resolveArtifactRef.mockResolvedValue('a1')
+      svc.getArtifactDetail.mockResolvedValue(pubDetail)
+      svc.editArtifact.mockResolvedValue({ ...art, isPublic: true })
+    })
+    it('merge-publish to a public slug without public:true is refused and writes nothing', async () => {
+      const ask = vi.fn(async () => ({ approved: true }))
+      const call = gate(ask)
+      await call('gmail_search', {})
+      const r = await call('publish_artifact', { slug: 'dash', files: { 'data/a.json': '{}' }, merge: true })
+      expect(r).toMatchObject({ ok: false, error: expect.stringContaining('pass public: true') })
+      expect(svc.publishArtifact).not.toHaveBeenCalled()
+      expect(ask).not.toHaveBeenCalled()
+    })
+    it('the same call with public:true asks for approval (denied: nothing written)', async () => {
+      const ask = vi.fn(async (_r: ApprovalRequest) => ({ approved: false }))
+      const call = gate(ask)
+      await call('gmail_search', {})
+      expect(await call('publish_artifact', { slug: 'dash', files: { 'data/a.json': '{}' }, merge: true, public: true })).toEqual({ denied: true })
+      expect(ask).toHaveBeenCalledTimes(1)
+      expect(svc.publishArtifact).not.toHaveBeenCalled()
+    })
+    it('edit_artifact rollback_to on a public artifact is refused; with public:true it asks', async () => {
+      const ask = vi.fn(async (_r: ApprovalRequest) => ({ approved: false }))
+      const call = gate(ask)
+      await call('gmail_search', {})
+      expect(await call('edit_artifact', { artifact: 'dash', rollback_to: 1 })).toMatchObject({ ok: false })
+      expect(svc.editArtifact).not.toHaveBeenCalled()
+      expect(ask).not.toHaveBeenCalled()
+      expect(await call('edit_artifact', { artifact: 'dash', rollback_to: 1, public: true })).toEqual({ denied: true })
+      expect(ask).toHaveBeenCalledTimes(1)
+    })
+    it('an untainted run is not restricted', async () => {
+      const call = gate(vi.fn(async () => ({ approved: false })))
+      svc.publishArtifact.mockResolvedValue(published({ created: false, newVersion: false, version: 1 }))
+      expect(await call('publish_artifact', { slug: 'dash', files: { 'data/a.json': '{}' }, merge: true })).toMatchObject({ ok: true })
+    })
+  })
+
+  describe('replay pins (proposalArgs)', () => {
+    beforeEach(() => bundle.readWorkspaceBundle.mockResolvedValue({ files: [{ path: 'index.html', content: Buffer.from('x') }], masked: 0, skipped: [] }))
+    it('proposalArgs pins workspaceId and conversationId', async () => {
+      const a = await publishArtifactTool.proposalArgs!({ title: 'T', workspace_path: 'dist', public: true }, ctx())
+      expect(a).toMatchObject({ workspace_path: 'dist', workspaceId: 'ws-1', conversationId: 'conv-1' })
+    })
+    it('a live run ignores a model-supplied workspaceId/conversationId', async () => {
+      await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', workspaceId: '00000000-0000-4000-8000-000000000001', conversationId: '00000000-0000-4000-8000-000000000002' }, ctx({ isTainted: () => false }))
+      expect(bundle.readWorkspaceBundle.mock.calls[0]![0]).toBe('ws-1')
+      expect(svc.publishArtifact.mock.calls[0]![0].conversationId).toBe('conv-1')
+    })
+    it('a replay (no runId) uses the pinned ids', async () => {
+      svc.publishArtifact.mockResolvedValue(published())
+      await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', workspaceId: 'pinned-ws', conversationId: 'pinned-conv' }, ctx({ runId: undefined }))
+      expect(bundle.readWorkspaceBundle.mock.calls[0]![0]).toBe('pinned-ws')
+      expect(svc.publishArtifact.mock.calls[0]![0].conversationId).toBe('pinned-conv')
+    })
+  })
+
+  describe('undo restores metadata', () => {
+    it('new version + metadata change: undo reverts version AND settings', async () => {
+      svc.resolveArtifactRef.mockResolvedValue('a1')
+      svc.getArtifactDetail.mockResolvedValue({ ...art, isPublic: false, description: 'old', projectId: null, versions: [] })
+      svc.publishArtifact.mockResolvedValue(published({ created: false, version: 2, previousVersionId: 'v1', artifact: { ...art, title: 'New', isPublic: true, description: 'old', projectId: null } }))
+      const ex = await publishArtifactTool.handler({ slug: 'dash', title: 'New', html: 'x', public: true }, ctx())
+      await ex.undo!()
+      expect(svc.setCurrentVersion).toHaveBeenCalledWith('a1', 'v1')
+      expect(svc.editArtifact).toHaveBeenCalledWith('a1', { title: 'Dash', description: 'old', isPublic: false, projectId: null })
+    })
+    it('metadata-only change on an unchanged version: has undo, honest summary', async () => {
+      svc.resolveArtifactRef.mockResolvedValue('a1')
+      svc.getArtifactDetail.mockResolvedValue({ ...art, isPublic: false, description: null, projectId: null, versions: [] })
+      svc.publishArtifact.mockResolvedValue(published({ created: false, newVersion: false, artifact: { ...art, isPublic: true, description: null, projectId: null } }))
+      const ex = await publishArtifactTool.handler({ slug: 'dash', html: 'x', public: true }, ctx())
+      expect(ex.undo).toBeDefined()
+      expect(ex.summary).toContain('settings')
+      await ex.undo!()
+      expect(svc.setCurrentVersion).not.toHaveBeenCalled()
+      expect(svc.editArtifact).toHaveBeenCalledWith('a1', expect.objectContaining({ isPublic: false }))
+    })
+  })
+
+  it('normalises files keys before the entry lookup and root-absolute check', async () => {
+    const ex = await publishArtifactTool.handler({ title: 'V', files: { './index.html': '<script src="/assets/i.js"></script>', 'assets//i.js': 'x' } }, ctx())
+    expect(svc.publishArtifact.mock.calls[0]![0].files.map((f: { path: string }) => f.path)).toEqual(['index.html', 'assets/i.js'])
+    expect((ex.result as { warnings: string[] }).warnings.join(' ')).toContain('base: \'./\'')
+  })
+
+  it('edit undo only resets the version when rollback_to was passed', async () => {
+    svc.resolveArtifactRef.mockResolvedValue('a1')
+    svc.getArtifactDetail.mockResolvedValue({ ...art, description: null, projectId: null, versions: [{ id: 'v1', version: 1, current: true }] })
+    svc.editArtifact.mockResolvedValue(art)
+    const ex = await editArtifactTool.handler({ artifact: 'dash', title: 'Z' }, ctx())
+    await ex.undo!()
+    expect(svc.setCurrentVersion).not.toHaveBeenCalled()
+    const ex2 = await editArtifactTool.handler({ artifact: 'dash', rollback_to: 1 }, ctx())
+    await ex2.undo!()
+    expect(svc.setCurrentVersion).toHaveBeenCalledWith('a1', 'v1')
   })
 })

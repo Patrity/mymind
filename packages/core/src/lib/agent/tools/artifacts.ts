@@ -11,7 +11,7 @@ import {
 } from '../../artifacts/service'
 import { readWorkspaceBundle } from '../../artifacts/workspace-bundle'
 import { rootAbsoluteRefs } from '../../artifacts/html-warnings'
-import { ArtifactError } from '../../artifacts/limits'
+import { ArtifactError, normalizeArtifactPath } from '../../artifacts/limits'
 import { workspaceRuntime } from '../../sandbox/runtime'
 import { runNetworkMode } from './workspace'
 import type { AgentTool, ToolContext, ToolExecution } from '../types'
@@ -20,6 +20,12 @@ const fail = (error: string, summary = 'artifact: refused'): ToolExecution => ({
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 /** A tool call that makes an artifact public is the one outbound act here (it puts content on the internet). */
+const PUBLIC_TARGET_REFUSAL = 'this artifact is public — pass public: true to publish to it (Tony must approve that in this run)'
+/** Tainted run + an already-public target + no explicit public flag: writing would put content on the internet
+ *  without the outboundWhen gate firing (it only sees args). public:false (making it private) is safe. */
+const refusesPublicTarget = (ctx: ToolContext, targetPublic: boolean, arg: unknown) =>
+  ctx.isTainted?.() === true && targetPublic && arg !== true && arg !== false
+
 const isPublicCall = (a: Record<string, unknown>) => a.public === true
 
 async function conversationIdFor(runId: string | undefined): Promise<string | null> {
@@ -59,23 +65,39 @@ export const publishArtifactTool: AgentTool = {
     spa_fallback: z.boolean().optional().describe('Serve the entry for unknown paths (single-page apps)'),
     public: z.boolean().optional().describe('Make the artifact reachable without login'),
     project: z.string().optional().describe('Project slug'),
-    merge: z.boolean().optional().describe('Merge `files` into the current version; data-only changes update in place')
+    merge: z.boolean().optional().describe('Merge `files` into the current version; data-only changes update in place'),
+    workspaceId: z.string().uuid().optional().describe('Set automatically — leave it out'),
+    conversationId: z.string().uuid().optional().describe('Set automatically — leave it out')
   },
+  // A headless proposal stores the workspace/conversation it was proposed from; the replay (no run)
+  // reads those, never whatever `home` resolves to (mirrors export_to_document).
+  proposalArgs: async (args, ctx) => ({
+    ...args,
+    ...(args.workspace_path !== undefined ? { workspaceId: (await workspaceRuntime().resolve(ctx.runId)).workspaceId } : {}),
+    conversationId: await conversationIdFor(ctx.runId)
+  }),
   handler: async (a, ctx: ToolContext) => {
     const sources = (['html', 'files', 'workspace_path'] as const).filter(k => a[k] !== undefined)
     if (sources.length !== 1) return fail('pass exactly one of html, files or workspace_path', 'publish_artifact: bad arguments')
     try {
+      // Snapshot of an existing target (publishing to a known slug): the taint check and the undo both use it.
+      const existingId = typeof a.slug === 'string' ? await resolveArtifactRef(a.slug) : null
+      const before = existingId ? await getArtifactDetail(existingId) : null
+      if (before && refusesPublicTarget(ctx, before.isPublic, a.public)) return fail(PUBLIC_TARGET_REFUSAL, 'publish_artifact: public target in a tainted run')
       const projectId = await projectIdFor(a.project as string | undefined)
-      const conversationId = await conversationIdFor(ctx.runId)
+      // A live run resolves from its run (model-supplied ids are ignored); a replay (no run) uses the pinned ones.
+      const conversationId = ctx.runId ? await conversationIdFor(ctx.runId) : (typeof a.conversationId === 'string' ? a.conversationId : null)
       let files: PublishInput['files']
       let masked = 0
       let skipped: string[] = []
       if (a.html !== undefined) files = [{ path: 'index.html', content: a.html as string }]
-      else if (a.files !== undefined) files = Object.entries(a.files as Record<string, string>).map(([path, content]) => ({ path, content }))
+      else if (a.files !== undefined) files = Object.entries(a.files as Record<string, string>).map(([path, content]) => ({ path: normalizeArtifactPath(path), content }))
       else {
-        if (!ctx.runId) return fail('workspace_path only works inside Bridget\'s own runs (no workspace here) — pass html or files instead', 'publish_artifact: no workspace')
-        const { workspaceId } = await workspaceRuntime().resolve(ctx.runId)
-        const mode = runNetworkMode(ctx)
+        let workspaceId: string
+        if (ctx.runId) workspaceId = (await workspaceRuntime().resolve(ctx.runId)).workspaceId
+        else if (typeof a.workspaceId === 'string') workspaceId = a.workspaceId
+        else return fail('workspace_path only works inside Bridget\'s own runs (no workspace here) — pass html or files instead', 'publish_artifact: no workspace')
+        const mode = ctx.isTainted ? runNetworkMode(ctx) : 'clean'
         let b: Awaited<ReturnType<typeof readWorkspaceBundle>>
         try {
           b = await readWorkspaceBundle(workspaceId, a.workspace_path as string, { tainted: mode === 'tainted', offline: mode === 'offline', signal: ctx.signal })
@@ -98,26 +120,35 @@ export const publishArtifactTool: AgentTool = {
         ...(a.merge !== undefined ? { merge: a.merge as boolean } : {})
       })
       const warnings: string[] = []
-      const entryPath = (a.entry as string | undefined) ?? 'index.html'
-      const entryFile = files.find(f => f.path.replace(/^\.\//, '') === entryPath)
+      const entryPath = normalizeArtifactPath((a.entry as string | undefined) ?? 'index.html')
+      const entryFile = files.find(f => normalizeArtifactPath(f.path) === entryPath)
       if (entryFile) {
         const html = typeof entryFile.content === 'string' ? entryFile.content : entryFile.content.toString('utf8')
-        if (rootAbsoluteRefs(html, files.map(f => f.path)).length)
+        if (rootAbsoluteRefs(html, files.map(f => normalizeArtifactPath(f.path))).length)
           warnings.push('entry HTML references root-absolute paths (/assets/…) that will 404 under /artifact/<slug>/ — rebuild with base: \'./\' (Vite) and republish')
       }
       if (masked > 0) warnings.push(`${masked} file(s) had secret values masked`)
       if (skipped.length) warnings.push(`skipped ${skipped.length} file(s) of types artifacts do not serve: ${skipped.slice(0, 10).join(', ')}${skipped.length > 10 ? ', …' : ''}`)
       const art = r.artifact
+      const metaChanged = !!before && (before.isPublic !== art.isPublic || before.title !== art.title
+        || before.description !== art.description || before.projectId !== art.projectId)
       const inPlace = !r.created && !r.newVersion && a.merge === true
       const summary = r.created || r.newVersion
         ? `published "${art.title}" v${r.version} → /artifact/${art.slug}/`
-        : inPlace ? `updated data of "${art.title}" (v${r.version}, in place)` : `"${art.title}" unchanged`
+        : inPlace ? `updated data of "${art.title}" (v${r.version}, in place)`
+          : metaChanged ? `updated "${art.title}" settings (v${r.version} unchanged)` : `"${art.title}" unchanged`
       const exec: ToolExecution = {
         result: okShape(art, { version: r.version, newVersion: r.newVersion, created: r.created, warnings }),
         summary
       }
       if (r.created) exec.undo = async () => { await deleteArtifact(art.id); return { ok: true } }
-      else if (r.newVersion) exec.undo = async () => { await setCurrentVersion(art.id, r.previousVersionId); return { ok: true } }
+      else if (r.newVersion || metaChanged) {
+        exec.undo = async () => {
+          if (r.newVersion) await setCurrentVersion(art.id, r.previousVersionId)
+          if (metaChanged && before) await editArtifact(art.id, { title: before.title, description: before.description, isPublic: before.isPublic, projectId: before.projectId })
+          return { ok: true }
+        }
+      }
       return exec
     } catch (e) {
       if (e instanceof ArtifactError) return fail(e.message, `publish_artifact: ${e.code}`)
@@ -142,12 +173,13 @@ export const editArtifactTool: AgentTool = {
     project: z.string().nullable().optional().describe('Project slug; null clears it'),
     rollback_to: z.number().int().positive().optional().describe('Version number to make current')
   },
-  handler: async (a) => {
+  handler: async (a, ctx: ToolContext) => {
     try {
       const id = await resolveArtifactRef(a.artifact as string)
       if (!id) return fail(`artifact "${a.artifact}" not found`, 'edit_artifact: not found')
       const before = await getArtifactDetail(id)
       if (!before) return fail(`artifact "${a.artifact}" not found`, 'edit_artifact: not found')
+      if (refusesPublicTarget(ctx, before.isPublic, a.public)) return fail(PUBLIC_TARGET_REFUSAL, 'edit_artifact: public target in a tainted run')
       const projectId = a.project === null ? null : await projectIdFor(a.project as string | undefined)
       const dto = await editArtifact(id, {
         ...(a.title !== undefined ? { title: a.title as string } : {}),
@@ -166,7 +198,7 @@ export const editArtifactTool: AgentTool = {
           await editArtifact(id, {
             title: before.title, description: before.description, slug: before.slug, isPublic: before.isPublic, projectId: before.projectId
           })
-          await setCurrentVersion(id, prevVersionId)
+          if (a.rollback_to !== undefined && prevVersionId) await setCurrentVersion(id, prevVersionId)
           return { ok: true }
         }
       }
