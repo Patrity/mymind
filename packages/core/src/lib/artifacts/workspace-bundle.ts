@@ -7,16 +7,18 @@ import { PRELUDE, py } from '../sandbox/view'
 import { workspaceRuntime } from '../sandbox/runtime'
 import { maskText, secretValues, SecretStoreUnavailableError } from '../sandbox/secrets'
 import { executionMode } from '../agent/runtime/execution-mode'
-import { ARTIFACT_MAX_FILES, ARTIFACT_MAX_FILE_BYTES, ARTIFACT_MAX_TOTAL_BYTES, ArtifactError, isTextPath } from './limits'
+import { ARTIFACT_MAX_FILES, ARTIFACT_MAX_FILE_BYTES, ARTIFACT_MAX_TOTAL_BYTES, ArtifactError, contentTypeFor, isTextPath } from './limits'
 
 /** Walk `dir`: relative `/`-joined sorted paths + sizes. Dot-dirs / node_modules pruned, symlinks and
- *  non-regular files skipped. Limits are checked as the walk goes. */
+ *  non-regular files skipped. The artifact limits are enforced on the HOST after unservable types are
+ *  filtered out (they don't count); the walk itself is bounded by WALK_CAP entries. */
+export const WALK_CAP = 5000
 export const BUNDLE_LIST_SCRIPT = py([
   ...PRELUDE,
-  `maxn = ${ARTIFACT_MAX_FILES}; maxf = ${ARTIFACT_MAX_FILE_BYTES}; maxt = ${ARTIFACT_MAX_TOTAL_BYTES}`,
+  `cap = ${WALK_CAP}`,
   'full = resolve(a["dir"])',
   'if not os.path.isdir(full): out({"error": "not_found", "message": "no such directory: " + a["dir"]})',
-  'res = []; total = 0',
+  'res = []',
   'for d, dirs, files in os.walk(full, followlinks=False):',
   '    dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x != "node_modules" and not os.path.islink(os.path.join(d, x)))',
   '    for n in sorted(files):',
@@ -24,11 +26,8 @@ export const BUNDLE_LIST_SCRIPT = py([
   '        try: st = os.lstat(fp)',
   '        except OSError: continue',
   '        if not stat.S_ISREG(st.st_mode): continue',
-  '        rel = os.path.relpath(fp, full).replace(os.sep, "/")',
-  '        if len(res) >= maxn: out({"error": "too_many", "message": "more than " + str(maxn) + " files under " + a["dir"]})',
-  '        total += st.st_size',
-  '        if st.st_size > maxf or total > maxt: out({"error": "too_large", "path": rel})',
-  '        res.append({"path": rel, "size": st.st_size})',
+  '        if len(res) >= cap: out({"error": "too_many", "message": "more than " + str(cap) + " files under " + a["dir"]})',
+  '        res.append({"path": os.path.relpath(fp, full).replace(os.sep, "/"), "size": st.st_size})',
   'res.sort(key=lambda e: e["path"])',
   'out({"files": res})'
 ])
@@ -58,23 +57,39 @@ export const BUNDLE_READ_SCRIPT = py([
 
 export type ReadPiece = { path: string; offset: number; length: number }
 
-/** Pack file pieces into batches whose lengths sum to ≤ max; a bigger file is split across batches. */
-export function planReads(files: Array<{ path: string; size: number }>, max: number = CHUNK_BYTES): ReadPiece[][] {
+export type PlanBudget = { ratio?: number; perItem?: (path: string) => number }
+
+/** Pack file pieces into batches whose cost sums to ≤ max; a bigger file is split across batches.
+ *  Default cost = the piece's bytes; `ratio` (e.g. 4/3 for base64) and `perItem` (header line) model
+ *  the wire size. */
+export function planReads(files: Array<{ path: string; size: number }>, max: number = CHUNK_BYTES, b: PlanBudget = {}): ReadPiece[][] {
+  const ratio = b.ratio ?? 1
   const batches: ReadPiece[][] = []
   let cur: ReadPiece[] = []; let room = max
+  const flush = () => { batches.push(cur); cur = []; room = max }
   for (const f of files) {
+    const head = b.perItem?.(f.path) ?? 0
+    if (f.size === 0) {
+      if (room < head && cur.length) flush()
+      cur.push({ path: f.path, offset: 0, length: 0 }); room -= head
+      continue
+    }
     let offset = 0; let left = f.size
-    if (left === 0) { cur.push({ path: f.path, offset: 0, length: 0 }); continue }
     while (left > 0) {
-      if (room === 0) { batches.push(cur); cur = []; room = max }
-      const n = Math.min(left, room)
+      let avail = Math.floor((room - head) / ratio)
+      if (avail <= 0 && cur.length) { flush(); avail = Math.floor((room - head) / ratio) }
+      const n = Math.max(1, Math.min(left, avail))
       cur.push({ path: f.path, offset, length: n })
-      offset += n; left -= n; room -= n
+      offset += n; left -= n; room -= Math.ceil(n * ratio) + head
     }
   }
   if (cur.length) batches.push(cur)
   return batches
 }
+
+/** Wire budget for one read batch: base64 of ≤ CHUNK_BYTES plus JSON header lines, under the 1 MB cap. */
+const WIRE_MAX = 960_000
+const WIRE: PlanBudget = { ratio: 4 / 3, perItem: p => p.length * 6 + 64 }
 
 type ExecFn = (script: string, input: unknown) => Promise<string>
 
@@ -93,7 +108,7 @@ export async function readWorkspaceBundle(
   workspaceId: string,
   dir: string,
   o: { tainted?: boolean; offline?: boolean; signal?: AbortSignal } = {}
-): Promise<{ files: Array<{ path: string; content: Buffer }>; masked: number }> {
+): Promise<{ files: Array<{ path: string; content: Buffer }>; masked: number; skipped: string[] }> {
   if (executionMode() === 'remote') throw new Error('publishing from a workspace only works inside Bridget\'s runs')
   const exec: ExecFn = async (script, input) => {
     const r = await workspaceRuntime().manager.exec(workspaceId, script, {
@@ -111,25 +126,43 @@ export async function readWorkspaceBundle(
     throw err
   }
 
-  const listed = JSON.parse(await exec(BUNDLE_LIST_SCRIPT, { dir })) as { files?: Array<{ path: string; size: number }>; error?: string; message?: string; path?: string }
-  if (!listed.files) fail(listed, dir)
+  const listed = JSON.parse(await exec(BUNDLE_LIST_SCRIPT, { dir })) as { files?: unknown; error?: string; message?: string; path?: string }
+  if (!Array.isArray(listed.files)) fail(listed, dir)
 
-  const parts = new Map<string, Buffer[]>(listed.files.map(f => [f.path, []]))
-  for (const batch of planReads(listed.files)) {
-    const stdout = await exec(BUNDLE_READ_SCRIPT, { dir, items: batch })
-    if (stdout.startsWith('{"error"')) fail(JSON.parse(stdout.split('\n')[0]!), dir)
-    const lines = stdout.split('\n')
+  // The list comes from inside the container: validate it on the host before trusting any of it.
+  const all: Array<{ path: string; size: number }> = []
+  const seen = new Set<string>()
+  for (const e of listed.files as Array<{ path?: unknown; size?: unknown }>) {
+    if (!e || typeof e.path !== 'string' || !e.path || seen.has(e.path) || typeof e.size !== 'number' || !Number.isSafeInteger(e.size) || e.size < 0)
+      throw new ArtifactError(`${dir}: the sandbox returned a malformed file list`, 'bad_input')
+    seen.add(e.path); all.push({ path: e.path, size: e.size })
+  }
+  const skipped = all.filter(f => contentTypeFor(f.path) === null).map(f => f.path).sort()
+  const listing = all.filter(f => contentTypeFor(f.path) !== null)
+  if (listing.length > ARTIFACT_MAX_FILES) throw new ArtifactError(`more than ${ARTIFACT_MAX_FILES} files under ${dir}`, 'too_many')
+  let total = 0
+  for (const f of listing) {
+    total += f.size
+    if (f.size > ARTIFACT_MAX_FILE_BYTES || total > ARTIFACT_MAX_TOTAL_BYTES) fail({ error: 'too_large', path: f.path }, dir)
+  }
+  const sizes = new Map(listing.map(f => [f.path, f.size]))
+
+  const parts = new Map<string, Buffer[]>(listing.map(f => [f.path, []]))
+  for (const batch of planReads(listing, WIRE_MAX, WIRE)) {
+    const lines = (await exec(BUNDLE_READ_SCRIPT, { dir, items: batch })).split('\n')
+    const err = lines.find(l => l.startsWith('{"error"'))
+    if (err) fail(JSON.parse(err), dir)
     batch.forEach((piece, i) => {
-      const head = JSON.parse(lines[i * 2] ?? '{}') as { path?: string }
-      if (head.path !== piece.path) throw new Error(`${piece.path} changed while publishing`)
+      let head: { path?: string; size?: number } = {}
+      try { head = JSON.parse(lines[i * 2] ?? '{}') } catch { /* falls through to the mismatch below */ }
       const data = Buffer.from(lines[i * 2 + 1] ?? '', 'base64')
-      if (data.length !== piece.length) throw new Error(`${piece.path} changed while publishing`)
+      if (head.path !== piece.path || head.size !== sizes.get(piece.path) || data.length !== piece.length) throw new Error(`${piece.path} changed while publishing`)
       parts.get(piece.path)!.push(data)
     })
   }
 
   let masked = 0
-  const files = listed.files.map((f) => {
+  const files = listing.map((f) => {
     let content = Buffer.concat(parts.get(f.path)!)
     if (content.length !== f.size) throw new Error(`${f.path} changed while publishing`)
     if (isTextPath(f.path)) {
@@ -139,5 +172,5 @@ export async function readWorkspaceBundle(
     }
     return { path: f.path, content }
   })
-  return { files, masked }
+  return { files, masked, skipped }
 }

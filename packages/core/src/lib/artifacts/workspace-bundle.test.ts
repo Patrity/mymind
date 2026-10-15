@@ -15,7 +15,7 @@ vi.mock('../agent/runtime/execution-mode', () => ({ executionMode: () => mocks.m
 
 import { setWorkspaceRuntime } from '../sandbox/runtime'
 import { ArtifactError } from './limits'
-import { planReads, readWorkspaceBundle } from './workspace-bundle'
+import { planReads, readWorkspaceBundle, WALK_CAP } from './workspace-bundle'
 
 let tmp = ''
 const write = (p: string, c: string | Buffer) => { const f = join(tmp, p); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, c) }
@@ -90,26 +90,70 @@ describe('readWorkspaceBundle', () => {
     expect(e.message).toMatch(/more than 500 files/)
   })
   it('rejects a single 10 MB+ file, naming it', async () => {
-    write('dist/big.bin', ''); truncateSync(join(tmp, 'dist/big.bin'), 10 * 1024 * 1024 + 1)
+    write('dist/big.png', ''); truncateSync(join(tmp, 'dist/big.png'), 10 * 1024 * 1024 + 1)
     const e = await readWorkspaceBundle('ws', 'dist').catch(x => x)
     expect(e).toBeInstanceOf(ArtifactError); expect(e.code).toBe('too_large')
-    expect(e.message).toContain('big.bin')
+    expect(e.message).toContain('big.png')
   })
   it('rejects a total over 25 MB', async () => {
-    for (let i = 0; i < 3; i++) { write(`dist/b${i}.bin`, ''); truncateSync(join(tmp, `dist/b${i}.bin`), 9 * 1024 * 1024) }
+    for (let i = 0; i < 3; i++) { write(`dist/b${i}.png`, ''); truncateSync(join(tmp, `dist/b${i}.png`), 9 * 1024 * 1024) }
     const e = await readWorkspaceBundle('ws', 'dist').catch(x => x)
     expect(e).toBeInstanceOf(ArtifactError); expect(e.code).toBe('too_large')
   })
   it('reassembles a file larger than one chunk', async () => {
     const big = randomBytes(2 * 1024 * 1024)
-    write('dist/big.bin', big); write('dist/index.html', 'ok')
+    write('dist/big.png', big); write('dist/index.html', 'ok')
     const r = await readWorkspaceBundle('ws', 'dist')
-    expect(r.files.find(f => f.path === 'big.bin')!.content.equals(big)).toBe(true)
+    expect(r.files.find(f => f.path === 'big.png')!.content.equals(big)).toBe(true)
   })
   it('refuses in remote execution mode', async () => {
     mocks.mode = 'remote'
     await expect(readWorkspaceBundle('ws', 'dist')).rejects.toThrow(/only works inside Bridget's runs/)
   })
+})
+
+describe('hardening', () => {
+  const stub = (stdouts: string[]) => {
+    let i = 0
+    setWorkspaceRuntime({ manager: { exec: async () => ({ stdout: stdouts[i++] ?? '', stderr: '', exitCode: 0, truncated: false, timedOut: false, tainted: false }) } } as never)
+  }
+  it('rejects a forged list (huge size, duplicates, too many) before planning', async () => {
+    for (const files of [[{ path: 'a.html', size: 1e300 }], [{ path: 'a.html', size: 1 }, { path: 'a.html', size: 1 }], [{ path: '', size: 1 }], [{ path: 'a.html', size: -1 }]]) {
+      stub([JSON.stringify({ files })])
+      const e = await readWorkspaceBundle('ws', 'dist').catch(x => x)
+      expect(e).toBeInstanceOf(ArtifactError)
+    }
+    stub([JSON.stringify({ files: Array.from({ length: 501 }, (_, i) => ({ path: `f${i}.txt`, size: 1 })) })])
+    expect((await readWorkspaceBundle('ws', 'dist').catch(x => x)).code).toBe('too_many')
+  })
+  it('a header size that differs from the listing fails as changed', async () => {
+    stub([JSON.stringify({ files: [{ path: 'a.html', size: 2 }] }), `${JSON.stringify({ path: 'a.html', size: 3 })}\n${Buffer.from('ok').toString('base64')}\n`])
+    await expect(readWorkspaceBundle('ws', 'dist')).rejects.toThrow(/a\.html changed while publishing/)
+  })
+  it('surfaces a real error from a later item in a batch', async () => {
+    write('dist/a.html', 'a'); write('dist/b.html', 'b')
+    let n = 0
+    setWorkspaceRuntime({ manager: { exec: async (_i: string, script: string, o: { input?: string; capBytes: number }) => {
+      if (++n === 2) { rmSync(join(tmp, 'dist/b.html')) }
+      return run(script, o)
+    } } } as never)
+    const e = await readWorkspaceBundle('ws', 'dist').catch(x => x)
+    expect(e.code).toBe('not_found'); expect(e.message).toMatch(/b\.html is gone/)
+  })
+  it('skips unservable types and reports them; they do not count toward limits', async () => {
+    write('dist/index.html', 'ok'); write('dist/manifest.webmanifest', '{}'); write('dist/LICENSE', 'MIT')
+    write('dist/huge.gz', ''); truncateSync(join(tmp, 'dist/huge.gz'), 11 * 1024 * 1024)
+    const r = await readWorkspaceBundle('ws', 'dist')
+    expect(r.files.map(f => f.path)).toEqual(['index.html'])
+    expect(r.skipped).toEqual(['LICENSE', 'huge.gz', 'manifest.webmanifest'])
+  })
+  it('many small files with long non-ASCII names stay under the output cap', async () => {
+    const long = 'é'.repeat(100)
+    for (let i = 0; i < 300; i++) write(`dist/${long}${i}.txt`, 'x'.repeat(2000))
+    const r = await readWorkspaceBundle('ws', 'dist')
+    expect(r.files).toHaveLength(300)
+  })
+  it('walk cap constant is sane', () => expect(WALK_CAP).toBeGreaterThan(500))
 })
 
 describe('planReads', () => {
@@ -119,6 +163,11 @@ describe('planReads', () => {
       [{ path: 'a', offset: 0, length: 10 }, { path: 'b', offset: 0, length: 10 }],
       [{ path: 'b', offset: 10, length: 15 }, { path: 'c', offset: 0, length: 5 }]
     ])
+  })
+  it('budgets base64 + header overhead when asked', () => {
+    const b = planReads([{ path: 'a', size: 30 }], 100, { ratio: 4 / 3, perItem: () => 20 })
+    expect(b.every(batch => batch.reduce((n, p) => n + Math.ceil(p.length * 4 / 3) + 20, 0) <= 100)).toBe(true)
+    expect(b.flat().reduce((n, p) => n + p.length, 0)).toBe(30)
   })
   it('zero-byte files still get a piece', () => expect(planReads([{ path: 'e', size: 0 }], 20)).toEqual([[{ path: 'e', offset: 0, length: 0 }]]))
 })
