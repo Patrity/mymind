@@ -77,7 +77,10 @@ async function onSubmit(event: FormSubmitEvent<LoginForm>) {
     } else {
       // The auth guard parks the route the user was actually headed for in `?redirect=`.
       // Anything that isn't a plain same-origin path falls back to the default page.
-      await navigateTo(safeRedirect(route.query.redirect) ?? '/')
+      const target = safeRedirect(route.query.redirect) ?? '/'
+      // /artifact/** is a Nitro route, not an SPA page: the router would 404 it, so leave the SPA.
+      if (target.startsWith('/artifact/')) window.location.assign(target)
+      else await navigateTo(target)
     }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : (isRegister.value ? 'Sign up failed' : 'Sign in failed')
