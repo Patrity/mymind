@@ -50,6 +50,10 @@ function pgCode(e: unknown): string | undefined {
   return x?.code ?? x?.cause?.code
 }
 const isUniqueViolation = (e: unknown) => pgCode(e) === '23505'
+const violatedIndex = (e: unknown): string | undefined => {
+  const x = e as { constraint?: string; constraint_name?: string; cause?: { constraint?: string; constraint_name?: string } } | null
+  return x?.constraint ?? x?.constraint_name ?? x?.cause?.constraint ?? x?.cause?.constraint_name
+}
 
 type Tx = Parameters<Parameters<ReturnType<typeof useDb>['transaction']>[0]>[0]
 
@@ -162,7 +166,7 @@ export async function publishArtifact(input: PublishInput): Promise<PublishResul
   try { r = await attempt() } catch (e) {
     // Two first-publishes of one brand-new slug: the loser hits the live-slug unique index; retry
     // once so it takes the update path against the winner's row.
-    if (!isUniqueViolation(e)) throw e
+    if (!isUniqueViolation(e) || violatedIndex(e) !== 'artifacts_slug_live_uidx') throw e
     r = await attempt()
   }
   const artifact = await useDb().transaction(tx => loadDTO(tx, r.id))
