@@ -624,6 +624,13 @@
       "when": 1791888021695,
       "tag": "0088_eval_case_builtin_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1792102382462,
+      "tag": "0089_sleepy_goblin_queen",
+      "breakpoints": true
     }
   ]
 }
