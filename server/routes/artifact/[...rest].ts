@@ -40,14 +40,28 @@ export default defineEventHandler(async (event) => {
   }
 
   if (d.kind === 'not_found') return plain(404, 'Not found')
-  setResponseHeaders(event, artifactHeaders(d.kind === 'serve' ? d.isPublic : isPublicArtifact))
-  if (d.kind === 'forbidden') { setResponseStatus(event, 403); return 'Forbidden' }
-  if (d.kind === 'redirect') return sendRedirect(event, d.location, d.status)
+  if (d.kind === 'forbidden') return plain(403, 'Forbidden', isPublicArtifact)
+  if (d.kind === 'redirect') {
+    setResponseHeaders(event, artifactHeaders(isPublicArtifact))
+    return sendRedirect(event, d.location, d.status)
+  }
+  // Fetch the blob BEFORE setting any file headers: a missing blob must not leave the real file's
+  // etag/content-length/public cache on an error response.
+  let stream: Awaited<ReturnType<ReturnType<typeof storage>['get']>>['stream'] | null = null
+  const skipBody = method === 'HEAD' || getHeader(event, 'if-none-match') === `"${d.file.sha256}"`
+  if (!skipBody) {
+    try { stream = (await storage().get(d.file.key)).stream } catch (e) {
+      console.error('[artifact] blob fetch failed', e)
+      return plain(500, 'Internal Server Error')
+    }
+  }
+  setResponseHeaders(event, artifactHeaders(d.isPublic))
   setResponseHeader(event, 'content-type', d.file.contentType)
   setResponseHeader(event, 'content-length', d.file.size)
   setResponseHeader(event, 'etag', `"${d.file.sha256}"`)
-  if (getHeader(event, 'if-none-match') === `"${d.file.sha256}"`) { setResponseStatus(event, 304); return '' }
-  if (method === 'HEAD') return ''
-  const { stream } = await storage().get(d.file.key)
+  if (!stream) {
+    if (method !== 'HEAD') setResponseStatus(event, 304)
+    return ''
+  }
   return sendStream(event, stream)
 })

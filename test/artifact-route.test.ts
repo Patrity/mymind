@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net'
 import { createRequire } from 'node:module'
 import type * as H3 from 'h3'
 import { ARTIFACT_CSP } from '@mymind/core/lib/artifacts/serve'
+import { signViewToken } from '@mymind/core/lib/artifacts/token'
 
 // h3 is nitro's transitive dep (not a direct one): resolve the copy Nuxt's Nitro actually runs.
 const req0 = createRequire(import.meta.url)
@@ -143,16 +144,41 @@ describe('/artifact/** route', () => {
     csp(r)
   })
 
+  it('403s a valid token minted for a DIFFERENT artifact', async () => {
+    const tok = signViewToken('other-artifact')
+    const r = await req(`/artifact/demo/~${tok}/app.js`, { dest: 'script' })
+    expect(r.status).toBe(403)
+    expect(r.headers.get('content-type')).toContain('text/plain')
+    csp(r)
+  })
+
+  it('500s (CSP, no etag, not public) when the blob is missing', async () => {
+    findServable.mockResolvedValue(servable(true))
+    get.mockRejectedValue(new Error('Not found: k1'))
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const r = await req('/artifact/demo/')
+      expect(r.status).toBe(500)
+      expect(await r.text()).toBe('Internal Server Error')
+      csp(r)
+      expect(r.headers.get('etag')).toBeNull()
+      expect(r.headers.get('cache-control')).not.toContain('public')
+    } finally { spy.mockRestore() }
+  })
+
   it('answers a bare 500 (with CSP, no detail) when the signing secret is unreadable', async () => {
     vi.stubEnv('BETTER_AUTH_SECRET', '')
     vi.stubGlobal('useRuntimeConfig', () => ({}))
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const r = await req('/artifact/demo/~sometoken/app.js', { dest: 'script' })
-    expect(r.status).toBe(500)
-    expect(await r.text()).toBe('Internal Server Error')
-    csp(r)
-    spy.mockRestore()
-    vi.stubEnv('BETTER_AUTH_SECRET', 'test-secret-for-artifact-route')
-    vi.stubGlobal('useRuntimeConfig', () => ({ betterAuthSecret: 'test-secret-for-artifact-route' }))
+    try {
+      const r = await req('/artifact/demo/~sometoken/app.js', { dest: 'script' })
+      expect(r.status).toBe(500)
+      expect(await r.text()).toBe('Internal Server Error')
+      csp(r)
+    } finally {
+      spy.mockRestore()
+      vi.stubEnv('BETTER_AUTH_SECRET', 'test-secret-for-artifact-route')
+      vi.stubGlobal('useRuntimeConfig', () => ({ betterAuthSecret: 'test-secret-for-artifact-route' }))
+    }
   })
 })
