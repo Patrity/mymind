@@ -67,11 +67,8 @@ describe('publishArtifact', () => {
   it('concurrent publishes to one slug both succeed (Review Focus #4)', async () => {
     const slug = `${P}-race`
     const a = await publishArtifact({ slug, title: 'r', files: [html('0')] }); created.push(a.artifact.id)
-    const [x, y] = await Promise.all([
-      publishArtifact({ slug, files: [html('1')] }),
-      publishArtifact({ slug, files: [html('2')] })
-    ])
-    expect(new Set([x.version, y.version])).toEqual(new Set([2, 3]))
+    const rs = await Promise.all([1, 2, 3, 4, 5, 6].map(n => publishArtifact({ slug, files: [html(String(n))] })))
+    expect(rs.map(r => r.version).sort()).toEqual([2, 3, 4, 5, 6, 7])
   })
 
   it('concurrent first publishes of a new slug both succeed', async () => {
