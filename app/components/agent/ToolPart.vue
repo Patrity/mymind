@@ -4,6 +4,7 @@ import { approvalFor, headerState, type PendingApprovals } from '~/lib/agent/app
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/components/ai-elements/tool'
 import { toolTitle, isRunning } from '~/lib/agent/render'
 import { startedWorkstream } from '~/lib/workstreams/display'
+import { publishedArtifact } from '~/lib/artifacts/display'
 import { autoApprovalNote } from '~/lib/agent/judge-display'
 import type { OutputWarningDTO } from '@mymind/core/lib/agent/judge/types'
 
@@ -27,6 +28,8 @@ const running = computed(() => isRunning(props.part))
 const pendingPart = computed(() => (props.part.state === 'approval-requested' ? props.part : null))
 // A workstream this call started gets its compact card + link (cycle 81 spec §5.5).
 const started = computed(() => (envelope.value ? startedWorkstream(props.part.toolName, props.part.input, envelope.value.value) : null))
+// Cycle 86: a published/edited artifact gets an inline sandboxed preview card.
+const artifact = computed(() => (envelope.value ? publishedArtifact(props.part.toolName, envelope.value.value) : null))
 // Cycle 84: "⚖ auto-approved (0.94): <reason>" — the judge ran this call without Tony.
 const autoNote = computed(() => autoApprovalNote(envelope.value?.approval))
 const approvalDetails = computed(() => (
@@ -90,6 +93,10 @@ const approvalDetails = computed(() => (
     v-if="started"
     :id="started.id"
     :goal="started.goal"
+  />
+  <ArtifactsChatCard
+    v-if="artifact"
+    v-bind="artifact"
   />
   <AgentSubagentSteps
     v-if="steps?.length"

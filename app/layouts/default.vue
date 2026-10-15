@@ -98,6 +98,7 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Evals', icon: 'i-lucide-flask-conical', to: '/evals' },
   { label: 'Documents', icon: 'i-lucide-files', to: '/documents' },
   { label: 'Gallery', icon: 'i-lucide-image', to: '/gallery' },
+  { label: 'Artifacts', icon: 'i-lucide-app-window', to: '/artifacts' },
   { label: 'Tasks', icon: 'i-lucide-square-kanban', to: '/tasks' },
   { label: 'Projects', icon: 'i-lucide-folder-kanban', to: '/projects' },
   { label: 'Sessions', icon: 'i-lucide-history', to: '/sessions' },
