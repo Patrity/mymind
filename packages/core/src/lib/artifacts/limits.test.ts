@@ -27,6 +27,10 @@ describe('contentTypeFor', () => {
     expect(contentTypeFor('Makefile')).toBeNull()
     expect(contentTypeFor('x.exe')).toBeNull()
   })
+  it.each(['x.constructor', 'x.__proto__', 'x.toString', 'x.hasOwnProperty'])('returns null for prototype key %s', (p) => {
+    expect(contentTypeFor(p)).toBeNull()
+    expect(isTextPath(p)).toBe(false)
+  })
 })
 
 describe('isTextPath', () => {

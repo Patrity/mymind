@@ -22,7 +22,7 @@ const TYPES: Record<string, string> = {
 const TEXT_EXTS = new Set(['html', 'htm', 'js', 'mjs', 'css', 'json', 'map', 'txt', 'csv', 'svg'])
 
 const ext = (p: string) => { const m = /\.([a-z0-9]+)$/i.exec(p); return m ? m[1]!.toLowerCase() : '' }
-export function contentTypeFor(path: string): string | null { return TYPES[ext(path)] ?? null }
+export function contentTypeFor(path: string): string | null { const e = ext(path); return Object.hasOwn(TYPES, e) ? TYPES[e]! : null }
 export function isTextPath(path: string): boolean { return TEXT_EXTS.has(ext(path)) }
 
 export function normalizeArtifactPath(p: string): string {
