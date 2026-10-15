@@ -785,6 +785,25 @@
       "n_runs": 3,
       "max_steps": 8,
       "holdout": true
+    },
+    {
+      "slug": "artifact-publish-chart",
+      "prompt": "Make me a quick bar chart of these numbers as a page I can open: apples 3, pears 7, plums 5.",
+      "expected_actions": [
+        {
+          "tool": "publish_artifact"
+        }
+      ],
+      "forbidden_actions": [
+        {
+          "tool": "delete_artifact"
+        }
+      ],
+      "expected_content": [
+        "/artifact/"
+      ],
+      "n_runs": 3,
+      "max_steps": 10
     }
   ]
 }

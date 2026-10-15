@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><title>isolation</title><pre id="out"></pre>
+<script>
+const out = []; const log = (k, v) => { out.push(k + '=' + v); document.getElementById('out').textContent = out.join('\n') }
+try { log('cookie', JSON.stringify(document.cookie)) } catch (e) { log('cookie', 'threw') }
+try { localStorage.setItem('x', '1'); log('localStorage', 'ok') } catch (e) { log('localStorage', 'threw') }
+log('origin', String(self.origin))
+fetch('/api/tasks', { credentials: 'include' })
+  .then(r => log('api', 'status ' + r.status))
+  .catch(() => log('api', 'blocked'))
+fetch('./data/x.json')
+  .then(r => r.json())
+  .then(j => log('data', JSON.stringify(j)))
+  .catch(() => log('data', 'blocked'))
+</script>
+<script src="./app.js"></script>
