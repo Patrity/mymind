@@ -15,6 +15,16 @@ export default defineEventHandler(async (event) => {
     setResponseHeader(event, 'content-type', 'text/plain; charset=utf-8')
     return body
   }
+  if (method === 'OPTIONS') {
+    setResponseHeaders(event, {
+      ...artifactHeaders(false),
+      'access-control-allow-methods': 'GET, HEAD',
+      'access-control-allow-headers': '*',
+      'access-control-max-age': 600
+    })
+    setResponseStatus(event, 204)
+    return ''
+  }
   if (method !== 'GET' && method !== 'HEAD') return plain(404, 'Not found')
 
   let d: ReturnType<typeof decideArtifactRequest>

@@ -9,6 +9,9 @@ export function artifactHeaders(isPublic: boolean): Record<string, string> {
     'content-security-policy': ARTIFACT_CSP,
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
+    // Sandboxed pages have an opaque origin, so their fetch()/XHR are cross-origin. No credentials are
+    // ever allowed: private access is by path token, not cookie.
+    'access-control-allow-origin': '*',
     'cache-control': isPublic ? 'public, max-age=60' : 'private, no-store'
   }
 }

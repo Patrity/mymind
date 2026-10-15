@@ -120,11 +120,28 @@ describe('/artifact/** route', () => {
     csp(r)
   })
 
-  it('404s non-GET/HEAD methods with CSP', async () => {
+  it('404s other methods (POST) with CSP', async () => {
     findServable.mockResolvedValue(servable(true))
     const r = await req('/artifact/demo/', { method: 'POST' })
     expect(r.status).toBe(404)
     csp(r)
+  })
+
+  it('answers an OPTIONS preflight with 204, CORS and CSP', async () => {
+    const r = await req('/artifact/demo/data/x.json', { method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'GET' } })
+    expect(r.status).toBe(204)
+    expect(r.headers.get('access-control-allow-origin')).toBe('*')
+    expect(r.headers.get('access-control-allow-methods')).toBe('GET, HEAD')
+    expect(r.headers.get('access-control-allow-headers')).toBe('*')
+    expect(r.headers.get('access-control-max-age')).toBe('600')
+    expect(r.headers.get('access-control-allow-credentials')).toBeNull()
+    csp(r)
+  })
+
+  it('GET responses carry access-control-allow-origin *', async () => {
+    findServable.mockResolvedValue(servable(true))
+    const r = await req('/artifact/demo/', { headers: { origin: 'null' } })
+    expect(r.headers.get('access-control-allow-origin')).toBe('*')
   })
 
   it('HEAD returns headers and no body, without touching storage', async () => {

@@ -80,6 +80,8 @@ describe('artifactHeaders', () => {
       expect(h['content-security-policy']).toBe(ARTIFACT_CSP)
       expect(h['x-content-type-options']).toBe('nosniff')
       expect(h['referrer-policy']).toBe('no-referrer')
+      expect(h['access-control-allow-origin']).toBe('*')
+      expect(h['access-control-allow-credentials']).toBeUndefined()
     }
     expect(artifactHeaders(true)['cache-control']).toBe('public, max-age=60')
     expect(artifactHeaders(false)['cache-control']).toBe('private, no-store')
