@@ -1,9 +1,10 @@
 // DB-backed — harness pattern from test/channels-inbound.db.test.ts (.env + useRuntimeConfig stub).
 process.loadEnvFile('.env')
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { describe, it, expect, afterAll, vi } from 'vitest'
 
 const STORE = mkdtempSync(join(tmpdir(), 'artifacts-store-'))
@@ -53,6 +54,9 @@ describe('publishArtifact', () => {
     const b = await publishArtifact({ slug, merge: true, files: [{ path: 'data/x.json', content: '{"n":2}' }] })
     expect(b).toMatchObject({ newVersion: false, version: 1 })
     const s = await findServable(slug)
+    const sha = (t: string) => createHash('sha256').update(t).digest('hex')
+    expect(s!.manifest['data/x.json']).toMatchObject({ sha256: sha('{"n":2}'), size: 7 })
+    expect((await getArtifactDetail(a.artifact.id))!.versions).toHaveLength(1)
     expect(Object.keys(s!.manifest).sort()).toEqual(['data/x.json', 'index.html'])
   })
 
@@ -73,12 +77,24 @@ describe('publishArtifact', () => {
 
   it('concurrent first publishes of a new slug both succeed', async () => {
     const slug = `${P}-race-new`
-    const [x, y] = await Promise.all([
-      publishArtifact({ slug, title: 'n', files: [html('1')] }),
-      publishArtifact({ slug, title: 'n', files: [html('2')] })
-    ])
-    created.push(x.artifact.id)
-    expect(x.artifact.id).toBe(y.artifact.id)
+    const rs = await Promise.all([1, 2, 3, 4, 5, 6].map(n => publishArtifact({ slug, title: 'n', files: [html(String(n))] })))
+    created.push(rs[0]!.artifact.id)
+    expect(new Set(rs.map(r => r.artifact.id)).size).toBe(1)
+    expect(rs.filter(r => r.created)).toHaveLength(1)
+    for (const r of rs) expect(r.artifact.currentVersion).toBe(r.version) // DTO agrees with the returned version
+  })
+
+  it('rejects an oversized bundle before writing any blob', async () => {
+    const files = Array.from({ length: 501 }, (_, i) => ({ path: `f${i}.txt`, content: 'x' }))
+    const before = readdirSync(STORE, { recursive: true }).length
+    await expect(publishArtifact({ title: 't', slug: `${P}-many`, files })).rejects.toMatchObject({ code: 'too_many' })
+    expect(readdirSync(STORE, { recursive: true }).length).toBe(before)
+  })
+
+  it('resolveArtifactRef falls back to the slug for a uuid-shaped slug', async () => {
+    const slug = '12345678-1234-1234-1234-123456789abc'
+    const a = await publishArtifact({ slug, title: 'u', files: [html('u')] }); created.push(a.artifact.id)
+    expect(await resolveArtifactRef(slug)).toBe(a.artifact.id)
   })
 
   it('a deleted slug can be reused by a new artifact (Review Focus #5)', async () => {

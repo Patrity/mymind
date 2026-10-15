@@ -8,7 +8,7 @@ import { publishChange } from '../../utils/live-bus'
 import { coreConfig } from '../../config'
 import type { ArtifactDTO, ArtifactDetailDTO, ArtifactVersionDTO } from '../../shared/types/artifacts'
 import {
-  ARTIFACT_MAX_FILE_BYTES, ArtifactError, contentTypeFor, normalizeArtifactPath, slugFromTitle, slugProblem,
+  ARTIFACT_MAX_FILES, ARTIFACT_MAX_FILE_BYTES, ARTIFACT_MAX_TOTAL_BYTES, ArtifactError, contentTypeFor, normalizeArtifactPath, slugFromTitle, slugProblem,
   type Manifest
 } from './limits'
 import { manifestStats, mergeManifest, onlyDataChanged, validateManifest } from './manifest'
@@ -86,6 +86,10 @@ async function prepareBlobs(files: PublishInput['files']): Promise<Manifest> {
     if (buf.length > ARTIFACT_MAX_FILE_BYTES) throw new ArtifactError(`${path}: ${buf.length} bytes exceeds the 10 MB per-file limit`, 'too_large')
     prepared.push({ path, buf, contentType })
   }
+  // Cheap limit pre-check so an oversized publish writes nothing (merge mode is re-validated after merging).
+  if (prepared.length > ARTIFACT_MAX_FILES) throw new ArtifactError(`bundle has ${prepared.length} files; the limit is ${ARTIFACT_MAX_FILES}`, 'too_many')
+  const sum = prepared.reduce((n, p) => n + p.buf.length, 0)
+  if (sum > ARTIFACT_MAX_TOTAL_BYTES) throw new ArtifactError(`bundle is ${sum} bytes; the limit is 25 MB`, 'too_large')
   // Blobs go to storage BEFORE the DB transaction so the row lock is never held across I/O.
   const next: Manifest = {}
   for (const p of prepared) {
@@ -107,7 +111,7 @@ export async function publishArtifact(input: PublishInput): Promise<PublishResul
   }
   const next = await prepareBlobs(input.files)
 
-  const attempt = () => useDb().transaction(async (tx) => {
+  const run = async (tx: Tx) => {
     const live = input.slug
       ? (await tx.select().from(artifacts).where(and(eq(artifacts.slug, input.slug), isNull(artifacts.deletedAt))).for('update'))[0]
       : undefined
@@ -160,18 +164,23 @@ export async function publishArtifact(input: PublishInput): Promise<PublishResul
     }).returning()
     await tx.update(artifacts).set({ ...meta, currentVersionId: ver!.id }).where(eq(artifacts.id, live.id))
     return { id: live.id, version, created: false, newVersion: true, previousVersionId: live.currentVersionId }
+  }
+  // The DTO is loaded inside the same transaction so artifact.currentVersion always agrees with `version`.
+  const attempt = () => useDb().transaction(async (tx) => {
+    const res = await run(tx)
+    return { ...res, artifact: await loadDTO(tx, res.id) }
   })
 
-  let r: Awaited<ReturnType<typeof attempt>>
-  try { r = await attempt() } catch (e) {
-    // Two first-publishes of one brand-new slug: the loser hits the live-slug unique index; retry
-    // once so it takes the update path against the winner's row.
-    if (!isUniqueViolation(e) || violatedIndex(e) !== 'artifacts_slug_live_uidx') throw e
-    r = await attempt()
+  let r: Awaited<ReturnType<typeof attempt>> | undefined
+  for (let i = 1; !r; i++) {
+    try { r = await attempt() } catch (e) {
+      // Concurrent first-publishes of one brand-new slug: the loser hits the live-slug unique index;
+      // retry (bounded) so it takes the update path against the winner's row.
+      if (i >= 3 || !isUniqueViolation(e) || violatedIndex(e) !== 'artifacts_slug_live_uidx') throw e
+    }
   }
-  const artifact = await useDb().transaction(tx => loadDTO(tx, r.id))
   publishChange({ resource: 'artifact', action: r.created ? 'created' : 'updated', id: r.id })
-  return { artifact, version: r.version, created: r.created, newVersion: r.newVersion, previousVersionId: r.previousVersionId }
+  return { artifact: r.artifact, version: r.version, created: r.created, newVersion: r.newVersion, previousVersionId: r.previousVersionId }
 }
 
 export async function editArtifact(id: string, patch: {
@@ -253,8 +262,12 @@ export async function findServable(slug: string) {
 }
 
 export async function resolveArtifactRef(ref: string): Promise<string | null> {
-  const [row] = await useDb().select({ id: artifacts.id }).from(artifacts)
-    .where(and(UUID_RE.test(ref) ? eq(artifacts.id, ref) : eq(artifacts.slug, ref), isNull(artifacts.deletedAt)))
+  const db = useDb()
+  if (UUID_RE.test(ref)) {
+    const [byId] = await db.select({ id: artifacts.id }).from(artifacts).where(and(eq(artifacts.id, ref), isNull(artifacts.deletedAt)))
+    if (byId) return byId.id
+  }
+  const [row] = await db.select({ id: artifacts.id }).from(artifacts).where(and(eq(artifacts.slug, ref), isNull(artifacts.deletedAt)))
   return row?.id ?? null
 }
 
