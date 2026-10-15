@@ -40,7 +40,7 @@ export async function replayAgentAction(
     // an interactive one, and the caller has no other way to get the token).
     const exec = await withSpan(
       { kind: 'tool', name: t.name, request: parsed.data as Record<string, unknown> },
-      () => t.handler(parsed.data as Record<string, unknown>, { signal: AbortSignal.timeout(60_000) })
+      () => t.handler(parsed.data as Record<string, unknown>, { signal: AbortSignal.timeout(60_000), replay: true })
     )
     const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
     publishActivity({ type: 'tool', name: t.name, summary: exec.summary, undoToken })

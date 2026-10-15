@@ -12,6 +12,8 @@ vi.mock('../../sandbox/runtime', async (orig) => ({ ...(await orig<object>()), w
 vi.mock('../../../db', () => ({
   useDb: () => ({ select: () => ({ from: () => ({ where: () => ({ limit: async () => (run.conversationId ? [{ c: run.conversationId }] : []) }) }) }) })
 }))
+const store = vi.hoisted(() => ({ get: vi.fn() }))
+vi.mock('../../sandbox/store', () => ({ dbWorkspaceStore: store }))
 vi.mock('../../../services/projects', () => ({ getProject: async (s: string) => (s === 'mymind' ? { id: 'proj-1' } : null) }))
 
 import { artifactTools, artifactDangerousTools, publishArtifactTool, editArtifactTool, deleteArtifactTool } from './artifacts'
@@ -239,9 +241,26 @@ describe('fix round 1', () => {
       expect(bundle.readWorkspaceBundle.mock.calls[0]![0]).toBe('ws-1')
       expect(svc.publishArtifact.mock.calls[0]![0].conversationId).toBe('conv-1')
     })
-    it('a replay (no runId) uses the pinned ids', async () => {
+    it('MCP-shaped ctx (no runId, no replay) ignores a supplied workspaceId and refuses', async () => {
+      const ex = await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', workspaceId: 'someone-elses' }, ctx({ runId: undefined }))
+      expect(ex.result).toMatchObject({ ok: false })
+      expect(bundle.readWorkspaceBundle).not.toHaveBeenCalled()
+      expect(store.get).not.toHaveBeenCalled()
+    })
+    it('MCP html publish ignores a supplied conversationId', async () => {
+      await publishArtifactTool.handler({ title: 'T', html: 'x', conversationId: 'forged' }, ctx({ runId: undefined }))
+      expect(svc.publishArtifact.mock.calls[0]![0].conversationId).toBeNull()
+    })
+    it('a replay with a deleted workspace is a clean ok:false', async () => {
+      store.get.mockResolvedValue({ id: 'pinned-ws', deletedAt: new Date() })
+      const ex = await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', workspaceId: 'pinned-ws' }, ctx({ runId: undefined, replay: true }))
+      expect(ex.result).toMatchObject({ ok: false })
+      expect(bundle.readWorkspaceBundle).not.toHaveBeenCalled()
+    })
+    it('a replay uses the pinned ids', async () => {
+      store.get.mockResolvedValue({ id: 'pinned-ws', deletedAt: null })
       svc.publishArtifact.mockResolvedValue(published())
-      await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', workspaceId: 'pinned-ws', conversationId: 'pinned-conv' }, ctx({ runId: undefined }))
+      await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', workspaceId: 'pinned-ws', conversationId: 'pinned-conv' }, ctx({ runId: undefined, replay: true }))
       expect(bundle.readWorkspaceBundle.mock.calls[0]![0]).toBe('pinned-ws')
       expect(svc.publishArtifact.mock.calls[0]![0].conversationId).toBe('pinned-conv')
     })
@@ -256,6 +275,7 @@ describe('fix round 1', () => {
       await ex.undo!()
       expect(svc.setCurrentVersion).toHaveBeenCalledWith('a1', 'v1')
       expect(svc.editArtifact).toHaveBeenCalledWith('a1', { title: 'Dash', description: 'old', isPublic: false, projectId: null })
+      expect(svc.editArtifact.mock.invocationCallOrder[0]).toBeLessThan(svc.setCurrentVersion.mock.invocationCallOrder[0]!)
     })
     it('metadata-only change on an unchanged version: has undo, honest summary', async () => {
       svc.resolveArtifactRef.mockResolvedValue('a1')

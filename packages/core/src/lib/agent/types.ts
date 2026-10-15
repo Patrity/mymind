@@ -48,6 +48,10 @@ export type RequestApproval = (req: ApprovalRequest, opts?: ApprovalOptions) => 
 
 /** Per-call context handed to every tool handler. */
 export interface ToolContext {
+  /** Set ONLY by runtime/replay.ts when it re-runs an approved headless proposal. A tool may then honour
+   *  the ids its `proposalArgs` pinned (there is no run to derive them from). Absent on live runs and on MCP,
+   *  where pinned ids in the args are model/caller-supplied and must be ignored. */
+  replay?: true
   signal: AbortSignal // aborts when the caller hangs up / barge-in
   // Present only on the interactive (WS) path; a dangerous tool with no channel auto-denies.
   requestApproval?: RequestApproval

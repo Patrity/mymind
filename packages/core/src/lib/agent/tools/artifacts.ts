@@ -14,6 +14,7 @@ import { rootAbsoluteRefs } from '../../artifacts/html-warnings'
 import { ArtifactError, normalizeArtifactPath } from '../../artifacts/limits'
 import { workspaceRuntime } from '../../sandbox/runtime'
 import { runNetworkMode } from './workspace'
+import { dbWorkspaceStore } from '../../sandbox/store'
 import type { AgentTool, ToolContext, ToolExecution } from '../types'
 
 const fail = (error: string, summary = 'artifact: refused'): ToolExecution => ({ result: { ok: false, error }, summary })
@@ -81,12 +82,14 @@ export const publishArtifactTool: AgentTool = {
     if (sources.length !== 1) return fail('pass exactly one of html, files or workspace_path', 'publish_artifact: bad arguments')
     try {
       // Snapshot of an existing target (publishing to a known slug): the taint check and the undo both use it.
+      // By SLUG only (like the service) — resolveArtifactRef would also match an id.
       const existingId = typeof a.slug === 'string' ? await resolveArtifactRef(a.slug) : null
-      const before = existingId ? await getArtifactDetail(existingId) : null
+      const found = existingId ? await getArtifactDetail(existingId) : null
+      const before = found && found.slug === a.slug ? found : null
       if (before && refusesPublicTarget(ctx, before.isPublic, a.public)) return fail(PUBLIC_TARGET_REFUSAL, 'publish_artifact: public target in a tainted run')
       const projectId = await projectIdFor(a.project as string | undefined)
       // A live run resolves from its run (model-supplied ids are ignored); a replay (no run) uses the pinned ones.
-      const conversationId = ctx.runId ? await conversationIdFor(ctx.runId) : (typeof a.conversationId === 'string' ? a.conversationId : null)
+      const conversationId = ctx.runId ? await conversationIdFor(ctx.runId) : (ctx.replay && typeof a.conversationId === 'string' ? a.conversationId : null)
       let files: PublishInput['files']
       let masked = 0
       let skipped: string[] = []
@@ -95,8 +98,11 @@ export const publishArtifactTool: AgentTool = {
       else {
         let workspaceId: string
         if (ctx.runId) workspaceId = (await workspaceRuntime().resolve(ctx.runId)).workspaceId
-        else if (typeof a.workspaceId === 'string') workspaceId = a.workspaceId
-        else return fail('workspace_path only works inside Bridget\'s own runs (no workspace here) — pass html or files instead', 'publish_artifact: no workspace')
+        else if (ctx.replay && typeof a.workspaceId === 'string') {
+          const row = await dbWorkspaceStore.get(a.workspaceId)
+          if (!row || row.deletedAt) return fail('the workspace this publish was proposed from no longer exists', 'publish_artifact: workspace gone')
+          workspaceId = row.id
+        } else return fail('workspace_path only works inside Bridget\'s own runs (no workspace here) — pass html or files instead', 'publish_artifact: no workspace')
         const mode = ctx.isTainted ? runNetworkMode(ctx) : 'clean'
         let b: Awaited<ReturnType<typeof readWorkspaceBundle>>
         try {
@@ -144,8 +150,9 @@ export const publishArtifactTool: AgentTool = {
       if (r.created) exec.undo = async () => { await deleteArtifact(art.id); return { ok: true } }
       else if (r.newVersion || metaChanged) {
         exec.undo = async () => {
-          if (r.newVersion) await setCurrentVersion(art.id, r.previousVersionId)
+          // Metadata first: a previously-private version must never be briefly current on a still-public artifact.
           if (metaChanged && before) await editArtifact(art.id, { title: before.title, description: before.description, isPublic: before.isPublic, projectId: before.projectId })
+          if (r.newVersion) await setCurrentVersion(art.id, r.previousVersionId)
           return { ok: true }
         }
       }
