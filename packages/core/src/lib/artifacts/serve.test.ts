@@ -54,6 +54,22 @@ describe('decideArtifactRequest', () => {
   it('private + invalid token, subresource → forbidden', () => {
     expect(decideArtifactRequest(input({ found: found(false), tokenStatus: 'invalid', isNavigation: false, pathname: '/artifact/demo/~BAD/a.js' }))).toEqual({ kind: 'forbidden' })
   })
+  it('private + invalid token, navigation, no session → login redirect', () => {
+    expect(decideArtifactRequest(input({ found: found(false), tokenStatus: 'invalid', pathname: '/artifact/demo/~BAD/', hasSession: false })))
+      .toEqual({ kind: 'redirect', status: 302, location: '/login?redirect=%2Fartifact%2Fdemo%2F' })
+  })
+  it('private + valid token, subresource → serve', () => {
+    expect(decideArtifactRequest(input({ found: found(false), tokenStatus: 'ok', isNavigation: false, pathname: '/artifact/demo/~TOK/my%20chart.png' })))
+      .toMatchObject({ kind: 'serve', path: 'my chart.png', isPublic: false })
+  })
+  it('private + navigation + no slash → 301 (the redirect is reached only for navigations)', () => {
+    expect(decideArtifactRequest(input({ found: found(false), pathname: '/artifact/demo' })))
+      .toEqual({ kind: 'redirect', status: 301, location: '/artifact/demo/' })
+  })
+  it('private + non-navigation + no slash → not_found (same as missing, no 301 leak)', () => {
+    expect(decideArtifactRequest(input({ found: found(false), pathname: '/artifact/demo', isNavigation: false }))).toEqual({ kind: 'not_found' })
+    expect(decideArtifactRequest(input({ found: null, pathname: '/artifact/demo', isNavigation: false }))).toEqual({ kind: 'not_found' })
+  })
 })
 
 describe('artifactHeaders', () => {

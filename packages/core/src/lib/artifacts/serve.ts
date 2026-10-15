@@ -49,8 +49,13 @@ const encodePath = (p: string) => p.split('/').map(encodeURIComponent).join('/')
 export function decideArtifactRequest(i: DecideInput): ServeDecision {
   const u = parseArtifactUrl(i.pathname)
   if (!u || !i.found) return { kind: 'not_found' }
-  if (!u.trailingSlash) return { kind: 'redirect', status: 301, location: `/artifact/${u.slug}/${i.search}` }
   const a = i.found
+  // Spec §5: a private artifact must look exactly like a missing one to anything that isn't a navigation.
+  // A slash-less URL has no token segment, so a subresource here can never be authorised.
+  if (!u.trailingSlash) {
+    if (!a.isPublic && !i.isNavigation) return { kind: 'not_found' }
+    return { kind: 'redirect', status: 301, location: `/artifact/${u.slug}/${i.search}` }
+  }
   const serve = (): ServeDecision => {
     const hit = lookupPath(a.manifest, a.entry, a.spaFallback, u.path)
     return hit ? { kind: 'serve', path: hit.path, file: hit.file, isPublic: a.isPublic } : { kind: 'not_found' }

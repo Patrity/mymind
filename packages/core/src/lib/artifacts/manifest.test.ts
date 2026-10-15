@@ -46,4 +46,28 @@ describe('lookupPath', () => {
   it('miss with fallback, no extension → entry', () => expect(lookupPath(base, 'index.html', true, 'settings/profile')?.path).toBe('index.html'))
   it('miss with fallback, has extension → null', () => expect(lookupPath(base, 'index.html', true, 'missing.js')).toBeNull())
   it('traversal-looking path → null, never throws', () => expect(lookupPath(base, 'index.html', true, '../secret')).toBeNull())
+  for (const k of ['constructor', '__proto__', 'toString']) {
+    it(`inherited key "${k}" → null with SPA off`, () => expect(lookupPath(base, 'index.html', false, k)).toBeNull())
+    it(`inherited key "${k}" → entry with SPA on (no prototype hit)`, () => {
+      expect(lookupPath(base, 'index.html', true, k)?.path).toBe('index.html')
+      expect(lookupPath(base, 'index.html', true, k)?.file).toBe(base['index.html'])
+    })
+  }
+})
+
+describe('validateManifest error codes', () => {
+  const codeOf = (fn: () => void) => { try { fn() } catch (e) { return e instanceof ArtifactError ? e.code : e } return 'no-throw' }
+  it('too many → too_many', () => {
+    const m: Manifest = Object.fromEntries(Array.from({ length: 501 }, (_, i) => [`f${i}.js`, f(String(i), 1)]))
+    m['index.html'] = f('i')
+    expect(codeOf(() => validateManifest(m, 'index.html'))).toBe('too_many')
+  })
+  it('too large → too_large', () => {
+    const m: Manifest = { 'index.html': f('i'), 'a.png': f('p', 9 * 1024 * 1024), 'b.png': f('q', 9 * 1024 * 1024), 'c.png': f('r', 9 * 1024 * 1024) }
+    expect(codeOf(() => validateManifest(m, 'index.html'))).toBe('too_large')
+  })
+  it('missing entry → no_entry', () => expect(codeOf(() => validateManifest(base, 'main.html'))).toBe('no_entry'))
+  for (const k of ['constructor', '__proto__', 'toString']) {
+    it(`inherited entry "${k}" → no_entry`, () => expect(codeOf(() => validateManifest(base, k))).toBe('no_entry'))
+  }
 })
