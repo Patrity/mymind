@@ -33,7 +33,8 @@ export const APPEND_TOOLS: ReadonlySet<string> = new Set([
   // coordinator (cycle 83, spec §4: headless "run"): they act only on the workstream's OWN children
   // (budget-bounded, from inside a workstream — never a chat/job run), and export_to_coordinator only
   // copies between its own sandboxes.
-  // artifacts (cycle 86): a private page is Bridget's own output (undoable); a PUBLIC one is proposed via proposeWhen
+  // artifacts (cycle 86): a private page is Bridget's own output (undoable); a PUBLIC html/files one is proposed via
+  // proposeWhen (a public workspace_path one is refused — R10). Both are `outbound` (R9): tainted → auto-denied.
   'publish_artifact', 'edit_artifact',
   'spawn_workstreams', 'steer_workstream', 'answer_child', 'cancel_workstreams', 'export_to_coordinator'
 ])

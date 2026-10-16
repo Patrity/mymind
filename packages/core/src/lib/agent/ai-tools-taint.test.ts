@@ -171,7 +171,7 @@ describe('taints / outbound flags on the real tools (79b c)', () => {
   const all = [...new Map([...agentTools, ...gmailTools, ...googleDangerousTools, ...calendarTools, ...calendarDangerousTools, ...bridgetProfile.tools, researchSubagent, brainSubagent].map(t => [t.name, t])).values()]
   const byName = (n: string) => all.find(t => t.name === n)
   const TAINTS = ['calendar_guest_event', 'calendar_list_events', 'calendar_rsvp', 'calendar_write_event', 'contacts_search', 'gmail_draft', 'gmail_read_thread', 'gmail_search']
-  const OUTBOUND = ['answer_workstream', 'create_job', 'create_skill', 'edit_job', 'edit_skill', 'research_web', 'run_job', 'schedule_wake', 'start_workstream', 'web_fetch', 'web_search']
+  const OUTBOUND = ['answer_workstream', 'create_job', 'create_skill', 'edit_job', 'edit_skill', 'publish_artifact', 'research_web', 'run_job', 'schedule_wake', 'start_workstream', 'web_fetch', 'web_search']
   it.each(TAINTS)('%s taints', (n) => {
     expect(byName(n)?.taints).toBe(true)
   })

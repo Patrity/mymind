@@ -14,20 +14,43 @@ import { rootAbsoluteRefs } from '../../artifacts/html-warnings'
 import { ArtifactError, normalizeArtifactPath } from '../../artifacts/limits'
 import { workspaceRuntime } from '../../sandbox/runtime'
 import { runNetworkMode } from './workspace'
-import { dbWorkspaceStore } from '../../sandbox/store'
 import type { AgentTool, ToolContext, ToolExecution } from '../types'
 
 const fail = (error: string, summary = 'artifact: refused'): ToolExecution => ({ result: { ok: false, error }, summary })
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-/** A tool call that makes an artifact public is the one outbound act here (it puts content on the internet). */
-const PUBLIC_TARGET_REFUSAL = 'this artifact is public — pass public: true to publish to it (Tony must approve that in this run)'
-/** Tainted run + an already-public target + no explicit public flag: writing would put content on the internet
- *  without the outboundWhen gate firing (it only sees args). public:false (making it private) is safe. */
-const refusesPublicTarget = (ctx: ToolContext, targetPublic: boolean, arg: unknown) =>
-  ctx.isTainted?.() === true && targetPublic && arg !== true && arg !== false
-
 const isPublicCall = (a: Record<string, unknown>) => a.public === true
+
+/** R10: the web process replays approved proposals in 'remote' execution mode, where the workspace
+ *  can't be read — so a headless (no approval channel) public workspace publish is never proposed. */
+const HEADLESS_PUBLIC_WORKSPACE = 'publish it privately first (omit public), then ask to make it public with edit_artifact — Tony approves that'
+
+const ENTRY_HEAD_CHARS = 2000
+const DETAIL_FILES = 20
+
+/** R9: the approval card for a publish in a tainted run — what would render the moment the chat card mounts. */
+async function publishDetail(a: Record<string, unknown>): Promise<string> {
+  const lines = ['Publishing renders this page in your chat as soon as it runs — its scripts can contact any site.']
+  let target = 'new artifact'
+  if (typeof a.slug === 'string') {
+    const id = await resolveArtifactRef(a.slug)
+    const d = id ? await getArtifactDetail(id) : null
+    target = d && d.slug === a.slug
+      ? `/artifact/${d.slug}/ (exists, ${d.isPublic ? 'PUBLIC' : 'private'})`
+      : `/artifact/${a.slug}/ (new artifact)`
+  }
+  lines.push(`target: ${target}`, `visibility after: ${a.public === true ? 'PUBLIC' : a.public === false ? 'private' : 'unchanged (new: private)'}`)
+  const files = a.files && typeof a.files === 'object' ? Object.keys(a.files as Record<string, string>) : []
+  const source = a.html !== undefined ? 'html' : files.length ? 'files' : a.workspace_path !== undefined ? `workspace_path ${String(a.workspace_path)}` : 'none'
+  lines.push(`source: ${source}`)
+  if (files.length) lines.push(`files (${files.length}): ${files.slice(0, DETAIL_FILES).join(', ')}${files.length > DETAIL_FILES ? ', …' : ''}`)
+  const entry = (a.entry as string | undefined) ?? 'index.html'
+  const html = typeof a.html === 'string' ? a.html : files.length ? (a.files as Record<string, string>)[entry] ?? (a.files as Record<string, string>)[`./${entry}`] : undefined
+  if (typeof html === 'string') {
+    lines.push('', `entry HTML (first ${Math.min(html.length, ENTRY_HEAD_CHARS)} of ${html.length} chars):`, html.slice(0, ENTRY_HEAD_CHARS))
+  }
+  return lines.join('\n')
+}
 
 async function conversationIdFor(runId: string | undefined): Promise<string | null> {
   if (!runId) return null
@@ -51,9 +74,13 @@ export const publishArtifactTool: AgentTool = {
   name: 'publish_artifact',
   toolset: 'artifacts',
   kind: 'create',
-  outboundWhen: isPublicCall,
-  // Headless: a background run may not put content on the internet unattended — that call is proposed.
-  proposeWhen: isPublicCall,
+  // R9: EVERY publish is outbound — its model-written HTML/JS runs the moment the chat card's iframe
+  // mounts (a beacon/navigation is a zero-click exfil), so in a tainted run Tony approves each one
+  // (headless: auto-denied). Untainted, it runs freely.
+  outbound: true,
+  outboundDetail: publishDetail,
+  // Headless: a public publish is proposed — except a workspace_path one (R10: refused in the handler).
+  proposeWhen: a => a.public === true && a.workspace_path === undefined,
   description: 'Publish a web page or built webapp as an artifact Tony can open at https://brain.costanzoclan.com/artifact/<slug>/ (also shown in chat). Use it when a chart, dashboard, demo or visual preview beats text. Always include the artifact URL in your reply to Tony. Pass `html` for one self-contained page, or build in your workspace first (`pnpm build`; Vite needs `base: \'./\'`) and pass `workspace_path` = the output dir (e.g. `dist`). Use relative asset paths. Pages run sandboxed: no localStorage/cookies, no MyMind API; CDN scripts are fine. Keep refreshable data in `data/*.json`, fetched relatively. To update data, pass `files: {\'data/x.json\': \'<new json>\'}` with `merge: true` (or `workspace_path` of the rebuilt dir); that updates in place. Republishing to the same slug otherwise makes a new version. Private unless `public: true`. Only pass `project` if Tony named one or you looked it up.',
   schema: {
     title: z.string().min(1).max(200).optional().describe('Required when creating'),
@@ -67,31 +94,28 @@ export const publishArtifactTool: AgentTool = {
     public: z.boolean().optional().describe('Make the artifact reachable without login'),
     project: z.string().optional().describe('Project slug'),
     merge: z.boolean().optional().describe('Merge `files` into the current version; data-only changes update in place'),
-    workspaceId: z.string().uuid().optional().describe('Set automatically — leave it out'),
     conversationId: z.string().uuid().optional().describe('Set automatically — leave it out')
   },
-  // A headless proposal stores the workspace/conversation it was proposed from; the replay (no run)
-  // reads those, never whatever `home` resolves to (mirrors export_to_document).
-  proposalArgs: async (args, ctx) => ({
-    ...args,
-    ...(args.workspace_path !== undefined ? { workspaceId: (await workspaceRuntime().resolve(ctx.runId)).workspaceId } : {}),
-    conversationId: await conversationIdFor(ctx.runId)
-  }),
+  // A headless proposal stores the conversation it was proposed from; the replay (no run) reads it.
+  // (Proposals never carry workspace_path — R10.)
+  proposalArgs: async (args, ctx) => ({ ...args, conversationId: await conversationIdFor(ctx.runId) }),
   handler: async (a, ctx: ToolContext) => {
     // `files: {}` is what models send when they mean "no files" — it counts as absent.
     const hasFiles = a.files !== undefined && Object.keys(a.files as Record<string, string>).length > 0
     const sources = (['html', 'files', 'workspace_path'] as const).filter(k => (k === 'files' ? hasFiles : a[k] !== undefined))
     if (sources.length === 0) return fail('nothing to publish — pass html, files with at least one entry, or workspace_path', 'publish_artifact: nothing to publish')
     if (sources.length !== 1) return fail('pass exactly one of html, files or workspace_path', 'publish_artifact: bad arguments')
+    // R10: a live run with no approval channel is headless.
+    if (a.workspace_path !== undefined && a.public === true && ctx.runId && !ctx.requestApproval)
+      return fail(HEADLESS_PUBLIC_WORKSPACE, 'publish_artifact: headless public workspace publish')
     try {
-      // Snapshot of an existing target (publishing to a known slug): the taint check and the undo both use it.
+      // Snapshot of an existing target (publishing to a known slug) for the undo.
       // By SLUG only (like the service) — resolveArtifactRef would also match an id.
       const existingId = typeof a.slug === 'string' ? await resolveArtifactRef(a.slug) : null
       const found = existingId ? await getArtifactDetail(existingId) : null
       const before = found && found.slug === a.slug ? found : null
-      if (before && refusesPublicTarget(ctx, before.isPublic, a.public)) return fail(PUBLIC_TARGET_REFUSAL, 'publish_artifact: public target in a tainted run')
       const projectId = await projectIdFor(a.project as string | undefined)
-      // A live run resolves from its run (model-supplied ids are ignored); a replay (no run) uses the pinned ones.
+      // A live run resolves from its run (model-supplied ids are ignored); a replay (no run) uses the pinned one.
       const conversationId = ctx.runId ? await conversationIdFor(ctx.runId) : (ctx.replay && typeof a.conversationId === 'string' ? a.conversationId : null)
       let files: PublishInput['files']
       let masked = 0
@@ -99,13 +123,8 @@ export const publishArtifactTool: AgentTool = {
       if (a.html !== undefined) files = [{ path: 'index.html', content: a.html as string }]
       else if (hasFiles) files = Object.entries(a.files as Record<string, string>).map(([path, content]) => ({ path: normalizeArtifactPath(path), content }))
       else {
-        let workspaceId: string
-        if (ctx.runId) workspaceId = (await workspaceRuntime().resolve(ctx.runId)).workspaceId
-        else if (ctx.replay && typeof a.workspaceId === 'string') {
-          const row = await dbWorkspaceStore.get(a.workspaceId)
-          if (!row || row.deletedAt) return fail('the workspace this publish was proposed from no longer exists', 'publish_artifact: workspace gone')
-          workspaceId = row.id
-        } else return fail('workspace_path only works inside Bridget\'s own runs (no workspace here) — pass html or files instead', 'publish_artifact: no workspace')
+        if (!ctx.runId) return fail('workspace_path only works inside Bridget\'s own runs (no workspace here) — pass html or files instead', 'publish_artifact: no workspace')
+        const workspaceId = (await workspaceRuntime().resolve(ctx.runId)).workspaceId
         const mode = ctx.isTainted ? runNetworkMode(ctx) : 'clean'
         let b: Awaited<ReturnType<typeof readWorkspaceBundle>>
         try {
@@ -171,7 +190,13 @@ export const editArtifactTool: AgentTool = {
   name: 'edit_artifact',
   toolset: 'artifacts',
   kind: 'create',
-  outboundWhen: isPublicCall,
+  // R9: making it public, or rolling back to another version (other content renders), is outbound.
+  outboundWhen: a => a.public === true || a.rollback_to !== undefined,
+  outboundDetail: async (a) => {
+    const id = await resolveArtifactRef(a.artifact as string)
+    const d = id ? await getArtifactDetail(id) : null
+    return d ? `target: /artifact/${d.slug}/ (${d.isPublic ? 'PUBLIC' : 'private'}, current v${d.currentVersion})` : undefined
+  },
   proposeWhen: isPublicCall,
   description: 'Change an artifact\'s title, description, slug, visibility (`public`), project, or roll its current version back to an earlier one (`rollback_to`: a version number).',
   schema: {
@@ -183,13 +208,12 @@ export const editArtifactTool: AgentTool = {
     project: z.string().nullable().optional().describe('Project slug; null clears it'),
     rollback_to: z.number().int().positive().optional().describe('Version number to make current')
   },
-  handler: async (a, ctx: ToolContext) => {
+  handler: async (a) => {
     try {
       const id = await resolveArtifactRef(a.artifact as string)
       if (!id) return fail(`artifact "${a.artifact}" not found`, 'edit_artifact: not found')
       const before = await getArtifactDetail(id)
       if (!before) return fail(`artifact "${a.artifact}" not found`, 'edit_artifact: not found')
-      if (refusesPublicTarget(ctx, before.isPublic, a.public)) return fail(PUBLIC_TARGET_REFUSAL, 'edit_artifact: public target in a tainted run')
       const projectId = a.project === null ? null : await projectIdFor(a.project as string | undefined)
       const dto = await editArtifact(id, {
         ...(a.title !== undefined ? { title: a.title as string } : {}),

