@@ -99,10 +99,12 @@ describe('publishArtifact', () => {
     expect(readdirSync(STORE, { recursive: true }).length).toBe(before)
   })
 
-  it('resolveArtifactRef falls back to the slug for a uuid-shaped slug', async () => {
+  it('a uuid-shaped slug is rejected (it would shadow an id in resolveArtifactRef) — on publish and on rename', async () => {
     const slug = '12345678-1234-1234-1234-123456789abc'
-    const a = await publishArtifact({ slug, title: 'u', files: [html('u')] }); created.push(a.artifact.id)
-    expect(await resolveArtifactRef(slug)).toBe(a.artifact.id)
+    await expect(publishArtifact({ slug, title: 'u', files: [html('u')] })).rejects.toMatchObject({ code: 'bad_slug' })
+    expect(await resolveArtifactRef(slug)).toBeNull()
+    const a = await publishArtifact({ slug: `${P}-uuidren`, title: 'u', files: [html('u')] }); created.push(a.artifact.id)
+    await expect(editArtifact(a.artifact.id, { slug })).rejects.toMatchObject({ code: 'bad_slug' })
   })
 
   it('a deleted slug can be reused by a new artifact (Review Focus #5)', async () => {

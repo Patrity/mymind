@@ -34,3 +34,20 @@ export function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
+
+export interface ArtifactFormFields { title: string, description: string, slug: string }
+export type ArtifactFormSync = ArtifactFormFields & { id: string }
+
+/** The detail form's live-refetch rule: the fields to put in the form (and remember as synced), or null to
+ *  keep the user's unsaved typing. Untouched = the form still equals what we last synced OR already equals
+ *  the incoming artifact (after a save, the refetch brings back exactly what was typed). */
+export function formSyncFor(
+  form: ArtifactFormFields,
+  synced: ArtifactFormSync | null,
+  incoming: { id: string, title: string, description: string | null, slug: string }
+): ArtifactFormSync | null {
+  const next: ArtifactFormSync = { id: incoming.id, title: incoming.title, description: incoming.description ?? '', slug: incoming.slug }
+  const same = (x: ArtifactFormFields) => form.title === x.title && form.description === x.description && form.slug === x.slug
+  if (!synced || synced.id !== incoming.id || same(synced) || same(next)) return next
+  return null
+}

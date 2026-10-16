@@ -44,9 +44,19 @@ describe('isTextPath', () => {
 describe('slugs', () => {
   it('accepts valid slugs', () => expect(slugProblem('sales-q3')).toBeNull())
   it.each(['', '-a', 'a-', 'A', 'a_b', 'x'.repeat(65)])('rejects %j', s => expect(slugProblem(s)).not.toBeNull())
+  it('rejects a UUID-shaped slug (it would shadow an artifact id in id-or-slug lookups)', () => {
+    expect(slugProblem('0b5c3a1e-1f2d-4c3b-9a8e-123456789abc')).toMatch(/uuid/i)
+    expect(slugProblem('0b5c3a1e-1f2d-4c3b-9a8e-123456789abcd')).toBeNull()
+  })
+  it('never derives a UUID-shaped slug from a title', () => {
+    const s = slugFromTitle('0B5C3A1E-1F2D-4C3B-9A8E-123456789ABC')
+    expect(slugProblem(s)).toBeNull()
+  })
   it('derives from a title', () => {
     expect(slugFromTitle('Q3 Sales — Dashboard!')).toBe('q3-sales-dashboard')
     expect(slugFromTitle('!!!')).toBe('artifact')
+    expect(slugFromTitle('Résumé')).toBe('resume')
+    expect(slugFromTitle('Crème Brûlée Ñandú')).toBe('creme-brulee-nandu')
     expect(slugFromTitle('x'.repeat(100)).length).toBeLessThanOrEqual(64)
   })
 })

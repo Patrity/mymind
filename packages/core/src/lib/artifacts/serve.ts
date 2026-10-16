@@ -51,7 +51,14 @@ const encodePath = (p: string) => p.split('/').map(encodeURIComponent).join('/')
 
 export function decideArtifactRequest(i: DecideInput): ServeDecision {
   const u = parseArtifactUrl(i.pathname)
-  if (!u || !i.found) return { kind: 'not_found' }
+  if (!u) return { kind: 'not_found' }
+  const login: ServeDecision = { kind: 'redirect', status: 302, location: `/login?redirect=${encodeURIComponent(`/artifact/${u.slug}/`)}` }
+  if (!i.found) {
+    // A logged-out navigation to an unknown slug answers exactly like a private one, so a private slug's
+    // existence never leaks. With a session (or for a subresource) it's a plain 404.
+    if (!i.isNavigation || i.hasSession) return { kind: 'not_found' }
+    return u.trailingSlash ? login : { kind: 'redirect', status: 301, location: `/artifact/${u.slug}/${i.search}` }
+  }
   const a = i.found
   // Spec §5: a private artifact must look exactly like a missing one to anything that isn't a navigation.
   // A slash-less URL has no token segment, so a subresource here can never be authorised.
@@ -68,5 +75,5 @@ export function decideArtifactRequest(i: DecideInput): ServeDecision {
   // No usable token: a navigation goes (back) through the session check; a subresource can't.
   if (!i.isNavigation) return u.token !== null ? { kind: 'forbidden' } : { kind: 'not_found' }
   if (i.hasSession) return { kind: 'redirect', status: 302, location: `/artifact/${u.slug}/~${i.mintToken()}/${encodePath(u.path)}${i.search}` }
-  return { kind: 'redirect', status: 302, location: `/login?redirect=${encodeURIComponent(`/artifact/${u.slug}/`)}` }
+  return login
 }

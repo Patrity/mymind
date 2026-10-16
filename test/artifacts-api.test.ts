@@ -40,9 +40,19 @@ beforeEach(() => {
 
 describe('artifacts API', () => {
   it('lists, passing the project filter', async () => {
+    const p = '0b5c3a1e-1f2d-4c3b-9a8e-123456789abc'
     svc.listArtifacts.mockResolvedValue([{ id: 'a' }])
-    await expect(list({ query: { project: 'p1' } })).resolves.toEqual([{ id: 'a' }])
-    expect(svc.listArtifacts).toHaveBeenCalledWith({ projectId: 'p1' })
+    await expect(list({ query: { project: p } })).resolves.toEqual([{ id: 'a' }])
+    expect(svc.listArtifacts).toHaveBeenCalledWith({ projectId: p })
+    await expect(list({ query: {} })).resolves.toEqual([{ id: 'a' }])
+    expect(svc.listArtifacts).toHaveBeenLastCalledWith({ projectId: undefined })
+  })
+
+  it('a non-uuid project filter is a 400, without calling the service', async () => {
+    for (const project of ['p1', ['a', 'b'], '0b5c3a1e-1f2d-4c3b-9a8e-123456789abc; drop']) {
+      await expect(list({ query: { project } })).rejects.toMatchObject({ statusCode: 400 })
+    }
+    expect(svc.listArtifacts).not.toHaveBeenCalled()
   })
 
   it('GET resolves slug refs and 404s on unknown ref or missing detail', async () => {

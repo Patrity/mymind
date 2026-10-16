@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ARTIFACT_SANDBOX, formatBytes, publishedArtifact } from '~/lib/artifacts/display'
+import { ARTIFACT_SANDBOX, formatBytes, formSyncFor, publishedArtifact } from '~/lib/artifacts/display'
 
 const ok = { ok: true, id: 'a1', slug: 'demo', title: 'Demo', url: '/artifact/demo/', isPublic: false, version: 3 }
 
@@ -36,5 +36,25 @@ describe('ARTIFACT_SANDBOX', () => {
   it('is pinned exactly and never grants allow-same-origin', () => {
     expect(ARTIFACT_SANDBOX).toBe('allow-scripts allow-forms allow-popups allow-modals allow-downloads')
     expect(ARTIFACT_SANDBOX).not.toContain('allow-same-origin')
+  })
+})
+
+describe('formSyncFor (detail form vs live refetch)', () => {
+  const a = { id: 'a1', title: 'T', description: null as string | null, slug: 's' }
+  const fields = (o: Partial<{ title: string, description: string, slug: string }> = {}) => ({ title: 'T', description: '', slug: 's', ...o })
+  it('first load and a different artifact always sync', () => {
+    expect(formSyncFor(fields({ title: '' }), null, a)).toEqual({ id: 'a1', title: 'T', description: '', slug: 's' })
+    expect(formSyncFor(fields({ title: 'typed' }), { id: 'other', ...fields() }, a)).toEqual({ id: 'a1', ...fields() })
+  })
+  it('an untouched form takes a remote edit; a dirty one is kept', () => {
+    expect(formSyncFor(fields(), { id: 'a1', ...fields() }, { ...a, title: 'Remote' })).toEqual({ id: 'a1', ...fields({ title: 'Remote' }) })
+    expect(formSyncFor(fields({ title: 'typing' }), { id: 'a1', ...fields() }, { ...a, title: 'Remote' })).toBeNull()
+  })
+  it('a form that equals the incoming artifact is untouched (e.g. right after a save with a stale snapshot)', () => {
+    const stale = { id: 'a1', ...fields({ title: 'Old' }) }
+    const next = formSyncFor(fields({ title: 'Saved' }), stale, { ...a, title: 'Saved' })
+    expect(next).toEqual({ id: 'a1', ...fields({ title: 'Saved' }) })
+    // …so the NEXT remote edit is taken instead of being ignored forever.
+    expect(formSyncFor(fields({ title: 'Saved' }), next, { ...a, title: 'Remote' })).toEqual({ id: 'a1', ...fields({ title: 'Remote' }) })
   })
 })

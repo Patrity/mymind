@@ -35,13 +35,15 @@ export default defineEventHandler(async (event) => {
     isPublicArtifact = !!found?.isPublic
     // Throws when BETTER_AUTH_SECRET is unset: answered as a bare 500 below, never served.
     const tokenStatus = !parsed?.token || !found ? 'absent' as const : verifyViewToken(parsed.token, found.artifactId)
-    const needsSession = !!found && !found.isPublic && tokenStatus !== 'ok'
-    const session = needsSession ? await useAuth().api.getSession({ headers: event.headers as Headers }).catch(() => null) : null
     const dest = getHeader(event, 'sec-fetch-dest')
+    const isNavigation = dest === 'document' || dest === 'iframe' || !dest
+    // An unknown slug on a navigation needs the session too: logged out, it answers like a private one.
+    const needsSession = found ? !found.isPublic && tokenStatus !== 'ok' : !!parsed && isNavigation
+    const session = needsSession ? await useAuth().api.getSession({ headers: event.headers as Headers }).catch(() => null) : null
     d = decideArtifactRequest({
       pathname: url.pathname, search: url.search, found,
       hasSession: !!session?.user, tokenStatus,
-      isNavigation: dest === 'document' || dest === 'iframe' || !dest,
+      isNavigation,
       mintToken: () => signViewToken(found!.artifactId)
     })
   } catch (e) {

@@ -35,10 +35,15 @@ export function normalizeArtifactPath(p: string): string {
 }
 
 export const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
+/** UUID-shaped slugs are reserved: id-or-slug lookups (resolveArtifactRef) would match an id first. */
+const UUID_SHAPED = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export function slugProblem(s: string): string | null {
-  return SLUG_RE.test(s) ? null : 'slug must be 1–64 chars of a-z, 0-9 and -, not starting or ending with -'
+  if (!SLUG_RE.test(s)) return 'slug must be 1–64 chars of a-z, 0-9 and -, not starting or ending with -'
+  return UUID_SHAPED.test(s) ? 'slug must not be UUID-shaped' : null
 }
 export function slugFromTitle(title: string): string {
-  const s = title.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64).replace(/-+$/, '')
+  // NFKD splits accents into combining marks (\p{M}); dropping them keeps 'Résumé' → 'resume'.
+  const s = title.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64).replace(/-+$/, '')
+  if (UUID_SHAPED.test(s)) return `artifact-${s}`
   return s || 'artifact'
 }

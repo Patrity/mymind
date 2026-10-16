@@ -78,10 +78,24 @@ describe('/artifact/** route', () => {
     csp(r)
   })
 
-  it('404s an unknown slug with CSP', async () => {
-    const r = await req('/artifact/nope/')
+  it('404s an unknown slug on a subresource, and on a navigation with a session, with CSP', async () => {
+    const r = await req('/artifact/nope/', { dest: 'script' })
     expect(r.status).toBe(404)
     csp(r)
+    getSession.mockResolvedValue({ user: { id: 'u1' } })
+    const n = await req('/artifact/nope/', { dest: 'document' })
+    expect(n.status).toBe(404)
+    csp(n)
+  })
+
+  it('an unknown slug on a navigation with no session answers like a private one (login redirect)', async () => {
+    const unknown = await req('/artifact/nope/', { dest: 'document' })
+    const priv = await req('/artifact/demo/', { dest: 'document' })
+    expect(unknown.status).toBe(302)
+    expect(unknown.headers.get('location')).toBe('/login?redirect=%2Fartifact%2Fnope%2F')
+    expect(priv.headers.get('location')).toBe('/login?redirect=%2Fartifact%2Fdemo%2F')
+    expect(unknown.headers.get('cache-control')).toBe(priv.headers.get('cache-control'))
+    csp(unknown)
   })
 
   it('private + no session + document navigation -> 302 to login with redirect', async () => {

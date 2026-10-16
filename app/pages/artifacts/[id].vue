@@ -3,7 +3,7 @@
  * /artifacts/<uuid> (cycle 86) — one artifact: sandboxed preview, metadata editing, version history
  * with rollback. The route param is always the UUID so live invalidation keys match.
  */
-import { formatBytes } from '~/lib/artifacts/display'
+import { formatBytes, formSyncFor, type ArtifactFormSync } from '~/lib/artifacts/display'
 
 definePageMeta({ title: 'Artifact' })
 
@@ -20,18 +20,17 @@ function messageOf(e: unknown): string {
 }
 
 const form = reactive({ title: '', description: '', slug: '' })
-// Live refetches must not clobber unsaved typing: re-sync only for a different artifact or while the
-// form still matches what we last synced (i.e. the user has typed nothing).
-let synced: { id: string, title: string, description: string, slug: string } | null = null
+// Live refetches must not clobber unsaved typing — formSyncFor decides (a different artifact, or a form
+// that still matches what we last synced / already matches the incoming artifact, takes the refetch).
+let synced: ArtifactFormSync | null = null
 watch(artifact, (a) => {
   if (!a) return
-  const untouched = synced && synced.id === a.id
-    && form.title === synced.title && form.description === synced.description && form.slug === synced.slug
-  if (synced && synced.id === a.id && !untouched) return
-  form.title = a.title
-  form.description = a.description ?? ''
-  form.slug = a.slug
-  synced = { id: a.id, title: form.title, description: form.description, slug: form.slug }
+  const next = formSyncFor(form, synced, a)
+  if (!next) return
+  form.title = next.title
+  form.description = next.description
+  form.slug = next.slug
+  synced = next
 }, { immediate: true })
 const dirty = computed(() => !!artifact.value && (
   form.title !== artifact.value.title || form.description !== (artifact.value.description ?? '') || form.slug !== artifact.value.slug
@@ -48,7 +47,10 @@ async function save() {
     if (form.title !== artifact.value.title) patch.title = form.title
     if (form.description !== (artifact.value.description ?? '')) patch.description = form.description || null
     if (form.slug !== artifact.value.slug) patch.slug = form.slug
-    await updateArtifact(artifact.value.id, patch)
+    const sent: ArtifactFormSync = { id: artifact.value.id, title: form.title, description: form.description, slug: form.slug }
+    await updateArtifact(sent.id, patch)
+    // What the server now holds: later remote edits see an untouched form and sync in.
+    synced = sent
     toast.add({ color: 'success', title: 'Saved' })
   } catch (e) {
     saveError.value = messageOf(e)

@@ -32,7 +32,15 @@ describe('decideArtifactRequest', () => {
   it('public ignores a token segment', () => {
     expect(decideArtifactRequest(input({ pathname: '/artifact/demo/~junk/my%20chart.png' }))).toMatchObject({ kind: 'serve', path: 'my chart.png' })
   })
-  it('missing artifact → not_found', () => expect(decideArtifactRequest(input({ found: null }))).toEqual({ kind: 'not_found' }))
+  it('missing artifact, subresource → not_found', () => expect(decideArtifactRequest(input({ found: null, isNavigation: false }))).toEqual({ kind: 'not_found' }))
+  it('missing artifact + session, navigation → not_found', () => expect(decideArtifactRequest(input({ found: null, hasSession: true }))).toEqual({ kind: 'not_found' }))
+  it('missing artifact, no session, navigation → answers exactly like a private one (no existence leak)', () => {
+    for (const pathname of ['/artifact/demo/', '/artifact/demo/~junk/x.png', '/artifact/demo/deep/page']) {
+      expect(decideArtifactRequest(input({ found: null, pathname }))).toEqual(decideArtifactRequest(input({ found: found(false), pathname })))
+    }
+    expect(decideArtifactRequest(input({ found: null }))).toEqual({ kind: 'redirect', status: 302, location: '/login?redirect=%2Fartifact%2Fdemo%2F' })
+    expect(decideArtifactRequest(input({ found: null, pathname: '/artifact/demo' }))).toEqual(decideArtifactRequest(input({ found: found(false), pathname: '/artifact/demo' })))
+  })
   it('encoded traversal → not_found', () => expect(decideArtifactRequest(input({ pathname: '/artifact/demo/%2e%2e/etc/passwd' }))).toEqual({ kind: 'not_found' }))
   it('private, no session, no token, navigation → login', () => {
     expect(decideArtifactRequest(input({ found: found(false) }))).toEqual({ kind: 'redirect', status: 302, location: '/login?redirect=%2Fartifact%2Fdemo%2F' })
