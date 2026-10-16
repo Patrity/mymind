@@ -2,13 +2,13 @@
 title: Artifacts (sandboxed pages and webapps Bridget publishes)
 status: built
 cycle: 87
-updated: 2026-10-15
+updated: 2026-10-16
 mymind_id: f60aa8d8-a6f1-4558-9838-1f549a55b82e
-mymind_hash: ebe1766da79de32245c7bfb9b058c418d115c699734852f37aa3a1e3b6dfc067
+mymind_hash: 439df746fcc39abe294f32f1e0c114af527446b313ba8fdf79e413d78fabf143
 ---
 # Artifacts (cycle 87)
 
-Bridget can write and build code in her sandbox ([`workspace.md`](workspace.md)) and now has somewhere to
+Bridget can write and build code in her workspace on the Mac mini ([`workspace.md`](workspace.md)) and now has somewhere to
 *show* it: an **artifact** is a versioned static bundle (one HTML page, or a built webapp) served at
 `/artifact/<slug>/`, public or private, inside a browser sandbox that gives it no access to MyMind. No
 server-side code runs; a page that needs fresh data reads relative `data/*.json` files that Bridget (or a job)
@@ -199,7 +199,6 @@ forged size cannot loop it. Taint follows `export_to_document`: a tainted run ma
 - Text types (`html htm js mjs css json map txt csv svg`) are **secret-masked** with the workspace secret store
   (`maskText`). Masking is **literal-only**: escaped, base64-encoded or wasm-embedded secrets are not caught.
 - Unreadable secret store -> `ArtifactError('refused')`, nothing published.
-- A tainted run reads through the taint-aware network mode (`runNetworkMode`).
 
 ## 8. Updating data without a new version
 
