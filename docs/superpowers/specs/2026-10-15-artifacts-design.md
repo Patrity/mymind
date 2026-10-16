@@ -2,7 +2,7 @@
 title: "Artifacts — Bridget publishes sandboxed HTML pages and built webapps at /artifact/<slug> (cycle 86)"
 cycle: 86
 date: 2026-10-15
-status: approved  # design approved in brainstorm 2026-10-15; plan next
+status: built  # shipped on feat/artifacts 2026-10-15; see docs/handovers/2026-10-15-artifacts.md
 supersedes: null
 builds_on: 2026-10-11-sandboxed-workspace-design.md
 ---

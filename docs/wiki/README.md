@@ -34,6 +34,7 @@ The **living** reference for how each shipped system works **today** — one pag
 | Sandboxed workspace (per-workspace Docker sandbox, `workspace` toolset, taint-aware network, secrets opt-in, Files/Shells UI) | [workspace.md](workspace.md) | shipped (cycle 82) |
 | Judge (approval rule tier + LLM verdicts, Smart Approvals, output guard with injection taint, sticky workstream taint, outcome judge) | [judge.md](judge.md) | shipped (cycle 84; outcome judge cycle 85) |
 | Eval substrate (suites/cases/runs/results, isolated eval worlds, fake world, scoring, `/evals` dashboard, `pnpm eval`) | [eval.md](eval.md) | shipped (cycle 85) |
+| Artifacts (sandboxed pages/webapps Bridget publishes at `/artifact/<slug>/`, CSP sandbox, private path tokens, `artifacts` toolset, `/artifacts`) | [artifacts.md](artifacts.md) | built (cycle 86; not yet deployed) |
 | `@mymind/core` (shared server package; env mapper; bus modules) | [core-package.md](core-package.md) | shipped (cycle 80); bus + env mapper (cycle 81) |
 | Agent jobs (markdown-configured cron/every/at/event schedules, heartbeat, reminders, `/jobs`) | [agent-jobs.md](agent-jobs.md) | built (cycle 74; `deliver` targets cycle 75) |
 | Agent skills (markdown how-tos in `agent_skills`, tier-1 index, `/skills`, revisions) | [agent-skills.md](agent-skills.md) | built (cycle 74; shipped cycle 49) |

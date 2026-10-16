@@ -495,3 +495,17 @@ With the projects backbone in place (canonical entities + association + dashboar
 - **N4 (final re-review).** `seedSuite`'s read-then-update can lose a Tony edit landing in the same millisecond window (worker boot or a CLI start).
 - **N5 (final re-review).** `caseDefinitionHash` parses a stored row against the *current* case schema; a future, stricter schema could make the suite page throw (500) instead of just reading as "differs."
 - **N6 (final re-review, eval fidelity only).** The eval's single process-wide `guard` judge slot means parallel `web_fetch`/guard calls at `eval.concurrency` above 1 can queue into a fail-closed `unverified`, flaking `expect_flagged`/`expect_tainted` cases specifically — Tony's own live runs are unaffected.
+
+### Cycle 86 backlog (artifacts — see the [cycle-86 handover](handovers/2026-10-15-artifacts.md))
+Out of scope per spec section 10 (open):
+- **Blob garbage collection.** Deleting an artifact, replacing a bundle, or a publish that fails after its blobs are written leaves orphaned blobs in storage. Needs a mark-and-sweep over `artifact_versions.manifest` keys.
+- **Live query API for artifacts**, **backends / server code**, **per-artifact custom domains or subdomains**, **list thumbnails**, **artifact comments / collaboration.** None built; pages are static and read refreshable `data/*.json`.
+
+Deferred minors worth tracking:
+- **Token revocation.** View tokens last 12 h and cannot be revoked individually (rotating `BETTER_AUTH_SECRET` kills all and logs everyone out). A per-artifact token epoch would fix it.
+- **Masking is literal-only.** Workspace publish masks only literal secret values in text types; escaped, base64 or wasm-embedded secrets pass through.
+- **Unreachable `~x` root file** (first segment starting `~` is always a token); **uuid-shaped slug equal to another artifact's id** skips the tainted-run refusal and the undo snapshot (reject uuid-shaped slugs); **`HEAD` on a missing blob returns 200**.
+- **`restoreArtifact` emits `created`** not `updated`; **republish overwrites `conversationId`** and undo does not restore it; a publish losing the lock to a concurrent slug rename falls into the create path.
+- **UI:** detail-form `synced` snapshot goes stale after a save (later remote edits ignored while the form looks clean); view-url query is nested under `['artifact', id]` so every update event refetches and mints a token; `project` query param not uuid-validated (500 vs 400); every chat card mints a view-url and mounts an iframe; rollback has no confirm. The 10b UI behaviour (iframe remount, dirty-aware sync) has no playwright pass.
+- **Smaller:** `slugFromTitle` leaves combining marks ("résumé" -> "re-sume"); `ext()` maps dotfiles; no per-path length / control-char limit; `rootAbsoluteRefs` misses unquoted attributes; "25 MB" message hardcoded; read-script realpath->open TOCTOU inside the container; thin test gaps (token boundary/sig-flip, single-file `too_large`, once-after-commit `publishChange`, entry/spaFallback-only change, summed-bytes pre-put branch, probabilistic new-slug race test, brittle h3-via-nitropack route test, malformed forged-list cases assert only `instanceof`).
+- **No workspace upload API**, so an E2E of `workspace_path` publishing needs the `dist` to be built inside the workspace by Bridget.
