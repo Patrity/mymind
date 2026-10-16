@@ -6,7 +6,6 @@ updated: 2026-10-15
 mymind_id: f60aa8d8-a6f1-4558-9838-1f549a55b82e
 mymind_hash: ebe1766da79de32245c7bfb9b058c418d115c699734852f37aa3a1e3b6dfc067
 ---
-
 # Artifacts (cycle 86)
 
 Bridget can write and build code in her sandbox ([`workspace.md`](workspace.md)) and now has somewhere to
