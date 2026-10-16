@@ -2,10 +2,10 @@
 title: "Artifacts — Bridget publishes sandboxed static pages and webapps at /artifact/<slug>/ (cycle 87)"
 cycle: 87
 date: 2026-10-15
-status: in-progress  # merged to local master (with the cycle-86 Mac mini merge); unpushed, undeployed
+status: shipped  # pushed 8fb4d073, deploy run 38946716134 green on the Mac mini 2026-10-16; post-deploy workspace publish + UI pass still open
 branch: feat/artifacts (deleted after merge; merge-base master 2cb28f7)
 merged: true
-deployed: false
+deployed: true
 specs:
   - ../superpowers/specs/2026-10-15-artifacts-design.md
 plans:
@@ -77,6 +77,10 @@ Spec (intent): [`2026-10-15-artifacts-design.md`](../superpowers/specs/2026-10-1
 ## NOT verified
 - The 10b UI changes (iframe remount on version change, dirty-aware form re-sync, `Frame` `version` prop) have unit coverage only for the sandbox constant; no playwright pass of editing while a rollback/refetch lands. The docs task made no browser pass either.
 - Nothing ran on prod: Pangolin/Cloudflare behaviour, the prod storage backend, prod secret store, and the 60 s public cache are untested.
+
+## Prod smoke (2026-10-16, after deploy run 38946716134)
+- `/api/health` 200. Logged-out navigation to an unknown slug returns the route's own 302 to `/login?redirect=/artifact/<slug>/` with the CSP sandbox, `ACAO *` and `private, no-store` headers, so Pangolin does **not** SSO-gate `/artifact/**` and the `artifacts` table exists (migration 0089 applied; the lookup ran). A subresource request for an unknown slug returns 404.
+- Still open: a real `workspace_path` publish on the mini and a logged-in browser pass (form sync, iframe remount).
 
 ## Deploy notes
 - Run migration **0089** (CD runs `pnpm db:migrate`; verify `artifacts` and `artifact_versions` exist).
