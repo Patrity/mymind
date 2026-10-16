@@ -20,11 +20,18 @@ function messageOf(e: unknown): string {
 }
 
 const form = reactive({ title: '', description: '', slug: '' })
+// Live refetches must not clobber unsaved typing: re-sync only for a different artifact or while the
+// form still matches what we last synced (i.e. the user has typed nothing).
+let synced: { id: string, title: string, description: string, slug: string } | null = null
 watch(artifact, (a) => {
   if (!a) return
+  const untouched = synced && synced.id === a.id
+    && form.title === synced.title && form.description === synced.description && form.slug === synced.slug
+  if (synced && synced.id === a.id && !untouched) return
   form.title = a.title
   form.description = a.description ?? ''
   form.slug = a.slug
+  synced = { id: a.id, title: form.title, description: form.description, slug: form.slug }
 }, { immediate: true })
 const dirty = computed(() => !!artifact.value && (
   form.title !== artifact.value.title || form.description !== (artifact.value.description ?? '') || form.slug !== artifact.value.slug
@@ -155,6 +162,7 @@ async function copyLink() {
           <ArtifactsFrame
             :artifact-id="artifact.id"
             :title="artifact.title"
+            :version="artifact.currentVersion"
           />
         </div>
 

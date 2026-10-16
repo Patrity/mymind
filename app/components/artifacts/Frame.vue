@@ -1,7 +1,10 @@
 <script setup lang="ts">
 // Cycle 86: the sandboxed view of a published artifact. The sandbox deliberately omits
 // allow-same-origin: artifact JS runs in an opaque origin and can never touch MyMind's session.
-const props = defineProps<{ artifactId: string; title?: string }>()
+import { ARTIFACT_SANDBOX } from '~/lib/artifacts/display'
+
+// `version` is only a remount key: a new current version (rollback, agent republish) reloads the iframe.
+const props = defineProps<{ artifactId: string; title?: string; version?: number | null }>()
 const { data, isPending, error } = useArtifactViewUrl(computed(() => props.artifactId))
 </script>
 
@@ -22,9 +25,10 @@ const { data, isPending, error } = useArtifactViewUrl(computed(() => props.artif
     </p>
     <iframe
       v-else
+      :key="`${data.url}@${version ?? 0}`"
       :src="data.url"
       :title="title ?? 'Artifact'"
-      sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+      :sandbox="ARTIFACT_SANDBOX"
       referrerpolicy="no-referrer"
       loading="lazy"
       class="size-full border-0 bg-white"

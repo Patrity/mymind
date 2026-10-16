@@ -54,7 +54,7 @@ export const publishArtifactTool: AgentTool = {
   outboundWhen: isPublicCall,
   // Headless: a background run may not put content on the internet unattended — that call is proposed.
   proposeWhen: isPublicCall,
-  description: 'Publish a web page or built webapp as an artifact Tony can open at https://brain.costanzoclan.com/artifact/<slug>/ (also shown in chat). Use it whenever a chart, dashboard, demo or visual preview conveys something better than text. Pass `html` for a single self-contained page, or build in your workspace first (`pnpm build`; for Vite set `base: \'./\'`) and pass `workspace_path` = the output dir (e.g. `dist`). Use relative asset paths. Pages run sandboxed: no localStorage/cookies, no MyMind API; CDN scripts are fine. Put refreshable data in `data/*.json`, fetch it relatively, and refresh it later with `files` + `merge: true` (updates in place, no new version). Republishing to the same slug makes a new version. Private unless `public: true`.',
+  description: 'Publish a web page or built webapp as an artifact Tony can open at https://brain.costanzoclan.com/artifact/<slug>/ (also shown in chat). Use it when a chart, dashboard, demo or visual preview beats text. Always include the artifact URL in your reply to Tony. Pass `html` for one self-contained page, or build in your workspace first (`pnpm build`; Vite needs `base: \'./\'`) and pass `workspace_path` = the output dir (e.g. `dist`). Use relative asset paths. Pages run sandboxed: no localStorage/cookies, no MyMind API; CDN scripts are fine. Keep refreshable data in `data/*.json`, fetched relatively. To update data, pass `files: {\'data/x.json\': \'<new json>\'}` with `merge: true` (or `workspace_path` of the rebuilt dir); that updates in place. Republishing to the same slug otherwise makes a new version. Private unless `public: true`. Only pass `project` if Tony named one or you looked it up.',
   schema: {
     title: z.string().min(1).max(200).optional().describe('Required when creating'),
     slug: z.string().optional().describe('URL slug; omit to derive from the title, or pass an existing slug to republish'),
@@ -78,7 +78,10 @@ export const publishArtifactTool: AgentTool = {
     conversationId: await conversationIdFor(ctx.runId)
   }),
   handler: async (a, ctx: ToolContext) => {
-    const sources = (['html', 'files', 'workspace_path'] as const).filter(k => a[k] !== undefined)
+    // `files: {}` is what models send when they mean "no files" — it counts as absent.
+    const hasFiles = a.files !== undefined && Object.keys(a.files as Record<string, string>).length > 0
+    const sources = (['html', 'files', 'workspace_path'] as const).filter(k => (k === 'files' ? hasFiles : a[k] !== undefined))
+    if (sources.length === 0) return fail('nothing to publish — pass html, files with at least one entry, or workspace_path', 'publish_artifact: nothing to publish')
     if (sources.length !== 1) return fail('pass exactly one of html, files or workspace_path', 'publish_artifact: bad arguments')
     try {
       // Snapshot of an existing target (publishing to a known slug): the taint check and the undo both use it.
@@ -94,7 +97,7 @@ export const publishArtifactTool: AgentTool = {
       let masked = 0
       let skipped: string[] = []
       if (a.html !== undefined) files = [{ path: 'index.html', content: a.html as string }]
-      else if (a.files !== undefined) files = Object.entries(a.files as Record<string, string>).map(([path, content]) => ({ path: normalizeArtifactPath(path), content }))
+      else if (hasFiles) files = Object.entries(a.files as Record<string, string>).map(([path, content]) => ({ path: normalizeArtifactPath(path), content }))
       else {
         let workspaceId: string
         if (ctx.runId) workspaceId = (await workspaceRuntime().resolve(ctx.runId)).workspaceId

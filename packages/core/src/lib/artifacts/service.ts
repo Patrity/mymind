@@ -109,6 +109,7 @@ export async function publishArtifact(input: PublishInput): Promise<PublishResul
     const problem = slugProblem(input.slug)
     if (problem) throw new ArtifactError(problem, 'bad_slug')
   }
+  if (input.files.length === 0) throw new ArtifactError('nothing to publish', 'bad_input')
   const next = await prepareBlobs(input.files)
 
   const run = async (tx: Tx) => {

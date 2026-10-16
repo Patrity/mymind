@@ -46,6 +46,21 @@ describe('publish_artifact', () => {
     expect(ex.summary).toBe('published "Dash" v1 → /artifact/dash/')
   })
 
+  it('treats files:{} as absent next to workspace_path', async () => {
+    bundle.readWorkspaceBundle.mockResolvedValue({ files: [{ path: 'index.html', content: 'x' }], masked: 0, skipped: [] })
+    const ex = await publishArtifactTool.handler({ title: 'D', files: {}, workspace_path: 'dist' }, ctx())
+    expect(ex.result).toMatchObject({ ok: true })
+    expect(bundle.readWorkspaceBundle).toHaveBeenCalled()
+  })
+
+  it('refuses a publish with nothing in it, without calling the service', async () => {
+    for (const args of [{ files: {}, merge: true, slug: 'dash' }, { title: 'D', files: {} }]) {
+      const ex = await publishArtifactTool.handler(args, ctx())
+      expect(ex.result).toEqual({ ok: false, error: 'nothing to publish — pass html, files with at least one entry, or workspace_path' })
+    }
+    expect(svc.publishArtifact).not.toHaveBeenCalled()
+  })
+
   it('has a null conversation when there is no run (MCP)', async () => {
     await publishArtifactTool.handler({ title: 'Dash', html: 'x' }, ctx({ runId: undefined }))
     expect(svc.publishArtifact.mock.calls[0]![0].conversationId).toBeNull()

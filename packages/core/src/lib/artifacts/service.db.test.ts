@@ -72,16 +72,24 @@ describe('publishArtifact', () => {
     const slug = `${P}-race`
     const a = await publishArtifact({ slug, title: 'r', files: [html('0')] }); created.push(a.artifact.id)
     const rs = await Promise.all([1, 2, 3, 4, 5, 6].map(n => publishArtifact({ slug, files: [html(String(n))] })))
+    for (const r of rs) created.push(r.artifact.id)
     expect(rs.map(r => r.version).sort()).toEqual([2, 3, 4, 5, 6, 7])
   })
 
   it('concurrent first publishes of a new slug both succeed', async () => {
     const slug = `${P}-race-new`
     const rs = await Promise.all([1, 2, 3, 4, 5, 6].map(n => publishArtifact({ slug, title: 'n', files: [html(String(n))] })))
-    created.push(rs[0]!.artifact.id)
+    for (const r of rs) created.push(r.artifact.id)
     expect(new Set(rs.map(r => r.artifact.id)).size).toBe(1)
     expect(rs.filter(r => r.created)).toHaveLength(1)
     for (const r of rs) expect(r.artifact.currentVersion).toBe(r.version) // DTO agrees with the returned version
+  })
+
+  it('rejects an empty files array (create or update-in-place)', async () => {
+    const slug = `${P}-empty`
+    await expect(publishArtifact({ slug, title: 'e', files: [] })).rejects.toMatchObject({ code: 'bad_input' })
+    const a = await publishArtifact({ slug, title: 'e', files: [html('1')] }); created.push(a.artifact.id)
+    await expect(publishArtifact({ slug, files: [], merge: true })).rejects.toMatchObject({ code: 'bad_input', message: 'nothing to publish' })
   })
 
   it('rejects an oversized bundle before writing any blob', async () => {
@@ -134,10 +142,10 @@ describe('listArtifacts', () => {
 afterAll(async () => {
   const { useDb } = await import('../../db')
   const { artifacts } = await import('../../db/schema')
-  const { inArray } = await import('drizzle-orm')
-  if (created.length) {
-    await useDb().update(artifacts).set({ currentVersionId: null }).where(inArray(artifacts.id, created))
-    await useDb().delete(artifacts).where(inArray(artifacts.id, created))
-  }
+  const { inArray, like, or } = await import('drizzle-orm')
+  // Ids collected from every result, plus a backstop on this run's own slug prefix (never other runs' rows).
+  const mine = or(...[created.length ? inArray(artifacts.id, created) : undefined, like(artifacts.slug, `${P}-%`)])!
+  await useDb().update(artifacts).set({ currentVersionId: null }).where(mine)
+  await useDb().delete(artifacts).where(mine)
   rmSync(STORE, { recursive: true, force: true })
 })

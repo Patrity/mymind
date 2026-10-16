@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatBytes, publishedArtifact } from '~/lib/artifacts/display'
+import { ARTIFACT_SANDBOX, formatBytes, publishedArtifact } from '~/lib/artifacts/display'
 
 const ok = { ok: true, id: 'a1', slug: 'demo', title: 'Demo', url: '/artifact/demo/', isPublic: false, version: 3 }
 
@@ -29,5 +29,12 @@ describe('formatBytes', () => {
     expect(formatBytes(1229)).toBe('1.2 KB')
     expect(formatBytes(3.4 * 1024 * 1024)).toBe('3.4 MB')
     expect(formatBytes(0)).toBe('0 B')
+  })
+})
+
+describe('ARTIFACT_SANDBOX', () => {
+  it('is pinned exactly and never grants allow-same-origin', () => {
+    expect(ARTIFACT_SANDBOX).toBe('allow-scripts allow-forms allow-popups allow-modals allow-downloads')
+    expect(ARTIFACT_SANDBOX).not.toContain('allow-same-origin')
   })
 })

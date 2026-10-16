@@ -49,6 +49,7 @@ async function copyLink() {
       <ArtifactsFrame
         :artifact-id="id"
         :title="title"
+        :version="version"
       />
     </div>
     <div class="flex gap-2">
