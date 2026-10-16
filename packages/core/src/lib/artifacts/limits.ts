@@ -1,4 +1,4 @@
-// Cycle 86 (spec §3): artifact limits, the content-type allowlist and path/slug rules — pure.
+// Cycle 87 (spec §3): artifact limits, the content-type allowlist and path/slug rules — pure.
 export const ARTIFACT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 export const ARTIFACT_MAX_FILES = 500
 export const ARTIFACT_MAX_FILE_BYTES = 10 * 1024 * 1024

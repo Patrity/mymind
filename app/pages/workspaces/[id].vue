@@ -4,7 +4,6 @@
  * "Workspace" link). The same Files / Shells views as a workstream's detail page, plus the tainted
  * banner. Reads go through the agent worker (it owns the sandbox).
  */
-import { formatBytes } from '~/lib/workspace/display'
 
 definePageMeta({ title: 'Workspace' })
 
@@ -48,7 +47,7 @@ const tabs = [
             v-if="ws"
             class="text-xs text-muted"
             data-testid="workspace-usage"
-          >{{ formatBytes(ws.bytesUsed) }} · {{ ws.state }}</span>
+          >{{ ws.state === 'running' ? 'in use' : 'idle' }}</span>
         </template>
       </UDashboardNavbar>
       <AgentWorkerOfflineBanner />
@@ -56,7 +55,7 @@ const tabs = [
     </template>
 
     <template #body>
-      <WorkspaceNetworkBanner
+      <WorkspaceTaintNote
         v-if="ws"
         :workspace="ws"
       />

@@ -1,4 +1,4 @@
-// Cycle 86 (spec §5): /artifact/<slug>/… — outside /api, so it does its own auth. All decisions are
+// Cycle 87 (spec §5): /artifact/<slug>/… — outside /api, so it does its own auth. All decisions are
 // in @mymind/core/lib/artifacts/serve (unit-tested); this file only does IO.
 import { decideArtifactRequest, artifactHeaders, parseArtifactUrl } from '@mymind/core/lib/artifacts/serve'
 import { signViewToken, verifyViewToken } from '@mymind/core/lib/artifacts/token'

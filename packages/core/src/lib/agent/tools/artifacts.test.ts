@@ -104,10 +104,23 @@ describe('publish_artifact', () => {
   it('reads workspace_path through the bundle reader and warns on masked/skipped', async () => {
     bundle.readWorkspaceBundle.mockResolvedValue({ files: [{ path: 'index.html', content: Buffer.from('<p/>') }], masked: 2, skipped: ['a.exe'] })
     const ex = await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist' }, ctx({ isTainted: () => false }))
-    expect(bundle.readWorkspaceBundle).toHaveBeenCalledWith('ws-1', 'dist', expect.objectContaining({ tainted: false, offline: false }))
+    expect(bundle.readWorkspaceBundle).toHaveBeenCalledWith('ws-1', 'dist', expect.objectContaining({ tainted: false }))
+    expect(bundle.readWorkspaceBundle.mock.calls.at(-1)![2]).not.toHaveProperty('offline')
     const w = (ex.result as { warnings: string[] }).warnings.join('|')
     expect(w).toContain('2 file(s) had secret values masked')
     expect(w).toContain('a.exe')
+  })
+
+  it('maps the cycle-82 container path /workspace/dist to the workspace-relative dir', async () => {
+    bundle.readWorkspaceBundle.mockResolvedValue({ files: [{ path: 'index.html', content: Buffer.from('<p/>') }], masked: 0, skipped: [] })
+    await publishArtifactTool.handler({ title: 'T', workspace_path: '/workspace/dist' }, ctx({ isTainted: () => false }))
+    expect(bundle.readWorkspaceBundle).toHaveBeenLastCalledWith('ws-1', 'dist', expect.anything())
+  })
+
+  it('an unverified-only run reads offline without marking the workspace tainted', async () => {
+    bundle.readWorkspaceBundle.mockResolvedValue({ files: [{ path: 'index.html', content: Buffer.from('<p/>') }], masked: 0, skipped: [] })
+    await publishArtifactTool.handler({ title: 'T', workspace_path: 'dist' }, ctx({ isTainted: () => true, taint: () => ({ sources: ['unverified'], flags: [] }) }))
+    expect(bundle.readWorkspaceBundle).toHaveBeenLastCalledWith('ws-1', 'dist', expect.objectContaining({ tainted: false, offline: true }))
   })
 
   it('workspace_path with no run (MCP) is a clean ok:false', async () => {

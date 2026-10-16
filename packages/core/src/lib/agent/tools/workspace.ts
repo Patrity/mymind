@@ -1,23 +1,21 @@
-// Cycle 82 Task 2 (spec §4): the `workspace` toolset — Bridget's files, shell, background shells and
-// watches, all INSIDE her Docker sandbox (lib/sandbox). On demand for chat, pre-loaded for workstreams.
+// Cycle 82 Task 2 / cycle 86 (spec §3): the `workspace` toolset — Bridget's files, shell, background
+// shells and watches on her own Mac (lib/sandbox: the host runtime). On demand for chat, pre-loaded
+// for workstreams.
 //
 //   Which workspace: a run in a workstream's thread → that workstream's; anything else → the single
-//   `home` workspace (sandbox/runtime.ts resolveWorkspace; both created on first use).
-//   No approvals (D4) and not `outbound`: the sandbox's network is governed by taint (D5) —
-//   a TAINTED run (it read mail/calendar/contacts) runs every workspace command in a one-off
-//   `--network none` container, which also taints the workspace persistently (manager.ts). EVERY tool
-//   passes the run's taint, reads included: any command in the networked container exposes its
-//   arguments (/proc) to whatever a previous run left running there. Background shells and watches
-//   are refused in a tainted run (a one-off container can't outlive the command).
+//   `home` workspace (sandbox/runtime.ts resolveWorkspace; both created on first use). The workspace
+//   dir is her default working dir: relative paths resolve there, absolute paths go anywhere on the
+//   machine (D5). No approvals, not `outbound`, no quota.
+//   Taint (cycle 86 option C — Tony dropped the confinement trial): a TAINTED run (it read
+//   mail/calendar/contacts) runs its commands exactly like a clean one — network, exported secrets,
+//   background shells, watches. EVERY tool passes the run's taint, reads included: a tainted run's
+//   first workspace tool taints the workspace persistently (manager.ts) — bookkeeping that makes
+//   later readers tainted, so their outbound tools stay gated by the approval judge.
+//   Eval worlds: every command runs confined (offline, scratch dir) — background shells and
+//   watches are refused there.
 //   Results are untrusted data. A result from a tainted workspace carries `workspaceTainted: true`
 //   FIRST — that taints the reading run (ai-tools.ts), since the files may be mail-derived.
 //   Not on /api/mcp: these tools live on bridgetProfile only (profile.ts), and MCP excludes the toolset.
-//
-// Over quota (fix round 1, I1 ruling — deny by default): every command-running or writing tool is
-// refused, `bash` in every mode included. Recovery is `list_files({largest: true})` (where the space
-// went, with sizes) + `delete_files({paths})` (array args, `rm -rf --` inside the container), which
-// work over quota. The hard limits stay underneath regardless: RLIMIT_FSIZE 1 GiB per file and the
-// 5s free-space watchdog.
 import { z } from 'zod'
 import type { AgentTool, ToolContext, ToolExecution } from '../types'
 import { onlyUnverified } from '../judge/types'
@@ -25,7 +23,7 @@ import {
   DELETE_MAX_PATHS, DELETE_SCRIPT, EDIT_SCRIPT, LIST_SCRIPT, READ_CAP_BYTES, READ_MAX_LINES, READ_SCRIPT, WRITE_MAX_BYTES, WRITE_SCRIPT, GREP_MAX,
   diffCommand, grepCommand, parseDiff
 } from '../../sandbox/fs-ops'
-import { SandboxDiskLowError, SandboxQuotaError, SandboxUnavailableError, type ExecOptions, type SandboxExecResult } from '../../sandbox/manager'
+import { SandboxDiskLowError, SandboxUnavailableError, type ExecOptions, type SandboxExecResult } from '../../sandbox/manager'
 import { readWorkspaceText, workspaceRuntime, type WorkspaceRef } from '../../sandbox/runtime'
 import { WORKSPACE_UNTRUSTED_NOTE } from '../../sandbox/paths'
 import { ShellError } from '../../sandbox/shells'
@@ -33,29 +31,30 @@ import { dbWorkspaceStore } from '../../sandbox/store'
 import { WATCH_LIMITS, WatchError } from '../../sandbox/watches'
 import { maskCut, maskDeep, maskText, sandboxSecretEnv, SecretStoreUnavailableError, secretValues } from '../../sandbox/secrets'
 import { createDoc, deleteDoc, findDocByPath, getDoc, casUpdateContent, updateDoc } from '../../../services/documents'
+import { applyCopy, CopyError, planCopy } from '../../sandbox/host/copy'
 import { publishChange } from '../../../utils/live-bus'
 import { docReceipt, docNotFound } from '../receipt'
 
 /** On every result that carries workspace content (shared with the watch wake notes). */
 export { WORKSPACE_UNTRUSTED_NOTE }
-const TAINTED_RUN = 'This conversation read Tony\'s mail, calendar or contacts, so workspace commands run without network'
-const UNVERIFIED_RUN = 'This run read content the injection check could not verify, so its workspace commands run without network (the workspace itself stays online)'
-const TAINTED_WS = 'This workspace handled mail/calendar content, so its network is off until Tony re-enables it (Workspace → Re-enable network)'
+/** Why background shells / watches are refused in an eval world. */
+const EVAL_CONFINED = 'Eval world: commands run confined to the scratch dir, offline'
 
 const clip = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
-/** Final follow-up (I5): how this run's commands run. `tainted` — no network and the workspace becomes
- *  tainted (cycle 82; also when called outside buildAiTools: fail closed). `offline` — the run is
- *  tainted ONLY `unverified` (a guard check could not run): no network and no secrets, but the
- *  workspace is not marked. `clean` — as usual. */
-export function runNetworkMode(ctx: Pick<ToolContext, 'isTainted' | 'taint'>): 'clean' | 'offline' | 'tainted' {
+/** Final follow-up (I5): the run's taint as the workspace sees it. `tainted` — the workspace becomes
+ *  tainted (cycle 82; also when called outside buildAiTools: fail closed). `unverified` — the run is
+ *  tainted ONLY `unverified` (a guard check could not run): the workspace is not marked (export
+ *  reads stay strict). `clean` — as usual. Commands run the same in every mode (cycle 86: no network
+ *  mode any more — hence not "offline"). */
+export function runTaintMode(ctx: Pick<ToolContext, 'isTainted' | 'taint'>): 'clean' | 'unverified' | 'tainted' {
   if (!ctx.isTainted) return 'tainted'
   if (!ctx.isTainted()) return 'clean'
-  return ctx.taint && onlyUnverified(ctx.taint().sources) ? 'offline' : 'tainted'
+  return ctx.taint && onlyUnverified(ctx.taint().sources) ? 'unverified' : 'tainted'
 }
 
-/** `tainted`: this run's commands taint the workspace; `offline`: they run without network only. */
-interface Call { ref: WorkspaceRef; tainted: boolean; offline: boolean; opts: ExecOptions }
+/** `tainted`: this run's commands taint the workspace. */
+interface Call { ref: WorkspaceRef; tainted: boolean; opts: ExecOptions }
 
 /** Which workspace a tool call reached (set before any sandbox command runs) — guard() reads it to
  *  taint an ERROR result too (final review I1). */
@@ -64,18 +63,20 @@ interface Scope { workspaceId?: string }
 async function begin(ctx: ToolContext, scope: Scope): Promise<Call> {
   const ref = await workspaceRuntime().resolve(ctx.runId)
   scope.workspaceId = ref.workspaceId
-  const mode = runNetworkMode(ctx)
-  const tainted = mode === 'tainted'
-  const offline = mode === 'offline'
-  return { ref, tainted, offline, opts: { tainted, ...(offline ? { offline: true } : {}), signal: ctx.signal } }
+  const tainted = runTaintMode(ctx) === 'tainted'
+  return { ref, tainted, opts: { tainted, signal: ctx.signal } }
 }
 
-/** Follow-up 2 (NB3): options for bash_output / kill_shell — fixed, non-model commands on a live
- *  background shell. An `offline` run drops `offline` (a one-off cannot see the shell); a `tainted`
- *  run keeps its options (its workspace's networked container, and its shells, are gone already). */
-function liveShellOpts(c: Call): ExecOptions {
-  const { offline: _offline, ...rest } = c.opts
-  return rest
+/** Eval worlds only: every command is confined, so background shells / watches can't outlive it. */
+function evalConfined(): boolean {
+  return workspaceRuntime().manager.offline
+}
+
+/** Cycle 86: a model path. Relative → the workspace dir (the command's cwd); absolute → anywhere.
+ *  Cycle 82's container path `/workspace[/…]` (old threads use it) still means the workspace dir. */
+export function workspacePath(p: string): string {
+  if (p === '/workspace' || p === '/workspace/') return '.'
+  return p.startsWith('/workspace/') ? p.slice('/workspace/'.length) || '.' : p
 }
 
 function exec(c: Call, command: string, o: ExecOptions = {}): Promise<SandboxExecResult> {
@@ -98,11 +99,11 @@ async function guard(name: string, ctx: ToolContext, fn: (scope: Scope) => Promi
     // Fix round 2: a handler (or the shell registry) that needed the values mid-call fails closed
     // the same way as the final mask below — never a raw error.
     if (err instanceof SecretStoreUnavailableError) return withheld()
-    const known = err instanceof SandboxUnavailableError || err instanceof SandboxQuotaError || err instanceof SandboxDiskLowError
-      || err instanceof ShellError || err instanceof WatchError || (err as Error)?.name === 'WorkspaceFileError'
+    const known = err instanceof SandboxUnavailableError || err instanceof SandboxDiskLowError
+      || err instanceof ShellError || err instanceof WatchError || err instanceof CopyError || (err as Error)?.name === 'WorkspaceFileError'
     if (!known) throw err
     const message = (err as Error).message
-    // Final review I1: these messages can carry sandbox text (stderr, a script's message) — an
+    // Final review I1: these messages can carry workspace text (stderr, a script's message) — an
     // error from a tainted workspace (or a tainted run) is marked exactly like a success result, so
     // it taints the reading run (ai-tools) and seeds the next one (tool-history).
     const tainted = scope.workspaceId !== undefined && await errorTainted(ctx, scope.workspaceId)
@@ -117,14 +118,12 @@ async function guard(name: string, ctx: ToolContext, fn: (scope: Scope) => Promi
 /** An error result from this workspace must carry the taint flag: the run is tainted, or the
  *  workspace is (fail closed — an unreadable row counts as tainted). */
 async function errorTainted(ctx: ToolContext, workspaceId: string): Promise<boolean> {
-  if (runNetworkMode(ctx) === 'tainted') return true
+  if (runTaintMode(ctx) === 'tainted') return true
   try { return (await dbWorkspaceStore.get(workspaceId))?.tainted !== false } catch { return true }
 }
 
-/** Opted-in sandbox secrets for a command — none when the run OR the workspace is tainted (the
- *  manager drops them for tainted commands too; this is the first gate). */
-async function secretsFor(c: Call): Promise<Pick<ExecOptions, 'secrets'>> {
-  if (c.tainted || c.offline || (await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return {}
+/** Exported secrets for a command (cycle 86 option C: tainted runs too — none in an eval world). */
+async function secretsFor(_c: Call): Promise<Pick<ExecOptions, 'secrets'>> {
   const secrets = await sandboxSecretEnv({ tainted: false })
   return Object.keys(secrets).length ? { secrets } : {}
 }
@@ -158,37 +157,26 @@ function scriptError(name: string, r: SandboxExecResult, j: Record<string, unkno
   return { result: withTaint(r, { ok: false, error: j.error, message, ...(path ? { path } : {}), ...(j.candidates ? { candidates: j.candidates, count: j.count } : {}) }), summary: `${name}: ${message}${path ? ` (${clip(path, 60)})` : ''}` }
 }
 
-async function overQuota(c: Call): Promise<SandboxQuotaError | null> {
-  try { await workspaceRuntime().manager.checkQuota(c.ref.workspaceId, { tainted: c.tainted, offline: c.offline }); return null } catch (err) {
-    if (err instanceof SandboxQuotaError) return err
-    throw err
-  }
-}
-
-async function assertQuota(c: Call): Promise<void> {
-  const q = await overQuota(c)
-  if (q) throw q
-}
-
 function byteLen(s: string): number { return Buffer.byteLength(s, 'utf8') }
 
 const pathArg = z.string().min(1).max(4096)
+const PATH_HELP = 'relative to your workspace dir, or absolute (anywhere on the Mac)'
 
 export const readFileTool: AgentTool = {
   name: 'read_file',
   guard: 'workspace',
   toolset: 'workspace',
   kind: 'read',
-  description: `Read a text file in your workspace, with line numbers (≤ ${READ_MAX_LINES} lines per call; pass offset/limit for more). Paths are relative to /workspace (absolute paths are inside the sandbox). Binary files are detected and not shown.`,
+  description: `Read a text file, with line numbers (≤ ${READ_MAX_LINES} lines per call; pass offset/limit for more). Relative paths are in your workspace dir; absolute paths read anywhere on the Mac. Binary files are detected and not shown.`,
   schema: {
-    path: pathArg.describe('File path (relative to /workspace)'),
+    path: pathArg.describe(`File path (${PATH_HELP})`),
     offset: z.number().int().min(1).optional().describe('First line to read (1-based)'),
     limit: z.number().int().min(1).max(READ_MAX_LINES).optional().describe(`Lines to read (max ${READ_MAX_LINES})`)
   },
   handler: (a, ctx) => guard('read_file', ctx, async (scope) => {
     const c = await begin(ctx, scope)
     const path = a.path as string
-    const r = await exec(c, READ_SCRIPT, { input: JSON.stringify({ path, offset: a.offset, limit: a.limit }), capBytes: READ_CAP_BYTES, timeoutSec: 60 })
+    const r = await exec(c, READ_SCRIPT, { input: JSON.stringify({ path: workspacePath(path), offset: a.offset, limit: a.limit }), capBytes: READ_CAP_BYTES, timeoutSec: 60 })
     const j = parseJson(r)
     if (!j) return failed('read_file', r)
     const err = scriptError('read_file', r, j, path)
@@ -206,9 +194,9 @@ export const writeFileTool: AgentTool = {
   name: 'write_file',
   toolset: 'workspace',
   kind: 'create',
-  description: 'Create or overwrite a text file in your workspace (parent directories are created). Prefer edit_file for small changes to an existing file. Returns a receipt, never the content.',
+  description: 'Create or overwrite a text file (parent directories are created) — in your workspace dir for a relative path, anywhere on the Mac for an absolute one. Prefer edit_file for small changes to an existing file. Returns a receipt, never the content.',
   schema: {
-    path: pathArg.describe('File path (relative to /workspace)'),
+    path: pathArg.describe(`File path (${PATH_HELP})`),
     content: z.string().describe('The full file content')
   },
   handler: (a, ctx) => guard('write_file', ctx, async (scope) => {
@@ -216,8 +204,7 @@ export const writeFileTool: AgentTool = {
     const content = a.content as string
     if (byteLen(content) > WRITE_MAX_BYTES) return { result: { ok: false, error: `content is ${byteLen(content)} bytes — the limit is ${WRITE_MAX_BYTES}; write it with bash instead` }, summary: 'write_file: too large' }
     const c = await begin(ctx, scope)
-    await assertQuota(c)
-    const r = await exec(c, WRITE_SCRIPT, { input: JSON.stringify({ path, content }), timeoutSec: 60 })
+    const r = await exec(c, WRITE_SCRIPT, { input: JSON.stringify({ path: workspacePath(path), content }), timeoutSec: 60 })
     const j = parseJson(r)
     if (!j) return failed('write_file', r)
     const err = scriptError('write_file', r, j, path)
@@ -230,9 +217,9 @@ export const editFileTool: AgentTool = {
   name: 'edit_file',
   toolset: 'workspace',
   kind: 'create',
-  description: 'Edit a text file in your workspace by exact find/replace. `old_string` must appear exactly once (add surrounding lines to make it unique) unless replace_all is set; on ambiguity the error lists the candidate line numbers. Read the file first to copy the exact text.',
+  description: 'Edit a text file by exact find/replace (relative paths in your workspace dir, absolute anywhere). `old_string` must appear exactly once (add surrounding lines to make it unique) unless replace_all is set; on ambiguity the error lists the candidate line numbers. Read the file first to copy the exact text.',
   schema: {
-    path: pathArg.describe('File path (relative to /workspace)'),
+    path: pathArg.describe(`File path (${PATH_HELP})`),
     old_string: z.string().min(1).describe('Exact text to replace'),
     new_string: z.string().describe('Replacement text'),
     replace_all: z.boolean().optional().describe('Replace every occurrence')
@@ -241,8 +228,7 @@ export const editFileTool: AgentTool = {
     const path = a.path as string
     if (byteLen(a.old_string as string) + byteLen(a.new_string as string) > WRITE_MAX_BYTES) return { result: { ok: false, error: 'edit too large — use write_file or bash' }, summary: 'edit_file: too large' }
     const c = await begin(ctx, scope)
-    await assertQuota(c)
-    const r = await exec(c, EDIT_SCRIPT, { input: JSON.stringify({ path, old: a.old_string, new: a.new_string, all: a.replace_all === true }), timeoutSec: 60 })
+    const r = await exec(c, EDIT_SCRIPT, { input: JSON.stringify({ path: workspacePath(path), old: a.old_string, new: a.new_string, all: a.replace_all === true }), timeoutSec: 60 })
     const j = parseJson(r)
     if (!j) return failed('edit_file', r)
     const err = scriptError('edit_file', r, j, path)
@@ -255,15 +241,15 @@ export const listFilesTool: AgentTool = {
   name: 'list_files',
   toolset: 'workspace',
   kind: 'read',
-  description: 'List files in your workspace with their sizes (bytes on disk): every file under `path` (default /workspace), or the matches of a glob such as `**/*.py`. At most 500 entries; .git, node_modules, .venv and caches are skipped. `largest: true` instead shows where the space went — total, the 50 largest files and the largest directories (everything counted, node_modules included); use it with delete_files to get back under the quota.',
+  description: 'List files with their sizes (bytes on disk): every file under `path` (default: your workspace dir), or the matches of a glob such as `**/*.py`. At most 500 entries; .git, node_modules, .venv and caches are skipped. `largest: true` instead shows where the space went — total, the 50 largest files and the largest directories (everything counted, node_modules included).',
   schema: {
     glob: z.string().max(500).optional().describe('Glob relative to path, e.g. **/*.ts'),
-    path: pathArg.optional().describe('Directory (relative to /workspace)'),
+    path: pathArg.optional().describe(`Directory (${PATH_HELP})`),
     largest: z.boolean().optional().describe('Show the largest files and directories instead of a listing')
   },
   handler: (a, ctx) => guard('list_files', ctx, async (scope) => {
     const c = await begin(ctx, scope)
-    const r = await exec(c, LIST_SCRIPT, { input: JSON.stringify({ glob: a.glob ?? null, path: a.path ?? null, largest: a.largest === true }), capBytes: 256 * 1024, timeoutSec: 120 })
+    const r = await exec(c, LIST_SCRIPT, { input: JSON.stringify({ glob: a.glob ?? null, path: a.path ? workspacePath(a.path as string) : null, largest: a.largest === true }), capBytes: 256 * 1024, timeoutSec: 120 })
     const j = parseJson(r)
     if (!j) return failed('list_files', r)
     const err = scriptError('list_files', r, j, a.path as string | undefined)
@@ -278,15 +264,15 @@ export const grepTool: AgentTool = {
   guard: 'workspace',
   toolset: 'workspace',
   kind: 'read',
-  description: `Search file contents in your workspace with ripgrep (regex). Returns \`path:line:text\` lines, at most ${GREP_MAX}. Narrow with path and glob (e.g. *.py).`,
+  description: `Search file contents with ripgrep (regex; plain grep -E when ripgrep is not installed) — your workspace dir by default, or any path. Returns \`path:line:text\` lines, at most ${GREP_MAX}. Narrow with path and glob (e.g. *.py).`,
   schema: {
     pattern: z.string().min(1).max(1000).describe('Regular expression (ripgrep syntax)'),
-    path: pathArg.optional().describe('File or directory (relative to /workspace)'),
+    path: pathArg.optional().describe(`File or directory (${PATH_HELP})`),
     glob: z.string().max(500).optional().describe('Only files matching this glob, e.g. *.ts')
   },
   handler: (a, ctx) => guard('grep', ctx, async (scope) => {
     const c = await begin(ctx, scope)
-    const r = await exec(c, grepCommand({ pattern: a.pattern as string, path: a.path as string | undefined, glob: a.glob as string | undefined }), { capBytes: 128 * 1024, timeoutSec: 60 })
+    const r = await exec(c, grepCommand({ pattern: a.pattern as string, path: a.path ? workspacePath(a.path as string) : undefined, glob: a.glob as string | undefined }), { capBytes: 128 * 1024, timeoutSec: 60 })
     if (r.timedOut) return failed('grep', r)
     if (r.exitCode === 1) return { result: withTaint(r, { matches: [], count: 0 }), summary: 'grep: no matches' }
     if (r.exitCode !== 0 && r.exitCode !== 141) return { result: withTaint(r, { ok: false, error: r.stderr.trim().slice(0, 500) || `exit ${r.exitCode}` }), summary: 'grep failed' }
@@ -302,13 +288,11 @@ export const diffTool: AgentTool = {
   guard: 'workspace',
   toolset: 'workspace',
   kind: 'read',
-  description: 'Show what changed in your workspace (`git diff`, new files included). On first use the workspace becomes a git repo with a baseline commit, so later diffs show changes since then (commit with bash to move the baseline).',
-  schema: { path: pathArg.optional().describe('Only this file or directory') },
+  description: 'Show what changed in your workspace dir (`git diff`, new files included). On first use the workspace becomes a git repo with a baseline commit, so later diffs show changes since then (commit with bash to move the baseline).',
+  schema: { path: pathArg.optional().describe('Only this file or directory (relative to your workspace dir)') },
   handler: (a, ctx) => guard('diff', ctx, async (scope) => {
     const c = await begin(ctx, scope)
-    // The first diff commits the whole workspace into .git — a copy of everything (quota).
-    await assertQuota(c)
-    const r = await exec(c, diffCommand(a.path as string | undefined), { capBytes: 128 * 1024, timeoutSec: 120 })
+    const r = await exec(c, diffCommand(a.path ? workspacePath(a.path as string) : undefined), { capBytes: 128 * 1024, timeoutSec: 120 })
     if (r.exitCode !== 0) return failed('diff', r)
     const d = parseDiff(r.stdout)
     if (d.truncated) d.diff = maskCut(d.diff, await secretValues(), { end: true })
@@ -325,7 +309,7 @@ export const bashTool: AgentTool = {
   guard: 'workspace',
   toolset: 'workspace',
   kind: 'create',
-  description: 'Run a bash command in your workspace sandbox (cwd /workspace; internet yes, LAN no; no root). Foreground: returns exit code + output (64 KB tail; timeout default 120s, max 600s). run_in_background: starts it and returns a shellId at once — read its output with bash_output, stop it with kill_shell; use `watch` to wait for it. Background shells are for jobs, not servers: after 15 min with no command and no output read (and no armed watch) the sandbox stops and its shells with it; they also end when the workstream ends.',
+  description: 'Run a bash command on your Mac — you are `bridget`, with your own logins (gh, git, ssh), Homebrew and the whole machine: LAN and internet, any path. cwd is your workspace dir (relative paths land there). Foreground: returns exit code + output (64 KB tail; timeout default 120s, max 600s). run_in_background: starts it and returns a shellId at once — read its output with bash_output, stop it with kill_shell; use `watch` to wait for it. Background shells are for jobs, not servers: after 15 min with no command and no output read (and no armed watch) they are stopped; they also end when the workstream ends.',
   schema: {
     command: z.string().min(1).max(100_000).describe('The bash command'),
     timeout: z.number().int().min(1).max(600).optional().describe('Foreground timeout in seconds (default 120, max 600)'),
@@ -335,26 +319,21 @@ export const bashTool: AgentTool = {
     const command = a.command as string
     const c = await begin(ctx, scope)
     if (a.run_in_background === true) {
-      if (c.tainted || c.offline) return { result: { ok: false, error: `${c.offline ? UNVERIFIED_RUN : TAINTED_RUN} in a throwaway container — background shells are not available. Run it in the foreground (timeout up to 600s).` }, summary: 'bash: background refused (tainted run)' }
-      if ((await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return { result: { ok: false, error: `${TAINTED_WS} — background shells need it. Run it in the foreground instead.` }, summary: 'bash: background refused (workspace offline)' }
-      await assertQuota(c)
-      const s = await workspaceRuntime().shells.start(c.ref.workspaceId, command, await secretsFor(c))
+      if (evalConfined()) return { result: { ok: false, error: `${EVAL_CONFINED} — background shells are not available. Run it in the foreground (timeout up to 600s).` }, summary: 'bash: background refused (eval)' }
+      const s = await workspaceRuntime().shells.start(c.ref.workspaceId, command, { ...c.opts, ...(await secretsFor(c)) })
       return { result: { shellId: s.shellId, pid: s.pid, state: 'running', note: 'Read its output with bash_output({shellId}); stop it with kill_shell. To wait for it without polling, use watch.' }, summary: `started in background: \`${clip(command)}\`` }
     }
-    const q = await overQuota(c)
-    if (q) return { result: { ok: false, error: `${q.message} — bash is refused until space is freed. Find what is big with list_files({ largest: true }), then remove it with delete_files({ paths: [...] }).` }, summary: 'bash: refused (over quota)' }
     const r = await exec(c, command, { timeoutSec: a.timeout as number | undefined, ...(await secretsFor(c)) })
     // The 64 KB cap keeps the TAIL: whatever was cut came before it.
     if (r.truncated) { const v = await secretValues(); r.stdout = maskCut(r.stdout, v, { start: true }); r.stderr = maskCut(r.stderr, v, { start: true }) }
     return {
       result: withTaint(r, {
         exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr,
-        ...(r.timedOut ? { timedOut: true } : {}), ...(r.oom ? { oom: true, note: 'killed: the sandbox ran out of memory (2 GB)' } : {}),
+        ...(r.timedOut ? { timedOut: true } : {}),
         ...(r.aborted ? { aborted: true } : {}), ...(r.truncated ? { truncated: true } : {}),
-        ...(r.tainted || r.offline ? { networkOff: true, networkNote: r.offline ? `${UNVERIFIED_RUN}.` : c.tainted ? `${TAINTED_RUN}.` : `${TAINTED_WS}.` } : {}),
         untrusted: WORKSPACE_UNTRUSTED_NOTE
       }),
-      summary: `ran \`${clip(command)}\` → exit ${r.exitCode}${r.timedOut ? ' (timed out)' : ''}${r.oom ? ' (out of memory)' : ''}${r.tainted || r.offline ? ' (no network)' : ''}`
+      summary: `ran \`${clip(command)}\` → exit ${r.exitCode}${r.timedOut ? ' (timed out)' : ''}`
     }
   })
 }
@@ -368,9 +347,9 @@ export const bashOutputTool: AgentTool = {
   schema: { shellId: z.string().uuid().describe('From bash with run_in_background') },
   handler: (a, ctx) => guard('bash_output', ctx, async (scope) => {
     const c = await begin(ctx, scope)
-    // Follow-up 2 (NB3): a fixed read of a live shell — always against the real container, never in an
-    // offline one-off (which cannot see the shell's process and would mark it lost).
-    const o = await workspaceRuntime().shells.output(c.ref.workspaceId, a.shellId as string, liveShellOpts(c))
+    // Follow-up 2 (NB3): a fixed read of a live shell — the registry runs it internal; the run's taint
+    // so it always sees the real process.
+    const o = await workspaceRuntime().shells.output(c.ref.workspaceId, a.shellId as string, c.opts)
     const { tainted: _t, ...body } = o
     return {
       result: withTaint(o, { ...body, untrusted: WORKSPACE_UNTRUSTED_NOTE }),
@@ -387,8 +366,8 @@ export const killShellTool: AgentTool = {
   schema: { shellId: z.string().uuid().describe('From bash with run_in_background') },
   handler: (a, ctx) => guard('kill_shell', ctx, async (scope) => {
     const c = await begin(ctx, scope)
-    // NB3: the kill must reach the process in the real container.
-    const k = await workspaceRuntime().shells.kill(c.ref.workspaceId, a.shellId as string, liveShellOpts(c))
+    // NB3: the kill reaches the real process (MyMind's own internal script).
+    const k = await workspaceRuntime().shells.kill(c.ref.workspaceId, a.shellId as string, c.opts)
     return { result: withTaint(k, { shellId: k.shellId, state: k.state, ...(k.alreadyEnded ? { alreadyEnded: true } : {}) }), summary: k.alreadyEnded ? `shell already ${k.state}` : `stopped shell (${k.state})` }
   })
 }
@@ -397,12 +376,11 @@ export const deleteFilesTool: AgentTool = {
   name: 'delete_files',
   toolset: 'workspace',
   kind: 'create',
-  description: `Delete files or directories (recursively) in your workspace — paths relative to /workspace, no \`..\`, at most ${DELETE_MAX_PATHS}; .mymind (MyMind's own bookkeeping) can't be deleted, and one invalid path refuses the whole batch (nothing is deleted). Works even when the workspace is over its quota (that is how you free space: find what is big with list_files({ largest: true }) first).`,
-  schema: { paths: z.array(pathArg).min(1).max(DELETE_MAX_PATHS).describe('Relative paths to delete') },
+  description: `Delete files or directories (recursively) inside your workspace dir — relative paths, no \`..\`, at most ${DELETE_MAX_PATHS}; .mymind (MyMind's own bookkeeping) can't be deleted, and one invalid path refuses the whole batch (nothing is deleted). Anything outside the workspace: use bash.`,
+  schema: { paths: z.array(pathArg).min(1).max(DELETE_MAX_PATHS).describe('Paths relative to your workspace dir') },
   handler: (a, ctx) => guard('delete_files', ctx, async (scope) => {
     const c = await begin(ctx, scope)
-    // No quota check: this is the way back under it.
-    const r = await exec(c, DELETE_SCRIPT, { input: JSON.stringify({ paths: a.paths }), timeoutSec: 300 })
+    const r = await exec(c, DELETE_SCRIPT, { input: JSON.stringify({ paths: (a.paths as string[]).map(workspacePath) }), timeoutSec: 300 })
     const j = parseJson(r)
     if (!j) return failed('delete_files', r)
     // One invalid path refuses the whole batch before anything is deleted (final fix wave).
@@ -418,7 +396,7 @@ export const watchTool: AgentTool = {
   name: 'watch',
   toolset: 'workspace',
   kind: 'create',
-  description: 'Wait for a condition without polling yourself: the command is re-run in your workspace every intervalSec until it exits 0 (until: "exit0") or its output matches `pattern` (until: "match", a Python regex), or timeoutMin passes. Returns at once. In a workstream the result wakes the work — if there is nothing else to do meanwhile, end your turn and it waits without using budget. In chat a note is posted when it ends.',
+  description: 'Wait for a condition without polling yourself: the command is re-run (cwd: your workspace dir) every intervalSec until it exits 0 (until: "exit0") or its output matches `pattern` (until: "match", a Python regex), or timeoutMin passes. Returns at once. In a workstream the result wakes the work — if there is nothing else to do meanwhile, end your turn and it waits without using budget. In chat a note is posted when it ends.',
   schema: {
     command: z.string().min(1).max(10_000).describe('Command to re-run (e.g. `test -f out/done` or `curl -s localhost:8000/health`)'),
     until: z.enum(['exit0', 'match']).describe('"exit0": done when it exits 0; "match": done when its output matches pattern'),
@@ -431,13 +409,11 @@ export const watchTool: AgentTool = {
     const pattern = a.pattern as string | undefined
     if (until === 'match' && !pattern) return { result: { ok: false, error: 'until="match" needs a pattern' }, summary: 'watch: no pattern' }
     const c = await begin(ctx, scope)
-    if (c.tainted || c.offline) return { result: { ok: false, error: `${c.offline ? UNVERIFIED_RUN : TAINTED_RUN} in throwaway containers — watches are not available. Check with a foreground bash command instead.` }, summary: 'watch: refused (tainted run)' }
+    // An eval world confines every command: no watches (a poll would outlive the call).
+    if (evalConfined()) return { result: { ok: false, error: `${EVAL_CONFINED} — watches are not available. Check with a foreground bash command instead.` }, summary: 'watch: refused (eval)' }
     if (!c.ref.workstreamId && !c.ref.conversationId) return { result: { ok: false, error: 'watch needs a conversation or workstream to report back to' }, summary: 'watch: nowhere to report' }
-    // Fix round 1 (M2): a tainted workspace runs every poll in a fresh no-network container — no watches there.
-    if ((await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return { result: { ok: false, error: `${TAINTED_WS} — watches need it. Check with a foreground bash command instead.` }, summary: 'watch: refused (workspace offline)' }
-    await assertQuota(c)
     if (until === 'match') {
-      // Python's regex dialect (the poll matches inside the sandbox) — check it compiles now.
+      // Python's regex dialect (the poll matches in python) — check it compiles now.
       const r = await exec(c, `python3 -I -c 'import re,sys; re.compile(sys.stdin.read())'`, { input: pattern, timeoutSec: 20 })
       if (r.exitCode !== 0) return { result: { ok: false, error: `invalid pattern: ${r.stderr.trim().split('\n').pop() ?? 'does not compile'}` }, summary: 'watch: invalid pattern' }
     }
@@ -475,9 +451,9 @@ export const exportToDocumentTool: AgentTool = {
   name: 'export_to_document',
   toolset: 'workspace',
   kind: 'create',
-  description: 'Copy a text file from your workspace into Tony\'s documents at docPath (creates the document, or replaces the content of the one already there). ≤ 400 KB of UTF-8 text.',
+  description: 'Copy a text file (relative paths in your workspace dir, absolute anywhere) into Tony\'s documents at docPath (creates the document, or replaces the content of the one already there). ≤ 400 KB of UTF-8 text.',
   schema: {
-    path: pathArg.describe('Workspace file (relative to /workspace)'),
+    path: pathArg.describe(`File (${PATH_HELP})`),
     docPath: DOC_PATH.describe('Document path, e.g. /projects/<slug>/report.md'),
     workspaceId: z.string().uuid().optional().describe('Set automatically — leave it out')
   },
@@ -496,8 +472,8 @@ export const exportToDocumentTool: AgentTool = {
     }
     scope.workspaceId = workspaceId
     // Reading moves nothing off the box; the run's taint applies when there is one (replay has none).
-    const mode = ctx.isTainted ? runNetworkMode(ctx) : 'clean'
-    const f = await readWorkspaceText(workspaceId, a.path as string, { tainted: mode === 'tainted', ...(mode === 'offline' ? { offline: true } : {}), signal: ctx.signal })
+    const mode = ctx.isTainted ? runTaintMode(ctx) : 'clean'
+    const f = await readWorkspaceText(workspaceId, workspacePath(a.path as string), { tainted: mode === 'tainted', ...(mode === 'unverified' ? { offline: true } : {}), signal: ctx.signal })
     // Ruling C3: the document must not carry an opted-in secret a command wrote into the file —
     // values are masked before it is written. Fails closed: no readable store, no export.
     let values: string[]
@@ -539,10 +515,10 @@ export const importDocumentTool: AgentTool = {
   name: 'import_document',
   toolset: 'workspace',
   kind: 'create',
-  description: 'Copy one of Tony\'s documents (by id) into your workspace as a file at path (overwrites).',
+  description: 'Copy one of Tony\'s documents (by id) into a file at path (overwrites) — relative paths land in your workspace dir.',
   schema: {
     docId: z.string().min(1).describe('Document id'),
-    path: pathArg.describe('Workspace file to write (relative to /workspace)')
+    path: pathArg.describe(`File to write (${PATH_HELP})`)
   },
   handler: (a, ctx) => guard('import_document', ctx, async (scope) => {
     const doc = await getDoc(a.docId as string)
@@ -550,8 +526,7 @@ export const importDocumentTool: AgentTool = {
     const content = doc.content ?? ''
     if (byteLen(content) > WRITE_MAX_BYTES) return { result: { ok: false, error: 'document too large to import' }, summary: 'import_document: too large' }
     const c = await begin(ctx, scope)
-    await assertQuota(c)
-    const r = await exec(c, WRITE_SCRIPT, { input: JSON.stringify({ path: a.path, content }), timeoutSec: 60 })
+    const r = await exec(c, WRITE_SCRIPT, { input: JSON.stringify({ path: workspacePath(a.path as string), content }), timeoutSec: 60 })
     const j = parseJson(r)
     if (!j) return failed('import_document', r)
     const err = scriptError('import_document', r, j, a.path as string)
@@ -560,43 +535,18 @@ export const importDocumentTool: AgentTool = {
   })
 }
 
-/** Cycle 83: export_to_coordinator's limits — the archive travels base64 through the 1 MB output cap. */
+/** Cycle 83: export_to_coordinator's limits. */
 export const EXPORT_MAX_PATHS = 100
 export const EXPORT_DIR = 'from'
-/** Fix round 1 (M4): at most this much unpacked per export (and never past the destination's quota). */
+/** At most this much copied per export. */
 export const EXPORT_MAX_UNPACKED_BYTES = 200 * 1024 * 1024
-const EXPORT_TOO_LARGE = '__mm_export_too_large__'
-/** Fix round 3: members per export. */
+/** Files and directories per export. */
 export const EXPORT_MAX_ENTRIES = 20_000
-
-/** The unpack, run INSIDE the destination sandbox with the base64 archive on stdin: decompression is
- *  cut at `limit` bytes (exit 3), an archive holding anything but plain files and directories is
- *  refused before extraction (exit 4), and nothing extracts over an existing directory's metadata. */
-export function exportUnpackCommand(dir: string, limit: number): string {
-  return [
-    't=$(mktemp) || exit 1',
-    `base64 -d | gzip -dc | head -c ${limit + 1} > "$t"`,
-    `if [ "$(wc -c < "$t")" -gt ${limit} ]; then rm -f "$t"; echo "${EXPORT_TOO_LARGE}" >&2; exit 3; fi`,
-    // Fix round 3: at most EXPORT_MAX_ENTRIES members (thousands of empty dirs/files cost far more
-    // on disk than they list), and every listing below is --numeric-owner: an owner NAME is the
-    // archive's own text and may hold spaces, which would shift the size out of field 3.
-    `c=$(tar -tf "$t" | wc -l)`,
-    `if [ "$c" -gt ${EXPORT_MAX_ENTRIES} ]; then rm -f "$t"; echo "the archive has more than ${EXPORT_MAX_ENTRIES} entries" >&2; exit 6; fi`,
-    `if tar --numeric-owner -tvf "$t" | grep -q '^[^-d]'; then rm -f "$t"; echo "the archive holds links or special files" >&2; exit 4; fi`,
-    // Fix round 2: the members' LISTED sizes count too — a sparse member lists far more than the
-    // archive holds (2 GB from a few KB) and extracts to that apparent size. A plain archive always
-    // holds every byte it lists, so listing more than the archive's own size means sparse: refused.
-    `n=$(tar --numeric-owner -tvf "$t" | awk '{s+=$3} END {printf "%d", s}')`,
-    `if [ "$n" -gt ${limit} ]; then rm -f "$t"; echo "${EXPORT_TOO_LARGE}" >&2; exit 3; fi`,
-    `if [ "$n" -gt "$(wc -c < "$t")" ]; then rm -f "$t"; echo "the archive holds sparse files" >&2; exit 5; fi`,
-    `mkdir -p ${dir} && tar -xf "$t" -C ${dir} --no-same-owner --no-same-permissions --no-overwrite-dir; s=$?; rm -f "$t"; exit $s`
-  ].join('\n')
-}
 
 /** null when `p` may be exported (relative, no `..`, not MyMind's bookkeeping); else why not. */
 function exportPathProblem(p: string): string | null {
   if (!p || p.includes('\0')) return 'empty path'
-  if (p.startsWith('/')) return 'paths are relative to /workspace (no leading /)'
+  if (p.startsWith('/')) return 'paths are relative to your workspace dir (no leading /)'
   const parts = p.split('/').filter(x => x && x !== '.')
   if (!parts.length) return 'export named files or directories, not the whole workspace'
   if (parts.includes('..')) return 'no ..'
@@ -605,21 +555,21 @@ function exportPathProblem(p: string): string | null {
 }
 
 /**
- * Cycle 83 (spec D7): a CHILD workstream with its OWN workspace hands files up to its coordinator —
- * copied into the coordinator's workspace under /workspace/from/<childId>/. The copy is a tar of the
- * named paths made inside the child's sandbox (symlinks and hard links dereferenced, so the archive
- * holds plain files only) and unpacked inside the coordinator's — the worker never touches either
- * directory. A tainted run or a tainted child workspace taints the coordinator's workspace too (its
- * files may be mail-derived).
+ * Cycle 83 (spec D7) / cycle 86: a CHILD workstream with its OWN workspace hands files up to its
+ * coordinator — copied into the coordinator's workspace under from/<childId>/. Both are directories
+ * on this Mac, so the worker copies them (sandbox/host/copy.ts): regular files and directories only
+ * (symlinks and special files are skipped and listed), everything sized before anything is written,
+ * never through a link. A tainted run or a tainted child workspace taints the coordinator's
+ * workspace too (its files may be mail-derived).
  */
 export const exportToCoordinatorTool: AgentTool = {
   name: 'export_to_coordinator',
   toolset: 'workspace',
   kind: 'create',
-  description: `Copy files or directories from your workspace into your coordinator's workspace (they land under ${EXPORT_DIR}/<your workstream id>/ there). Only for a child workstream with its own workspace. Paths relative to /workspace; at most ${EXPORT_MAX_PATHS}; about 700 KB compressed in total — for more, write a summary file and export that.`,
-  schema: { paths: z.array(pathArg).min(1).max(EXPORT_MAX_PATHS).describe('Relative paths to copy') },
+  description: `Copy files or directories from your workspace into your coordinator's workspace (they land under ${EXPORT_DIR}/<your workstream id>/ there). Only for a child workstream with its own workspace. Paths relative to your workspace dir; at most ${EXPORT_MAX_PATHS} paths, ${EXPORT_MAX_UNPACKED_BYTES / 1024 / 1024} MB and ${EXPORT_MAX_ENTRIES} files in total; symlinks are skipped.`,
+  schema: { paths: z.array(pathArg).min(1).max(EXPORT_MAX_PATHS).describe('Paths relative to your workspace dir') },
   handler: (a, ctx) => guard('export_to_coordinator', ctx, async (scope) => {
-    const paths = a.paths as string[]
+    const paths = (a.paths as string[]).map(workspacePath)
     for (const p of paths) {
       const why = exportPathProblem(p)
       if (why) return { result: { ok: false, error: `${p}: ${why}` }, summary: 'export_to_coordinator: bad path' }
@@ -630,36 +580,18 @@ export const exportToCoordinatorTool: AgentTool = {
     if (!child?.isChild) return { result: { ok: false, error: 'export_to_coordinator is only for a child workstream (this run has no coordinator)' }, summary: 'export_to_coordinator: not a child' }
     if (!child.parentId) return { result: { ok: false, error: 'your coordinator no longer exists' }, summary: 'export_to_coordinator: no coordinator' }
     if (child.workspaceMode !== 'own') return { result: { ok: false, error: 'you share your coordinator\'s workspace already — your files are there' }, summary: 'export_to_coordinator: shared workspace' }
-    // Inside the child's sandbox: the file list on stdin (NUL-separated); out come the archive's
-    // UNCOMPRESSED size (first line) and the gzip'd tar as base64. Via a temp file, not a pipe: the
-    // sandbox's sh (dash) has no pipefail, so a tar error (a missing path) would otherwise be hidden.
-    const pack = await exec(c, 'f=$(mktemp) && tar -C /workspace --null -T - -h --hard-dereference -czf "$f" && n=$(gzip -dc "$f" | wc -c) && printf "%s\\n" "$n" && base64 -w0 "$f"; s=$?; rm -f "$f"; exit $s', { input: paths.join('\0'), capBytes: 1024 * 1024, timeoutSec: 120 })
-    if (pack.truncated) return { result: withTaint(pack, { ok: false, error: 'too large to export (over ~700 KB compressed) — export fewer or smaller files, or write a summary file and export that' }), summary: 'export_to_coordinator: too large' }
-    if (pack.exitCode !== 0) return failed('export_to_coordinator', pack)
-    const nl = pack.stdout.indexOf('\n')
-    const claimed = Number(pack.stdout.slice(0, nl))
-    const archive = pack.stdout.slice(nl + 1)
+    const m = workspaceRuntime().manager
+    const src = await dbWorkspaceStore.get(c.ref.workspaceId)
     const { ensureWorkstreamWorkspace } = await import('../../sandbox/store')
     const dest = await ensureWorkstreamWorkspace(child.parentId)
-    const tainted = c.tainted || pack.tainted
-    // Fix round 1 (M4): the UNCOMPRESSED size must fit the coordinator's remaining quota (and a
-    // per-export ceiling) — ~700 KB of gzip can expand far past it.
-    const m = workspaceRuntime().manager
-    await m.checkQuota(dest.id, { tainted, offline: c.offline })
-    const used = (await dbWorkspaceStore.get(dest.id))?.bytesUsed ?? 0
-    const limit = Math.min(EXPORT_MAX_UNPACKED_BYTES, m.settings.quotaBytes - used)
-    const tooBig = (n: number) => ({ result: withTaint({ tainted }, { ok: false, error: `too large to export: ${n} bytes uncompressed, and the coordinator's workspace takes at most ${Math.max(0, limit)} more — export less` }), summary: 'export_to_coordinator: too large' })
-    if (limit <= 0 || !Number.isFinite(claimed) || claimed > limit) return tooBig(claimed)
-    const dir = `/workspace/${EXPORT_DIR}/${child.id}`
-    // The archive came from a sandbox the child controls, so the size it claimed is only advisory:
-    // INSIDE the coordinator's sandbox the decompression is cut at the limit, and an archive holding
-    // anything but plain files and directories (links, devices — its tar could have been swapped) is
-    // refused before anything is extracted.
-    const unpack = await m.exec(dest.id, exportUnpackCommand(dir, limit), { tainted, ...(c.offline && !tainted ? { offline: true } : {}), signal: ctx.signal, input: archive, timeoutSec: 120 })
-    if (unpack.exitCode === 3) return tooBig(limit + 1)
-    if (unpack.exitCode !== 0) return failed('export_to_coordinator', { ...unpack, tainted: tainted || unpack.tainted })
+    // The run's taint marks the child's workspace (as any of its tools would), then the coordinator's.
+    if (c.tainted) await m.markTainted(c.ref.workspaceId)
+    const tainted = c.tainted || src?.tainted === true
+    const plan = await planCopy(await m.ensureDir(c.ref.workspaceId), paths, { maxBytes: EXPORT_MAX_UNPACKED_BYTES, maxEntries: EXPORT_MAX_ENTRIES })
+    if (tainted) await m.markTainted(dest.id)
+    await applyCopy(await m.ensureDir(c.ref.workspaceId), plan.plan, await m.ensureDir(dest.id), `${EXPORT_DIR}/${child.id}`)
     return {
-      result: withTaint({ tainted: tainted || unpack.tainted }, { ok: true, copied: paths, to: `${EXPORT_DIR}/${child.id}/`, note: `In your coordinator's workspace under ${EXPORT_DIR}/${child.id}/ — mention the paths in your finish_workstream summary.` }),
+      result: withTaint({ tainted }, { ok: true, copied: paths, bytes: plan.bytes, ...(plan.skipped.length ? { skipped: plan.skipped, skippedNote: 'symlinks and special files are not copied' } : {}), to: `${EXPORT_DIR}/${child.id}/`, note: `In your coordinator's workspace under ${EXPORT_DIR}/${child.id}/ — mention the paths in your finish_workstream summary.` }),
       summary: `exported ${paths.length} path${paths.length === 1 ? '' : 's'} to the coordinator`
     }
   })

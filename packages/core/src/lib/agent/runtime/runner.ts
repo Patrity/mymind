@@ -262,7 +262,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     const storedToolsets = parseToolsetIds(conv?.activeToolsets ?? [])
     const jobDeclaredToolsets = parseToolsetIds(input.toolsets ?? [])
     // Cycle 82: a workstream segment has its workspace tools pre-loaded (spec §4). Cycle 83 final fix
-    // wave (I4): except a CHILD — sandbox containers are few, so a child gets the workspace only when
+    // wave (I4): except a CHILD — a child gets the workspace only when
     // its spawn spec listed it (then it is in the child's own toolsets) or it loads it itself.
     const initialToolsets = parseToolsetIds([...storedToolsets, ...jobDeclaredToolsets, ...(seg && !seg.child ? ['workspace'] : [])])
     // M1 (final review, fix round 2): ids declared ONLY by this run's job (not already in the

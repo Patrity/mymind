@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * /artifacts (cycle 86) — webapps and pages Bridget published. Live via the `artifact` resource.
+ * /artifacts (cycle 87) — webapps and pages Bridget published. Live via the `artifact` resource.
  * Always pass the artifact UUID to the mutations (never the slug) so live invalidation keys match.
  */
 import type { TableColumn } from '@nuxt/ui'

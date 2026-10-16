@@ -948,8 +948,8 @@ export const agentTools: AgentTool[] = [
     outbound: true,
     toolset: 'web',
     schema: { query: z.string().describe('Search query'), count: z.number().int().min(1).max(10).optional() },
-    handler: async (a) => {
-      const { results, warning } = await (await searchProvider()).search(a.query as string, { count: a.count as number | undefined })
+    handler: async (a, ctx) => {
+      const { results, warning } = await (await searchProvider()).search(a.query as string, { count: a.count as number | undefined, signal: ctx.signal })
       return {
         result: warning ? { results, warning } : { results },
         summary: `searched "${a.query as string}" (${results.length}${warning ? ', backend degraded' : ''})`
@@ -1288,7 +1288,7 @@ export const agentTools: AgentTool[] = [
   listReviewsTool,
   // ---- self-improvement log (cycle 76, Task 10) ----
   ...improvementTools,
-  // ---- artifacts (cycle 86) ----
+  // ---- artifacts (cycle 87) ----
   ...artifactTools
 ]
 

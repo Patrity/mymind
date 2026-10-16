@@ -4,12 +4,7 @@
 // history — injected through `ctx.gmail` (the default, sent-history.ts, asks Gmail). Anything that
 // cannot be verified there is `high` (fix round 1, R2), never an exception and never `review`.
 //
-// Host `exec` (root on the MyMind LXC) is ALWAYS at least `high` (fix round 1, R1): a regex can't
-// reliably tell a network/install command from a harmless one (`/usr/bin/curl`, `bash -c '…'`,
-// `c''url`), so the patterns below only supply REASONS for the card and the judge, never the gate.
-// Saved allowlist patterns keep their own fast-path in exec.autoApprove, before the judge.
-import { posix } from 'node:path'
-import { isCatastrophic } from '../../exec/outbound'
+// Cycle 86: host `exec` (and its rule) is gone — Bridget's workspace commands need no approval.
 import type { RuleFloor, RuleVerdict } from './types'
 
 /** The tool facts the rules read. An AgentTool satisfies it. */
@@ -58,95 +53,6 @@ function combine(findings: Finding[]): RuleVerdict {
     if (f.reason && !reasons.includes(f.reason)) reasons.push(f.reason)
   }
   return { floor, reasons }
-}
-
-// --- exec ------------------------------------------------------------------------------------------
-
-/** Package managers installing something (or running a freshly downloaded package / script). */
-const INSTALL: RegExp[] = [
-  /\b(?:apt-get|apt|dnf|yum|zypper|snap|brew)\s+(?:-\S+\s+)*install\b/i,
-  /\bapk\s+(?:-\S+\s+)*add\b/i,
-  /\bpacman\s+-S/i,
-  /\b(?:pip3?|pipx)\s+(?:-\S+\s+)*install\b/i,
-  /\buv\s+(?:pip\s+install|tool\s+install|add)\b/i,
-  /\b(?:npm|pnpm|bun)\s+(?:-\S+\s+)*(?:install|i|add)\b/i,
-  /\byarn\s+(?:global\s+)?add\b/i,
-  /\b(?:gem|cargo|go)\s+install\b/i,
-  /\b(?:npx|pnpx|bunx)\s/i,
-  /\b(?:curl|wget)\b[^\n;]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b/i
-]
-
-/** Commands that reach the network. */
-const NETWORK = /(?:^|[\s;&|(`$'"/])(?:sudo\s+)?(curl|wget|nc|ncat|netcat|ssh|scp|sftp|rsync|ftp|telnet|socat|nmap|aria2c)(?=[\s'"]|$)/i
-/** A command whose real work is hidden from the patterns: a nested shell script, eval, command
- *  substitution as the command word, or quote / backslash splicing inside a word. */
-const OPAQUE = /\b(?:ba|z|da|k)?sh\s+-\w*c\b|\beval\b|(?:^|[;&|]\s*)(?:\$\(|`)|\w(?:''|""|\\)\w/
-const GIT_NETWORK = /\bgit\b[^;&|\n]*?\s(?:clone|fetch|pull|push|ls-remote|submodule\s+update)\b/i
-
-/** Where exec writes are expected (the default cwd is the workspace). */
-const EXEC_DEFAULT_CWD = '/opt/mymind/workspace'
-const KNOWN_WRITE_ROOTS = ['/opt/mymind/workspace', '/tmp', '/var/tmp', '/dev/null', '/dev/stdout', '/dev/stderr']
-
-/** Verbs whose every non-flag argument is written (deleted, chmodded, created…). */
-const ALL_ARGS_WRITTEN = new Set(['rm', 'rmdir', 'chmod', 'chown', 'chgrp', 'truncate', 'touch', 'mkdir', 'shred', 'unlink'])
-/** Verbs whose LAST non-flag argument is the destination. */
-const LAST_ARG_WRITTEN = new Set(['cp', 'mv', 'install', 'ln'])
-
-function underKnownRoot(p: string): boolean {
-  return KNOWN_WRITE_ROOTS.some(r => p === r || p.startsWith(`${r}/`))
-}
-
-function stripQuotes(t: string): string {
-  return t.replace(/^['"]|['"]$/g, '')
-}
-
-/** Every path a command visibly writes, resolved against its cwd. Heuristic — shell expansion,
- *  `cd` within the command and variables are not followed (an unresolvable target is ignored). */
-export function execWriteTargets(command: string, cwd?: string): string[] {
-  const base = cwd && cwd.startsWith('/') ? cwd : posix.join(EXEC_DEFAULT_CWD, cwd ?? '')
-  const raw: string[] = []
-  for (const m of command.matchAll(/(?:^|[^0-9&<>|])>>?\|?\s*([^\s;|&<>()]+)/g)) raw.push(m[1]!)
-  for (const m of command.matchAll(/\btee\s+(?:-\S+\s+)*([^\s;|&<>()]+)/g)) raw.push(m[1]!)
-  for (const m of command.matchAll(/\bdd\b[^\n;|&]*\bof=([^\s;|&]+)/g)) raw.push(m[1]!)
-  for (const segment of command.split(/&&|\|\||[;|\n]/)) {
-    const tokens = segment.trim().split(/\s+/).filter(Boolean)
-    let i = 0
-    while (i < tokens.length && /^(?:sudo|env|nohup|time|[A-Z_][A-Z0-9_]*=\S*)$/.test(tokens[i]!)) i++
-    const verb = tokens[i]
-    if (!verb) continue
-    const isSedInPlace = verb === 'sed' && tokens.some(t => /^-[a-zA-Z]*i/.test(t) || t.startsWith('--in-place'))
-    const args = tokens.slice(i + 1).filter(t => !t.startsWith('-'))
-    if (ALL_ARGS_WRITTEN.has(verb)) raw.push(...(verb === 'chmod' || verb === 'chown' || verb === 'chgrp' ? args.slice(1) : args))
-    else if (LAST_ARG_WRITTEN.has(verb) && args.length >= 2) raw.push(args[args.length - 1]!)
-    else if (isSedInPlace && args.length >= 2) raw.push(...args.slice(1))
-  }
-  const out: string[] = []
-  for (const r of raw) {
-    const t = stripQuotes(r)
-    if (!t || t.includes('$') || t.includes('`') || /^&?\d$/.test(t)) continue
-    const resolved = t.startsWith('~') ? `/root${t.slice(1)}` : t.startsWith('/') ? posix.normalize(t) : posix.resolve(base, t)
-    if (!out.includes(resolved)) out.push(resolved)
-  }
-  return out
-}
-
-/** The floor every host exec call starts from (R1). */
-export const EXEC_BASE_REASON = 'runs as root on the MyMind host'
-
-/** Pure: the exec rule (spec §2.1 as amended 2026-10-12, R1): always at least `high`; catastrophic →
- *  critical. Installs, network, opaque commands and writes outside the workspace and /tmp add reasons. */
-export function execRule(command: string, cwd?: string): RuleVerdict {
-  const findings: Finding[] = [{ floor: 'high', reason: EXEC_BASE_REASON }]
-  if (isCatastrophic(command)) findings.push({ floor: 'critical', reason: 'catastrophic command (wipes, formats or powers off the host)' })
-  if (INSTALL.some(re => re.test(command))) findings.push({ floor: 'high', reason: 'installs or runs a downloaded package' })
-  const net = NETWORK.exec(command)
-  if (net) findings.push({ floor: 'high', reason: `reaches the network (${net[1]!.toLowerCase()})` })
-  else if (GIT_NETWORK.test(command)) findings.push({ floor: 'high', reason: 'reaches the network (git remote)' })
-  if (OPAQUE.test(command)) findings.push({ floor: 'high', reason: 'opaque command (nested shell, eval, substitution or spliced words)' })
-  const outside = execWriteTargets(command, cwd).filter(p => !underKnownRoot(p))
-  if (outside.length) findings.push({ floor: 'high', reason: `writes outside the workspace and /tmp (${outside.slice(0, 3).join(', ')})` })
-  findings.push(...urlFindings(command))
-  return combine(findings)
 }
 
 // --- outbound URLs ---------------------------------------------------------------------------------
@@ -315,16 +221,13 @@ const CALENDAR_TOOLS = new Set(['calendar_guest_event', 'calendar_write_event', 
 
 /**
  * The rule tier's floor for one call. Never throws. Unknown tools → `review`.
- *   exec → execRule (always ≥ high); gmail_send → gmailSendRule (sent-history lookup; Task 2 then
+ *   gmail_send → gmailSendRule (sent-history lookup; Task 2 then
  *   applies bindGmailRuleToPin); calendar → calendarRule;
  *   jobs / wakes → review (plus the URL checks — a job body can carry a URL);
  *   any other `outbound` tool → outboundRule.
  */
 export async function ruleVerdict(tool: RuleTool, input: Record<string, unknown>, ctx: RuleContext = {}): Promise<RuleVerdict> {
   try {
-    if (tool.name === 'exec') {
-      return execRule(typeof input.command === 'string' ? input.command : '', typeof input.cwd === 'string' ? input.cwd : undefined)
-    }
     if (tool.name === 'gmail_send') {
       const lookup = ctx.gmail ?? (await import('./sent-history')).gmailSentHistory({}, ctx.signal)
       return await gmailSendRule(input, lookup)

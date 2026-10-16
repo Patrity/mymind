@@ -1,7 +1,8 @@
 <script setup lang="ts">
-// "Sandbox unavailable" (cycle 82 final review I6): the agent worker is up but its sandbox preflight
-// failed (no Docker, no image, firewall or resource limits not in place, low disk). Workspace tools
-// refuse until it is fixed; nothing else is affected.
+// "Workspace unavailable" (cycle 82 final review I6 / cycle 86): the agent worker is up but its
+// workspace health check failed (the workspaces dir is not writable, or the Mac is low on disk).
+// Workspace tools refuse until it is fixed;
+// nothing else is affected.
 const { sandboxProblem } = useWorkerStatus()
 </script>
 
@@ -11,8 +12,8 @@ const { sandboxProblem } = useWorkerStatus()
     color="warning"
     variant="subtle"
     icon="i-lucide-box"
-    :title="`Sandbox unavailable: ${sandboxProblem}`"
-    description="Bridget's workspace tools (files, bash, watches) are refused until this is fixed — everything else works."
+    :title="`Workspace unavailable: ${sandboxProblem}`"
+    description="Bridget's workspace tools (files, bash, watches) may be refused until this is fixed — everything else works."
     class="rounded-none"
     data-testid="sandbox-unavailable"
   />

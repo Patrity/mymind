@@ -178,10 +178,10 @@ describe('taints / outbound flags on the real tools (79b c)', () => {
   it.each(OUTBOUND)('%s is outbound', (n) => {
     expect(byName(n)?.outbound).toBe(true)
   })
-  it('exactly these taint / go outbound; find_free_time, search_brain, exec, send_message, gmail_send do not', () => {
+  it('exactly these taint / go outbound; find_free_time, search_brain, send_message, gmail_send do not', () => {
     expect(all.filter(t => t.taints).map(t => t.name).sort()).toEqual(TAINTS)
     expect(all.filter(t => t.outbound).map(t => t.name).sort()).toEqual(OUTBOUND)
-    for (const n of ['calendar_find_free_time', 'search_brain', 'exec', 'send_message', 'gmail_send']) {
+    for (const n of ['calendar_find_free_time', 'search_brain', 'send_message', 'gmail_send']) {
       expect(byName(n), n).toBeDefined()
       expect(byName(n)!.taints, n).toBeUndefined()
       expect(byName(n)!.outbound, n).toBeUndefined()

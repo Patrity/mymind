@@ -1,4 +1,4 @@
-// Cycle 86 (spec §5): the serving route's decisions, kept pure so every branch is unit-tested.
+// Cycle 87 (spec §5): the serving route's decisions, kept pure so every branch is unit-tested.
 import { SLUG_RE, type Manifest, type ManifestEntry } from './limits'
 import { lookupPath } from './manifest'
 

@@ -123,7 +123,7 @@ export interface AgentTool {
    *  a wake). Runs freely until the run is tainted; after that it goes through the approval gate
    *  (never allowlistable; headless → auto-deny). */
   outbound?: true
-  /** Cycle 86: for a tool that is only SOMETIMES outbound (publish_artifact with `public: true` puts content
+  /** Cycle 87: for a tool that is only SOMETIMES outbound (publish_artifact with `public: true` puts content
    *  on the internet). Gated exactly like `outbound`, but only for calls where this returns true. */
   outboundWhen?: (args: Record<string, unknown>) => boolean
   /** Cycle 79b: extra text for a tainted-run outbound card when the args alone don't show what

@@ -15,11 +15,12 @@ export interface SearchResponse {
 }
 
 export interface SearchProvider {
-  search(query: string, opts?: { count?: number }): Promise<SearchResponse>
+  search(query: string, opts?: { count?: number, signal?: AbortSignal }): Promise<SearchResponse>
 }
 
 export interface SearchConfig {
-  provider: 'searxng' | 'brave'
-  searxngUrl: string
+  provider: 'brave'
   braveApiKeyEnc?: string
+  /** Requests per second (setting `search.brave.qps`). */
+  braveQps: number
 }

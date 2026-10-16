@@ -31,11 +31,10 @@ async function remove(secretName: string) {
         Environment Secrets
       </h2>
       <p class="text-sm text-muted">
-        Secrets are injected as env vars into every agent <code>exec</code> command
-        (e.g. <code>GITHUB_TOKEN</code>, <code>CLOUDFLARE_API_TOKEN</code>).
-        Stored encrypted; values are never shown again.
-        Turn on <strong>Sandbox</strong> to also give a secret to commands in Bridget's workspace sandbox —
-        never while a workspace is tainted (it handled mail or calendar content). Values are masked in
+        Stored encrypted; values are never shown again (e.g. <code>GITHUB_TOKEN</code>,
+        <code>CLOUDFLARE_API_TOKEN</code>). Turn on <strong>Bridget's shell</strong> to export a secret
+        as an env var to the commands she runs on her Mac — never in a run that read mail or calendar
+        content, or in a workspace that handled it. Values are masked in
         tool output; a value must be at least 4 characters. Turning it off (or deleting the secret)
         applies to new commands — background shells already running keep it until they are stopped
         (Workspace → Shells → Kill).
@@ -55,7 +54,7 @@ async function remove(secretName: string) {
         <span class="text-sm text-muted font-mono">••••{{ s.lastFour }}</span>
         <USwitch
           :model-value="s.sandbox"
-          label="Sandbox"
+          label="Bridget's shell"
           size="sm"
           :data-testid="`secret-sandbox-${s.name}`"
           @update:model-value="(v: boolean) => store.setSandbox(s.name, v)"

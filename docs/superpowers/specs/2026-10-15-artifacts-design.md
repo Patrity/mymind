@@ -1,13 +1,13 @@
 ---
-title: "Artifacts — Bridget publishes sandboxed HTML pages and built webapps at /artifact/<slug> (cycle 86)"
-cycle: 86
+title: "Artifacts — Bridget publishes sandboxed HTML pages and built webapps at /artifact/<slug> (cycle 87)"
+cycle: 87
 date: 2026-10-15
 status: built  # shipped on feat/artifacts 2026-10-15; see docs/handovers/2026-10-15-artifacts.md
 supersedes: null
 builds_on: 2026-10-11-sandboxed-workspace-design.md
 ---
 
-# Artifacts (cycle 86)
+# Artifacts (cycle 87)
 
 Bridget can write and build code in her sandbox (cycle 82) but has nowhere to *show* it. This cycle
 gives her Claude-style artifacts: small demos, data visualisations and visual previews, published as a
@@ -206,5 +206,5 @@ blob garbage collection for deleted artifacts; list thumbnails; artifact comment
 
 ## 11. Docs
 
-New wiki page `docs/wiki/artifacts.md` (mirrored to MyMind), handover, roadmap row for cycle 86,
+New wiki page `docs/wiki/artifacts.md` (mirrored to MyMind), handover, roadmap row for cycle 87,
 BACKLOG entries for §10 items.

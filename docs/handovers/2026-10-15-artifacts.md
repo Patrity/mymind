@@ -1,10 +1,10 @@
 ---
-title: "Artifacts — Bridget publishes sandboxed static pages and webapps at /artifact/<slug>/ (cycle 86)"
-cycle: 86
+title: "Artifacts — Bridget publishes sandboxed static pages and webapps at /artifact/<slug>/ (cycle 87)"
+cycle: 87
 date: 2026-10-15
-status: in-progress  # built + E2E-verified on feat/artifacts + final fix wave; becomes shipped at merge
-branch: feat/artifacts (worktree .claude/worktrees/artifacts, merge-base master 2cb28f7)
-merged: false
+status: in-progress  # merged to local master (with the cycle-86 Mac mini merge); unpushed, undeployed
+branch: feat/artifacts (deleted after merge; merge-base master 2cb28f7)
+merged: true
 deployed: false
 specs:
   - ../superpowers/specs/2026-10-15-artifacts-design.md
@@ -26,11 +26,11 @@ shipped:
 deferred:
   - blob GC for deleted/replaced/failed artifacts (spec 10, out of scope)
   - live query API, backends/server code, per-artifact domains, list thumbnails, comments (spec 10)
-  - the deferred-minors list below (BACKLOG.md "Cycle 86 backlog")
+  - the deferred-minors list below (BACKLOG.md "Cycle 87 backlog")
 next_seam: merge feat/artifacts, deploy (see Deploy notes), then a prod smoke - publish a private page, open via /artifacts, confirm Pangolin does not gate /artifact/**
 ---
 
-# Artifacts (cycle 86)
+# Artifacts (cycle 87)
 
 Bridget could build code in her sandbox (cycle 82) but had nowhere to show it. She can now publish a single
 page or a built webapp as a versioned **artifact** and Tony opens it at `/artifact/<slug>/`, public or private,
@@ -82,7 +82,7 @@ Spec (intent): [`2026-10-15-artifacts-design.md`](../superpowers/specs/2026-10-1
 - Run migration **0089** (CD runs `pnpm db:migrate`; verify `artifacts` and `artifact_versions` exist).
 - `BETTER_AUTH_SECRET` must be set in the web **and** worker env (already present on prod). Unset -> the route answers 500 for private artifacts and `signViewToken` throws.
 - **Check Pangolin does not SSO-gate `/artifact/**`.** Public artifacts must be reachable logged out, and the sandboxed subresource requests (no cookie) must not be redirected to an auth page. Verify with `curl -I https://brain.costanzoclan.com/artifact/<public-slug>/` after the first public publish.
-- Workspace publishing reads from the per-workspace sandbox dir (`/opt/mymind/.workspaces`, preserved across CD; see DEPLOYMENT.md). On the dev Mac, docker bind mounts under `~/Documents` hang `docker create` for minutes: set `SANDBOX_WORKSPACES_DIR` to a scratch dir. There is still no workspace upload API; for an E2E the built `dist` has to be created in the workspace by Bridget's own `exec`.
+- **Prod is the Mac mini now** (cycle 86, merged after this branch was built: launchd `com.mymind.web`/`com.mymind.worker`, central Postgres at `.80`; see the prod-deploy skill). The E2E above ran against the cycle-82 Docker sandbox; at merge the bundle reader was re-pointed at the native workspace runtime (`workspacePath()` maps `/workspace/dist` → `dist`, since the new PRELUDE refuses absolute paths; `runTaintMode` `unverified` → offline read) and is unit-tested only — re-run a `workspace_path` publish on the mini after deploy. There is still no workspace upload API; Bridget builds the `dist` herself with `bash`.
 - Dev-rig note: logging in on a spare port needs `BETTER_AUTH_URL=http://localhost:<port>`.
 - Blobs share the existing storage backend; there is no GC, so watch disk if Bridget republishes large bundles often.
 - Roll back: set the artifact private or delete from `/artifacts`; the route itself is inert without rows.

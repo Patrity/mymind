@@ -1,13 +1,13 @@
-// Cycle 82 Task 2: background shells — the per-workspace registry behind `bash` with
+// Cycle 82 Task 2 / cycle 86: background shells — the per-workspace registry behind `bash` with
 // run_in_background, `bash_output` and `kill_shell`.
 //
-// The process lives INSIDE the workspace's sandbox (a `setsid` session leader, fs-ops.ts
-// shellStartCommand) and writes `/workspace/.mymind/shells/<id>/{out,pid,exit}`; the DB row is the
-// registry (which shells exist, their state, how much output was already returned). A worker restart
-// does not stop the sandbox container, so on boot `reconcile` RE-ATTACHES every shell that is still
-// running (nothing to do but keep its row) and marks the others `exited` (exit file) or `lost` (the
-// sandbox or the process is gone with no exit code — e.g. the container was recreated for a new
-// image, stopped by the disk watchdog, or killed when the workspace was tainted).
+// The process is a session leader on the host (its own process group — fs-ops.ts shellStartCommand)
+// writing `<workspace>/.mymind/shells/<id>/{out,pid,exit}`; the DB row is the registry (which shells
+// exist, their state, how much output was already returned). A worker restart does not kill it, so
+// at boot `reconcile` RE-ATTACHES every shell that is still running and marks the others `exited`
+// (exit file) or `lost` (the process is gone with no exit code). Status, output, tail and kill are
+// MyMind's own fixed scripts (`internal`). No shell is started in an eval world (its commands run
+// confined, and a confined command's process group is reaped when it returns).
 import { and, eq, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { workspaceShells, workspaces, type WorkspaceShellRow } from '../../db/schema'
@@ -21,9 +21,8 @@ import { maskCut, maskText, secretValues } from './secrets'
 export type { WorkspaceShellRow }
 
 export interface ShellStore {
-  /** Insert a running shell unless `cap` are already running there — count + insert under one
-   *  per-workspace lock (fix round 1, M5: parallel calls in one step can't overshoot). null = capped. */
-  create(workspaceId: string, command: string, cap: number): Promise<WorkspaceShellRow | null>
+  /** Insert a running shell (cycle 86: no per-workspace cap — Bridget owns the machine). */
+  create(workspaceId: string, command: string): Promise<WorkspaceShellRow>
   get(id: string): Promise<WorkspaceShellRow | null>
   listRunning(workspaceId?: string): Promise<WorkspaceShellRow[]>
   list(workspaceId: string, limit?: number): Promise<WorkspaceShellRow[]>
@@ -38,17 +37,10 @@ function publish(workspaceId: string): void {
 }
 
 export const dbShellStore: ShellStore = {
-  async create(workspaceId, command, cap) {
-    const r = await useDb().transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`mymind:ws-shells:${workspaceId}`}))`)
-      const [{ n }] = await tx.select({ n: sql<number>`count(*)::int` }).from(workspaceShells)
-        .where(and(eq(workspaceShells.workspaceId, workspaceId), eq(workspaceShells.state, 'running'))) as [{ n: number }]
-      if (n >= cap) return null
-      const [row] = await tx.insert(workspaceShells).values({ workspaceId, command }).returning()
-      return row!
-    })
-    if (r) publish(workspaceId)
-    return r
+  async create(workspaceId, command) {
+    const [row] = await useDb().insert(workspaceShells).values({ workspaceId, command }).returning()
+    publish(workspaceId)
+    return row!
   },
   async get(id) {
     const [r] = await useDb().select().from(workspaceShells).where(eq(workspaceShells.id, id)).limit(1)
@@ -82,8 +74,8 @@ export interface ShellDeps {
   log?: Pick<Console, 'info' | 'warn' | 'error'>
   /** The secret values to mask, longest first (sandbox/secrets.ts; tests inject). */
   secretValues?: () => Promise<string[]>
-  /** A housekeeping command in the RUNNING networked container — null when it isn't running. Never
-   *  starts a container and never counts as use (final review I2: the liveness refresh). */
+  /** A fixed housekeeping command (status / kill), internal — null when the workspace is gone. Never
+   *  counts as use. */
   peek?(workspaceId: string, command: string): Promise<SandboxExecResult | null>
 }
 
@@ -135,12 +127,10 @@ export function safeWindowEnd(raw: Buffer, chunkBytes: number, values: string[],
 export const SHELL_OUTPUT_CHUNK = 32 * 1024
 /** The Shells UI shows at most this much of a shell's output (its tail). */
 export const SHELL_TAIL_BYTES = 16 * 1024
-/** Running background shells per workspace. */
-export const MAX_RUNNING_SHELLS = 8
 
 export class ShellError extends Error { override name = 'ShellError' }
 
-const TAINT_LOST = "it was stopped when this workspace's network was turned off (the workspace handled mail/calendar content)"
+const EVAL_LOST = 'eval worlds run every command confined, so nothing can keep running in the background'
 
 
 export function createShellRegistry(deps: ShellDeps) {
@@ -148,38 +138,33 @@ export function createShellRegistry(deps: ShellDeps) {
   const log = deps.log ?? console
   const maskValues = deps.secretValues ?? secretValues
 
-  async function lostReason(workspaceId: string, fallback: string): Promise<string> {
-    const ws = await deps.workspace(workspaceId)
-    return ws?.tainted ? TAINT_LOST : fallback
-  }
-
   /** Persist what a status check found (running rows only — an ended row stays as it ended). */
   async function settle(row: WorkspaceShellRow, st: ShellStatus): Promise<WorkspaceShellRow> {
     if (row.state !== 'running' || st.state === 'running') return row
     if (st.state === 'exited') {
       await store.end(row.id, { state: 'exited', exitCode: st.exitCode })
     } else {
-      await store.end(row.id, { state: 'lost', reason: await lostReason(row.workspaceId, 'the sandbox or its process went away without an exit code (worker restart with a new image, idle/disk stop, or a crash)') })
+      await store.end(row.id, { state: 'lost', reason: 'its process went away without an exit code (killed outside MyMind, or the Mac restarted)' })
     }
     return (await store.get(row.id)) ?? row
   }
 
-  async function start(workspaceId: string, command: string, o: Pick<ExecOptions, 'secrets'> = {}): Promise<{ shellId: string; pid: number }> {
-    const row = await store.create(workspaceId, command, MAX_RUNNING_SHELLS)
-    if (!row) throw new ShellError(`${MAX_RUNNING_SHELLS} background shells are already running in this workspace (the limit) — stop one with kill_shell first`)
+  /** `o`: the calling run's options (its taint marks the workspace; secrets only for a clean run). */
+  async function start(workspaceId: string, command: string, o: Pick<ExecOptions, 'secrets' | 'tainted' | 'signal'> = {}): Promise<{ shellId: string; pid: number }> {
+    const row = await store.create(workspaceId, command)
     let r: SandboxExecResult
     try {
-      r = await deps.exec(workspaceId, shellStartCommand(row.id), { input: command, timeoutSec: 30, ...(o.secrets ? { secrets: o.secrets } : {}) })
+      r = await deps.exec(workspaceId, shellStartCommand(row.id), { ...o, input: command, timeoutSec: 30 })
     } catch (err) {
       await store.end(row.id, { state: 'lost', reason: `could not start: ${(err as Error).message}` })
       throw err
     }
     const pid = Number(r.stdout.match(/__mm_shell_pid__:(\d+)/)?.[1] ?? NaN)
-    if (r.exitCode !== 0 || !Number.isFinite(pid) || r.tainted) {
-      // A tainted workspace runs every command in a one-off container that is gone when the launcher
-      // returns — a background shell cannot outlive it (the tool refuses before reaching here).
-      await store.end(row.id, { state: 'lost', reason: r.tainted ? TAINT_LOST : `could not start (exit ${r.exitCode}): ${r.stderr.trim().slice(0, 300)}` })
-      throw new ShellError(r.tainted ? `background shells need the workspace's network, and ${TAINT_LOST}` : `could not start the background shell: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
+    if (r.exitCode !== 0 || !Number.isFinite(pid) || r.confined) {
+      // A confined command's process group is reaped when it returns — a background shell cannot
+      // outlive it (the tool refuses before reaching here).
+      await store.end(row.id, { state: 'lost', reason: r.confined ? EVAL_LOST : `could not start (exit ${r.exitCode}): ${r.stderr.trim().slice(0, 300)}` })
+      throw new ShellError(r.confined ? `background shells are not available: ${EVAL_LOST}` : `could not start the background shell: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
     }
     return { shellId: row.id, pid }
   }
@@ -198,7 +183,7 @@ export function createShellRegistry(deps: ShellDeps) {
     const values = await maskValues()
     // ≥ 4: a code point straddling the chunk edge is always wholly in the window too (fix round 2).
     const overlap = values.reduce((m, v) => Math.max(m, Buffer.byteLength(v)), 4)
-    const r = await deps.exec(workspaceId, shellOutputCommand(row.id, row.readOffset, SHELL_OUTPUT_CHUNK + overlap), { timeoutSec: 30, capBytes: (SHELL_OUTPUT_CHUNK + overlap) * 2, ...o })
+    const r = await deps.exec(workspaceId, shellOutputCommand(row.id, row.readOffset, SHELL_OUTPUT_CHUNK + overlap), { timeoutSec: 30, capBytes: (SHELL_OUTPUT_CHUNK + overlap) * 2, ...o, internal: true })
     const st = parseShellStatus(r.stdout)
     if (!st) throw new ShellError(`could not read the shell's output: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
     const start = row.readOffset
@@ -228,7 +213,7 @@ export function createShellRegistry(deps: ShellDeps) {
     const { reason = 'stopped with kill_shell', ...eo } = o
     const row = await own(workspaceId, shellId)
     if (row.state !== 'running') return { shellId, state: row.state, alreadyEnded: true, tainted: false }
-    const r = await deps.exec(workspaceId, shellKillCommand(row.id), { timeoutSec: 30, ...eo })
+    const r = await deps.exec(workspaceId, shellKillCommand(row.id), { timeoutSec: 30, ...eo, internal: true })
     const st = parseShellStatus(r.stdout)
     if (st?.status.state === 'exited') await store.end(row.id, { state: 'exited', exitCode: st.status.exitCode })
     else await store.end(row.id, { state: 'killed', reason })
@@ -238,10 +223,10 @@ export function createShellRegistry(deps: ShellDeps) {
 
   /** The last `max` bytes of a shell's output + its state, for the Shells UI. Read-only: it never
    *  moves bash_output's offset; a status it finds (exited/lost) is recorded like any other read. */
-  async function tail(workspaceId: string, shellId: string, max = SHELL_TAIL_BYTES, o: Pick<ExecOptions, 'noStart'> = {}) {
+  async function tail(workspaceId: string, shellId: string, max = SHELL_TAIL_BYTES, _o: Pick<ExecOptions, 'noStart'> = {}) {
     let row = await own(workspaceId, shellId)
     const values = await maskValues()
-    const r = await deps.exec(workspaceId, shellTailCommand(row.id, max), { timeoutSec: 30, capBytes: max * 2, ...(o.noStart ? { noStart: true } : {}) })
+    const r = await deps.exec(workspaceId, shellTailCommand(row.id, max), { timeoutSec: 30, capBytes: max * 2, internal: true })
     const st = parseShellStatus(r.stdout)
     if (!st) throw new ShellError(`could not read the shell's output: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
     row = await settle(row, st.status)
@@ -252,51 +237,46 @@ export function createShellRegistry(deps: ShellDeps) {
   }
 
   /**
-   * Over quota / low disk (the manager's onOverQuota, which fires every 5s per workspace during a
-   * low-disk episode — carry-over: idempotent and cheap). Only RUNNING rows are touched, so a
-   * second call finds nothing and does one indexed query. The in-sandbox kill runs only when the
-   * networked container is up and untainted (a stopped container's processes are already dead,
-   * and exec would otherwise START it just to kill nothing).
+   * Kill every running shell of a workspace (it was stopped idle, its
+   * workstream ended, or it was deleted). Idempotent and cheap: only RUNNING rows are touched. The
+   * kill is an internal fixed script (peek), so it reaches the process whatever the workspace's
+   * state. `noStart` is cycle 82's teardown flag — accepted, nothing to start on the host.
    */
-  async function killAll(workspaceId: string, reason: string, o: { noStart?: boolean } = {}): Promise<number> {
+  async function killAll(workspaceId: string, reason: string, _o: { noStart?: boolean } = {}): Promise<number> {
     const rows = await store.listRunning(workspaceId)
     if (!rows.length) return 0
-    const ws = await deps.workspace(workspaceId)
     let n = 0
     for (const row of rows) {
-      if (ws && ws.state === 'running' && !ws.tainted) {
-        // Follow-up N8 (`noStart`, the workstream teardown): kill through peek — a container that
-        // already died is NOT started (and nothing evicted) just to kill nothing.
-        try {
-          if (o.noStart) { if (deps.peek) await deps.peek(workspaceId, shellKillCommand(row.id)) } else await deps.exec(workspaceId, shellKillCommand(row.id), { timeoutSec: 30 })
-        } catch (err) {
-          log.warn(`[sandbox] killing shell ${row.id} failed (marked killed anyway):`, (err as Error).message)
-        }
+      try {
+        if (deps.peek) await deps.peek(workspaceId, shellKillCommand(row.id))
+        else await deps.exec(workspaceId, shellKillCommand(row.id), { timeoutSec: 30, internal: true })
+      } catch (err) {
+        log.warn(`[workspace] killing shell ${row.id} failed (marked killed anyway):`, (err as Error).message)
       }
       if (await store.end(row.id, { state: 'killed', reason })) n++
     }
     return n
   }
 
-  /** Worker boot: re-attach running shells; mark the rest exited / lost. */
+  /** Worker boot: re-attach running shells; mark the rest exited / lost (a deleted workspace's too). */
   async function reconcile(): Promise<{ reattached: number; ended: number }> {
     let reattached = 0
     let ended = 0
     for (const row of await store.listRunning()) {
       try {
         const ws = await deps.workspace(row.workspaceId)
-        if (!ws || ws.deletedAt || ws.tainted || ws.state !== 'running') {
-          await store.end(row.id, { state: 'lost', reason: ws?.tainted ? TAINT_LOST : 'the sandbox was stopped while it ran (worker restart, idle/disk stop or image update)' })
+        if (!ws || ws.deletedAt) {
+          await store.end(row.id, { state: 'lost', reason: 'its workspace was deleted' })
           ended++
           continue
         }
-        const r = await deps.exec(row.workspaceId, shellStatusCommand(row.id), { timeoutSec: 30 })
-        const st = parseShellStatus(r.stdout)
+        const r = deps.peek ? await deps.peek(row.workspaceId, shellStatusCommand(row.id)) : await deps.exec(row.workspaceId, shellStatusCommand(row.id), { timeoutSec: 30, internal: true })
+        const st = r ? parseShellStatus(r.stdout) : null
         if (!st) continue // unreadable now — checked again by the next bash_output
         const after = await settle(row, st.status)
         if (after.state === 'running') reattached++
         else ended++
-      } catch (err) { log.warn(`[sandbox] reconcile of shell ${row.id} failed:`, (err as Error).message) }
+      } catch (err) { log.warn(`[workspace] reconcile of shell ${row.id} failed:`, (err as Error).message) }
     }
     return { reattached, ended }
   }
@@ -306,16 +286,16 @@ export function createShellRegistry(deps: ShellDeps) {
   }
 
   /**
-   * Final review I2 (every quota tick): re-check the running rows of a workspace whose container is
-   * up — a shell that exited (or vanished) while nobody read its output is recorded, so a dead row
-   * never looks like a live job. Read-only on the sandbox (status only, no offset moved).
+   * Every minute (refreshTick): re-check the running rows of a workspace — a shell that exited (or
+   * vanished) while nobody read its output is recorded, so a dead row never looks like a live job.
+   * Read-only (status only, no offset moved).
    */
   async function refresh(workspaceId: string): Promise<number> {
     if (!deps.peek) return 0
     let ended = 0
     for (const row of await store.listRunning(workspaceId)) {
       const r = await deps.peek(workspaceId, shellStatusCommand(row.id))
-      if (!r) break // the container is not running: its rows are settled by whatever stopped it
+      if (!r) break // the workspace is gone
       const st = parseShellStatus(r.stdout)
       if (!st) continue
       if ((await settle(row, st.status)).state !== 'running') ended++

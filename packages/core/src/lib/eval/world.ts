@@ -28,7 +28,7 @@ import { currentEvalScope, runInEvalScope, EvalNetworkBlockedError, type Capture
 import { createFakeGoogle } from './fake-google'
 import { parseEvalSetup, type EvalSetup } from './setup'
 import { createEvalTenant, dropEvalTenant, listEvalTenants, evalRunPrefix, tenantDrift, type EvalTenant } from './tenant'
-import { cleanupWorldOutside, dropWorldIfFree, removeRunGhostContainers, sweepEvalLeftovers, type SweepResult } from './cleanup'
+import { cleanupWorldOutside, dropWorldIfFree, sweepEvalLeftovers, type SweepResult } from './cleanup'
 import { coreConfig } from '../../config'
 
 export type { CapturedWrite } from './context'
@@ -413,9 +413,10 @@ export function buildEvalWorld(args: { runId: string; schema: string; pool: Pool
     run: fn => runInEvalScope(scope, async () => fn()),
     dispose: () => disposed ??= (async () => {
       scope.active = false
-      // Fix round 2 (N6): the world's watch timers stop before its containers / schema go.
+      // Fix round 2 (N6): the world's watch timers stop before its scratch dir / schema go.
       try { (await import('../sandbox/runtime')).stopEvalWorkspaceRuntime(scope) } catch (err) { console.warn('[eval] stopping the world runtime failed:', (err as Error).message) }
-      try { (await import('../sandbox/docker')).unregisterEvalSandbox(schema) } catch { /* never registered */ }
+      // Cycle 86: from now on the spawn guard refuses any command of this world (no scratch dir).
+      try { (await import('../sandbox/host/spawn')).unregisterEvalScratch(schema) } catch { /* never registered */ }
       await args.dispose?.()
     })()
   }
@@ -439,7 +440,7 @@ export async function installEvalWorld(runId: string, setupRaw: unknown, options
     dispose: async () => {
       set!.delete(world)
       if (!set!.size) liveWorlds.delete(runId)
-      // Containers, workspace dir and uploads first (the upload keys are read from the schema).
+      // Scratch dir and uploads first (the upload keys are read from the schema).
       await cleanupWorldOutside(tenant.schema)
       await dropEvalTenant(tenant)
     }
@@ -487,8 +488,6 @@ export async function cleanupEvalRun(runId: string): Promise<{ dropped: number }
   for (const schema of (await listEvalTenants()).filter(n => n.startsWith(prefix))) {
     if ((await dropWorldIfFree(schema)).dropped) dropped++
   }
-  // Containers of the run whose world schema is already gone (a crash between the two).
-  try { await removeRunGhostContainers(runId) } catch (err) { console.warn(`[eval] container cleanup of run ${runId} failed:`, (err as Error).message) }
   return { dropped }
 }
 
@@ -497,7 +496,7 @@ export function liveWorldSchemas(): Set<string> {
   return new Set([...liveWorlds.values()].flatMap(s => [...s].map(w => w.schema)))
 }
 
-/** Worker boot (fix round 1, I2): sweep tenants + containers + dirs of dead / finished / stale
+/** Worker boot (fix round 1, I2): sweep tenants + scratch dirs of dead / finished / stale
  *  runs, never a world this process holds. Never throws. */
 export async function bootSweepEval(): Promise<SweepResult | null> {
   try { return await sweepEvalLeftovers({ keep: liveWorldSchemas() }) } catch (err) {

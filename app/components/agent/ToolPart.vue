@@ -28,7 +28,7 @@ const running = computed(() => isRunning(props.part))
 const pendingPart = computed(() => (props.part.state === 'approval-requested' ? props.part : null))
 // A workstream this call started gets its compact card + link (cycle 81 spec §5.5).
 const started = computed(() => (envelope.value ? startedWorkstream(props.part.toolName, props.part.input, envelope.value.value) : null))
-// Cycle 86: a published/edited artifact gets an inline sandboxed preview card.
+// Cycle 87: a published/edited artifact gets an inline sandboxed preview card.
 const artifact = computed(() => (envelope.value ? publishedArtifact(props.part.toolName, envelope.value.value) : null))
 // Cycle 84: "⚖ auto-approved (0.94): <reason>" — the judge ran this call without Tony.
 const autoNote = computed(() => autoApprovalNote(envelope.value?.approval))

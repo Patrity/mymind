@@ -1,12 +1,12 @@
 ---
 title: Artifacts (sandboxed pages and webapps Bridget publishes)
 status: built
-cycle: 86
+cycle: 87
 updated: 2026-10-15
 mymind_id: f60aa8d8-a6f1-4558-9838-1f549a55b82e
 mymind_hash: ebe1766da79de32245c7bfb9b058c418d115c699734852f37aa3a1e3b6dfc067
 ---
-# Artifacts (cycle 86)
+# Artifacts (cycle 87)
 
 Bridget can write and build code in her sandbox ([`workspace.md`](workspace.md)) and now has somewhere to
 *show* it: an **artifact** is a versioned static bundle (one HTML page, or a built webapp) served at
@@ -188,10 +188,13 @@ Gate behaviour:
 
 ## 7. Publishing from the workspace (`workspace-bundle.ts`)
 
-`workspace_path` is a directory inside the run's workspace (e.g. `dist`). Two fixed Python scripts run **inside the
-container** (paths as JSON on stdin, realpath-contained under `/workspace`): a walk (dot-dirs, `node_modules`,
-symlinks and non-regular files pruned; at most 5000 entries) and chunked base64 reads (`CHUNK_BYTES` batches). The
-host enforces the limits against what the container reports, so a forged size cannot loop it.
+`workspace_path` is a directory inside the run's workspace (e.g. `dist`). Two fixed Python scripts run **in the
+workspace dir** through the workspace runtime (paths as JSON on stdin, realpath-contained under the workspace by the
+shared `PRELUDE`, which refuses absolute paths; the tool maps the cycle-82 form `/workspace/dist` to `dist` with
+`workspacePath()`): a walk (dot-dirs, `node_modules`, symlinks and non-regular files pruned; at most 5000 entries) and
+chunked base64 reads (`CHUNK_BYTES` batches). The caller enforces the limits against what the script reports, so a
+forged size cannot loop it. Taint follows `export_to_document`: a tainted run marks the workspace, an
+`unverified`-only run reads offline without marking it.
 
 - Text types (`html htm js mjs css json map txt csv svg`) are **secret-masked** with the workspace secret store
   (`maskText`). Masking is **literal-only**: escaped, base64-encoded or wasm-embedded secrets are not caught.

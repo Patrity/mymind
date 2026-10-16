@@ -1,11 +1,12 @@
-// Cycle 82 Task 3 (spec §6): which exec secrets reach a sandbox command, and keeping their VALUES
-// out of everything that leaves the sandbox (tool results, watch notes, the Files/Shells UI).
+// Cycle 82 Task 3 (spec §6) / cycle 86 (D8): which exec secrets reach a workspace command, and keeping
+// their VALUES out of everything that leaves it (tool results, watch notes, the Files/Shells UI).
 //
-//   Injection: only secrets Tony opted in (Settings → Secrets → Sandbox), and NEVER when the run or
-//   the workspace is tainted (a tainted command runs in a one-off `--network none` container; the
-//   manager drops secrets there too — this is the first of the two gates). Names the docker CLI or
-//   the sandbox's base env own (DOCKER_*, HOME, PATH, LANG, …: docker.ts assertSecretName) are
-//   stripped, never passed — they would steer the CLI or clobber the sandbox env. A value shorter
+//   Injection: only secrets Tony exported (Settings → Secrets → "Bridget's shell"), to every agent
+//   command — tainted runs included since cycle 86 option C (Tony, 2026-10-13: tainted runs run like
+//   clean ones; the outbound tools stay gated instead) — never in an eval world, never to MyMind's own
+//   internal scripts. Names the shell, the loader
+//   or the command's base env own (HOME, PATH, LANG, LD_*, DYLD_*, …: host/env.ts assertSecretName)
+//   are stripped, never passed — they would steer the shell or clobber its env. A value shorter
 //   than MIN_SANDBOX_SECRET_CHARS is never injected (the toggle refuses it too: it can't be masked
 //   without mangling ordinary output).
 //   Masking (fix round 1, M1/M2): every INJECTABLE value is masked whatever its length; other exec
@@ -14,7 +15,7 @@
 //   cut edge is trimmed of anything that could be the visible half of a secret (maskCut).
 import { currentEvalScope } from '../eval/context'
 import { getDecryptedSecrets, getSandboxOptedSecrets } from '../exec/secrets'
-import { assertSecretName } from './docker'
+import { assertSecretName } from './host/env'
 
 export const REDACTED = '«redacted»'
 /** Shorter opted-in values are neither injected nor accepted by the toggle. */

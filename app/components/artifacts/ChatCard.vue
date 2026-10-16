@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Cycle 86: inline preview under a publish_artifact / edit_artifact tool call in chat.
+// Cycle 87: inline preview under a publish_artifact / edit_artifact tool call in chat.
 const props = defineProps<{ id: string; slug: string; title: string; url: string; isPublic: boolean; version: number }>()
 const toast = useToast()
 

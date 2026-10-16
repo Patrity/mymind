@@ -1,6 +1,5 @@
 // server/lib/agent/profile.ts
 import { agentTools } from './tools'
-import { execTool } from './tools/exec'
 import { decideReviewTool } from './tools/reviews'
 import { subagentTools } from './subagents'
 import { loadToolsetsTool } from './tools/load-toolsets'
@@ -15,24 +14,22 @@ import type { AgentTool } from './types'
 
 export interface AgentProfile { id: string; tools: AgentTool[]; personaKey: string }
 
-// ONE profile; every tool in it is always AVAILABLE. The old bridget/powerful split + exec
-// cookie are gone (Tony, 2026-07-01): exec and the subagents are always available; safety
-// is the approval gate (exec stays dangerous:true → allowlist-or-approve, and
-// auto-denies on channels with no approval UI, e.g. headless SSE/MCP).
-// exec + subagents live HERE, not in agentTools, so the MCP surface never
-// exposes them. decide_review (cycle 76) likewise: dangerous, confirmed per call, and never on
+// ONE profile; every tool in it is always AVAILABLE. The old bridget/powerful split is gone
+// (Tony, 2026-07-01); safety is the approval gate. Host `exec` and its `admin` toolset are gone too
+// (cycle 86): the workspace IS Bridget's own Mac now.
+// The subagents live HERE, not in agentTools, so the MCP surface never exposes them. decide_review (cycle 76) likewise: dangerous, confirmed per call, and never on
 // MCP or in a headless run. load_toolsets (cycle 78) lives here too: on-demand toolsets only
 // change which tools the model SEES per step, never which it can call; MCP clients see all.
 // googleDangerousTools (cycle 79 review, I1): gmail_send — and calendarDangerousTools (Task 5):
 // calendar_guest_event / calendar_rsvp — live here for the same reason: every agentTools consumer (MCP, replay,
 // subagents, toolByName) is otherwise one forgotten `dangerous` check away from a gateless send.
-// delete_artifact (cycle 86) lives here for the same reason (toolset 'artifacts').
+// delete_artifact (cycle 87) lives here for the same reason (toolset 'artifacts').
 // They keep `toolset: 'gmail'`/`'calendar'` — toolset visibility runs over bridgetProfile.tools
 // (run.ts), not agentTools, so on-demand loading still works from here.
 export const bridgetProfile: AgentProfile = {
   id: 'bridget',
-  // workspaceTools (cycle 82): Bridget's sandbox — profile-only like exec, so MCP never sees them.
-  tools: [...agentTools, execTool, ...subagentTools, decideReviewTool, ...googleDangerousTools, ...calendarDangerousTools, loadToolsetsTool, startWorkstreamTool, answerWorkstreamTool, ...workspaceTools, ...artifactDangerousTools],
+  // workspaceTools (cycle 82/86): Bridget's own Mac — profile-only, so MCP never sees them.
+  tools: [...agentTools, ...subagentTools, decideReviewTool, ...googleDangerousTools, ...calendarDangerousTools, loadToolsetsTool, startWorkstreamTool, answerWorkstreamTool, ...workspaceTools, ...artifactDangerousTools],
   personaKey: 'agent_persona'
 }
 

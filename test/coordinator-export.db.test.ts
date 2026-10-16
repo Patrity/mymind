@@ -1,10 +1,10 @@
-// Cycle 83 Task 2 — export_to_coordinator against REAL Docker + the dev DB (spec D7): a child with its
-// own workspace hands files up into its coordinator's workspace under /workspace/from/<childId>/.
-// Skipped when Docker is not running. Every container carries mymind.test=<RUN>; workstream rows,
-// their threads, the workspace rows (this file's bus namespace) and the temp dir are removed in afterAll.
+// Cycle 83 Task 2 / cycle 86 — export_to_coordinator on the HOST runtime + the dev DB (spec D7): a child
+// with its own workspace hands files up into its coordinator's workspace under from/<childId>/ — a
+// native copy (regular files and dirs only, sized before anything is written, never through a link).
+// Workstream rows, their threads, the workspace rows (this file's bus namespace) and the temp dir are
+// removed in afterAll.
 process.loadEnvFile('.env')
-import { spawnSync } from 'node:child_process'
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -16,22 +16,14 @@ import { conversations, workspaces, workstreams } from '@mymind/core/db/schema'
 import { createSandboxManager, type SandboxManager } from '@mymind/core/lib/sandbox/manager'
 import { createWorkspaceRuntime, setWorkspaceRuntime, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
 import { ensureWorkstreamWorkspace } from '@mymind/core/lib/sandbox/store'
-import { exportToCoordinatorTool, exportUnpackCommand, workspaceTools } from '@mymind/core/lib/agent/tools/workspace'
+import { EXPORT_MAX_ENTRIES, exportToCoordinatorTool, workspaceTools } from '@mymind/core/lib/agent/tools/workspace'
 import { ZERO_USED } from '@mymind/core/shared/types/workstreams'
 import type { ToolContext } from '@mymind/core/lib/agent/types'
 
-const IMAGE = process.env.SANDBOX_TEST_IMAGE || 'mymind-sandbox:current'
 const RUN = `t83x-${process.pid}-${Date.now().toString(36)}`
 const NS = RUN.replace(/[^A-Za-z0-9_-]/g, '_')
-const LABELS = { 'mymind.test': RUN }
 
-function docker(...args: string[]): { code: number; out: string } {
-  const r = spawnSync('docker', args, { encoding: 'utf8', timeout: 120_000 })
-  return { code: r.status ?? -1, out: r.stdout ?? '' }
-}
-const dockerUp = docker('version', '--format', '{{.Server.Version}}').code === 0 && docker('image', 'inspect', IMAGE).code === 0
-
-describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
+describe('export_to_coordinator (host runtime)', () => {
   const convIds: string[] = []
   let root = ''
   let m: SandboxManager
@@ -58,8 +50,7 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
     setBusNs(NS)
     root = realpathSync(mkdtempSync(path.join(tmpdir(), 'mm-t83x-')))
     m = createSandboxManager({
-      // A 20 MB quota: the uncompressed-size check (fix round 1, M4) bites at a testable size.
-      labels: LABELS, settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 10, dns: [], quotaBytes: 20 * 1024 * 1024 },
+      settings: { workspacesDir: root },
       log: { info: () => {}, warn: () => {}, error: () => {} }
     })
     rt = createWorkspaceRuntime(m, { resolve: async () => ({ workspaceId: as.workspaceId, kind: 'workstream', workstreamId: as.workstreamId, conversationId: null }) })
@@ -69,8 +60,6 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
   afterAll(async () => {
     rt?.watches.stop()
     setWorkspaceRuntime(null)
-    const ids = docker('ps', '-aq', '--filter', `label=mymind.test=${RUN}`).out.split('\n').filter(Boolean)
-    if (ids.length) docker('rm', '-f', ...ids)
     await useDb().delete(workspaces).where(eq(workspaces.ns, NS))
     if (convIds.length) {
       await useDb().delete(workstreams).where(inArray(workstreams.conversationId, convIds))
@@ -80,27 +69,31 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
     if (root) rmSync(root, { recursive: true, force: true })
   }, 120_000)
 
-  it('copies files and directories into the coordinator\'s workspace under from/<childId>/ (inside the sandbox; links dereferenced)', async () => {
+  const dirOf = (id: string) => path.join(root, id)
+
+  it('copies files and directories into the coordinator\'s workspace under from/<childId>/ — symlinks skipped and listed, never followed', async () => {
     const coord = await workstream('T83X coordinator')
     const child = await workstream('T83X child', { parentId: coord.id })
     const coordWs = await ensureWorkstreamWorkspace(coord.id)
     const childWs = await ensureWorkstreamWorkspace(child.id)
 
     as = { workspaceId: childWs.id, workstreamId: child.id }
-    expect((await call('bash', { command: 'mkdir -p out/deep && echo REPORT > out/report.md && echo DEEP > out/deep/x.txt && echo SOLO > solo.txt && ln -s /etc/hostname out/link' })).exitCode).toBe(0)
+    const secretFile = path.join(root, `secret-${RUN}`)
+    writeFileSync(secretFile, 'TONY-ONLY')
+    expect((await call('bash', { command: `mkdir -p out/deep && echo REPORT > out/report.md && echo DEEP > out/deep/x.txt && echo SOLO > solo.txt && ln -s ${secretFile} out/link` })).exitCode).toBe(0)
     const r = await call('export_to_coordinator', { paths: ['out', 'solo.txt'] })
-    expect(r).toMatchObject({ ok: true, copied: ['out', 'solo.txt'], to: `from/${child.id}/` })
+    expect(r).toMatchObject({ ok: true, copied: ['out', 'solo.txt'], to: `from/${child.id}/`, skipped: ['out/link'] })
     expect(r.workspaceTainted).toBeUndefined()
 
     as = { workspaceId: coordWs.id, workstreamId: coord.id }
-    const ls = await call('bash', { command: `cd from/${child.id} && find . -type f -o -type l | sort && cat out/report.md out/deep/x.txt solo.txt && test ! -L out/link && echo NOT-A-LINK` })
-    expect(ls.stdout).toContain('./out/deep/x.txt\n./out/link\n./out/report.md\n./solo.txt\n')
-    expect(ls.stdout).toContain('REPORT\nDEEP\nSOLO\nNOT-A-LINK')
+    const ls = await call('bash', { command: `cd from/${child.id} && find . -type f -o -type l | sort && cat out/report.md out/deep/x.txt solo.txt` })
+    expect(ls.stdout).toBe('./out/deep/x.txt\n./out/report.md\n./solo.txt\nREPORT\nDEEP\nSOLO\n')
+    expect(existsSync(path.join(dirOf(coordWs.id), 'from', child.id, 'out', 'link'))).toBe(false)
     // The files never existed on the coordinator's side before (and only under from/<childId>/).
     expect((await call('bash', { command: 'ls' })).stdout.trim()).toBe('from')
-  }, 180_000)
+  }, 60_000)
 
-  it('refuses a top-level workstream, a shared child, `..`, absolute paths and .mymind; a tainted run taints the coordinator\'s workspace', async () => {
+  it('refuses a top-level workstream, a shared child, `..`, absolute paths, .mymind, a missing path and a symlinked parent; a tainted run taints the coordinator\'s workspace', async () => {
     const coord = await workstream('T83X coordinator 2')
     const shared = await workstream('T83X shared child', { parentId: coord.id, workspaceMode: 'shared' })
     const child = await workstream('T83X child 2', { parentId: coord.id })
@@ -115,10 +108,14 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
     for (const bad of ['../x', '/etc/passwd', '.mymind/shells', 'a/../../b', '.']) {
       expect((await call('export_to_coordinator', { paths: [bad] })).ok, bad).toBe(false)
     }
-    // tar's own refusal (the missing path), not a later failure to unpack nothing.
-    expect(await call('export_to_coordinator', { paths: ['missing.txt'] })).toMatchObject({ ok: false, error: expect.stringMatching(/export_to_coordinator failed: .*missing\.txt/) })
+    expect(await call('export_to_coordinator', { paths: ['missing.txt'] })).toMatchObject({ ok: false, error: expect.stringMatching(/missing\.txt: no such file or directory/) })
+    // A symlinked parent can't lead the copy out of the child's workspace.
+    const outside = path.join(root, `outside-${RUN}`)
+    mkdirSync(outside, { recursive: true }); writeFileSync(path.join(outside, 'f'), 'OUT')
+    symlinkSync(outside, path.join(dirOf(childWs.id), 'escape'))
+    expect(await call('export_to_coordinator', { paths: ['escape/f'] })).toMatchObject({ ok: false, error: expect.stringMatching(/escape\/f: outside your workspace/) })
 
-    // A tainted run: the copy runs with no network on both sides and taints the coordinator's workspace.
+    // A tainted run: the copy marks the coordinator's workspace tainted (its files may be mail-derived).
     expect((await call('bash', { command: 'echo MAIL > mail.txt' })).exitCode).toBe(0)
     tainted = true
     try {
@@ -128,88 +125,42 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
     } finally { tainted = false }
     const [row] = await useDb().select().from(workspaces).where(eq(workspaces.id, coordWs.id))
     expect(row!.tainted).toBe(true)
-  }, 180_000)
+    const [src] = await useDb().select().from(workspaces).where(eq(workspaces.id, childWs.id))
+    expect(src!.tainted).toBe(true)
+  }, 60_000)
 
-  it('M4: the UNCOMPRESSED size must fit the coordinator\'s remaining quota (a tiny gzip of 30 MB of zeros is refused, nothing lands)', async () => {
+  it('sized BEFORE anything is written: 200 MB (a sparse 201 MB file) or more than 20,000 entries is refused, nothing lands', async () => {
     const coord = await workstream('T83X coordinator 3')
-    const child = await workstream('T83X zipbomb child', { parentId: coord.id })
+    const child = await workstream('T83X big child', { parentId: coord.id })
     const coordWs = await ensureWorkstreamWorkspace(coord.id)
     const childWs = await ensureWorkstreamWorkspace(child.id)
     as = { workspaceId: childWs.id, workstreamId: child.id }
-    expect((await call('bash', { command: 'head -c 31457280 /dev/zero > zeros.bin && echo ok' })).stdout).toContain('ok')
-    const r = await call('export_to_coordinator', { paths: ['zeros.bin'] })
-    expect(r).toMatchObject({ ok: false, error: expect.stringMatching(/too large to export: 3146\d{4} bytes uncompressed/) })
-    as = { workspaceId: coordWs.id, workstreamId: coord.id }
-    expect((await call('bash', { command: `test -e from/${child.id} && echo LANDED || echo NONE` })).stdout.trim()).toBe('NONE')
-  }, 180_000)
+    expect((await call('bash', { command: `python3 -c "open('sparse.bin','wb').truncate(201*1024*1024)" && mkdir many && python3 -c "[open('many/f%d' % i, 'w').close() for i in range(${EXPORT_MAX_ENTRIES + 1})]" && echo small > small.txt && echo ok` })).stdout).toContain('ok')
+    expect(await call('export_to_coordinator', { paths: ['small.txt', 'sparse.bin'] })).toMatchObject({ ok: false, error: expect.stringMatching(/more than 209715200 bytes/) })
+    expect(await call('export_to_coordinator', { paths: ['many'] })).toMatchObject({ ok: false, error: expect.stringMatching(/more than 20000 files/) })
+    expect(existsSync(path.join(dirOf(coordWs.id), 'from', child.id))).toBe(false)
+  }, 120_000)
 
-  it('M4: the unpack itself (in the coordinator\'s sandbox) cuts decompression at the limit and refuses links — whatever size the child claimed', async () => {
+  it('never writes through a link planted in the coordinator\'s workspace', async () => {
     const coord = await workstream('T83X coordinator 4')
+    const child = await workstream('T83X child 4', { parentId: coord.id })
     const coordWs = await ensureWorkstreamWorkspace(coord.id)
-    as = { workspaceId: coordWs.id, workstreamId: coord.id }
-    // Archives built inside the sandbox, as a hostile child could: 5 MB of zeros, and a symlink.
-    const mk = await call('bash', { command: 'mkdir -p /tmp/a/b && head -c 5242880 /dev/zero > /tmp/a/big && ln -s /etc/hostname /tmp/a/b/link && tar -C /tmp/a -czf - big | base64 -w0 > /tmp/big.b64 && tar -C /tmp/a -czf - b | base64 -w0 > /tmp/link.b64 && echo ok' })
-    expect(mk.stdout).toContain('ok')
-    const b64 = async (f: string) => (await call('bash', { command: `cat ${f}` })).stdout as string
-    const m = rt.manager
-    const big = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/x', 1024 * 1024), { input: await b64('/tmp/big.b64'), timeoutSec: 60 })
-    expect(big.exitCode).toBe(3)
-    const link = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/y', 10 * 1024 * 1024), { input: await b64('/tmp/link.b64'), timeoutSec: 60 })
-    expect(link.exitCode).toBe(4)
-    expect((await call('bash', { command: 'ls from 2>/dev/null | wc -l' })).stdout.trim()).toBe('0')
-    // Under the limit, plain files: extracted.
-    const ok = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/z', 10 * 1024 * 1024), { input: await b64('/tmp/big.b64'), timeoutSec: 60 })
-    expect(ok.exitCode).toBe(0)
-  }, 180_000)
-
-  it('fix 2 (Minor 5): a SPARSE member (lists 50 MB, holds a few KB) is refused before extraction; listed sizes are summed against the limit', async () => {
-    const coord = await workstream('T83X coordinator 5')
-    const coordWs = await ensureWorkstreamWorkspace(coord.id)
-    as = { workspaceId: coordWs.id, workstreamId: coord.id }
-    const mk = await call('bash', { command: 'mkdir -p /tmp/s && cd /tmp/s && truncate -s 50M sp && tar -cSzf - sp | base64 -w0 > /tmp/sparse.b64 && head -c 3000000 /dev/zero > a && head -c 3000000 /dev/zero > b && tar -czf - a b | base64 -w0 > /tmp/two.b64 && echo ok' })
-    expect(mk.stdout).toContain('ok')
-    const b64 = async (f: string) => (await call('bash', { command: `cat ${f}` })).stdout as string
-    const m = rt.manager
-    // Its decompressed archive is tiny (under the limit) — only the listing shows 50 MB.
-    const sparse = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/sp', 100 * 1024 * 1024), { input: await b64('/tmp/sparse.b64'), timeoutSec: 60 })
-    expect(sparse.exitCode).toBe(5)
-    // Two 3 MB files under a 5 MB limit: the decompressed stream alone (6 MB) is caught too, but the
-    // listing sum is what bites when the stream is cut exactly — both paths refuse.
-    const two = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/two', 5 * 1024 * 1024), { input: await b64('/tmp/two.b64'), timeoutSec: 60 })
-    expect(two.exitCode).toBe(3)
-    expect((await call('bash', { command: 'ls from 2>/dev/null | wc -l' })).stdout.trim()).toBe('0')
-  }, 180_000)
-
-  it('fix 3: an owner NAME with spaces cannot shift the size field (the reviewer\'s bypass) — and more than 20,000 entries are refused', async () => {
-    const coord = await workstream('T83X coordinator 6')
-    const coordWs = await ensureWorkstreamWorkspace(coord.id)
-    as = { workspaceId: coordWs.id, workstreamId: coord.id }
-    const mk = await call('bash', { command: [
-      'mkdir -p /tmp/o && cd /tmp/o && truncate -s 1G big && truncate -s 50M mid',
-      // The bypass: with a spaced owner, `tar -tv` lists "a 1 2 3/g 1073741824 …" and $3 is a digit of the NAME.
-      "tar --owner='a 1 2 3:1000' --group='g:1000' -cSzf - big | base64 -w0 > /tmp/own-big.b64",
-      "tar --owner='a 1 2 3:1000' --group='g:1000' -cSzf - mid | base64 -w0 > /tmp/own-mid.b64",
-      "tar --owner='a 1 2 3:1000' --group='g:1000' -tvf <(base64 -d /tmp/own-big.b64 | gzip -dc) | awk '{print $3}' > /tmp/plain-field3",
-      'mkdir -p /tmp/many && cd /tmp/many && for i in $(seq 1 20001); do : > f$i; done && tar -czf - . | base64 -w0 > /tmp/many.b64',
-      'echo ok'
-    ].join(' && ') })
-    expect(mk.stdout).toContain('ok')
-    // The bypass is real without --numeric-owner: field 3 is part of the owner name, not the size.
-    const field3 = (await call('bash', { command: 'cat /tmp/plain-field3' })).stdout.trim()
-    expect(field3).not.toBe('1073741824')
-    expect(Number(field3)).toBeLessThan(10)
-    const b64 = async (f: string) => (await call('bash', { command: `cat ${f}` })).stdout as string
-    const m = rt.manager
-    // 1 GiB listed against a 5 MB limit: refused on the size (the reviewer's exact case extracted it).
-    const big = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/big', 5 * 1024 * 1024), { input: await b64('/tmp/own-big.b64'), timeoutSec: 60 })
-    expect(big.exitCode).toBe(3)
-    // 50 MB under a 100 MB limit, but sparse: refused as sparse.
-    const mid = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/mid', 100 * 1024 * 1024), { input: await b64('/tmp/own-mid.b64'), timeoutSec: 60 })
-    expect(mid.exitCode).toBe(5)
-    // (267 KB of base64: read past the bash tool's 64 KB output cap.)
-    const manyB64 = (await m.exec(coordWs.id, 'cat /tmp/many.b64', { capBytes: 1024 * 1024 })).stdout
-    const many = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/many', 100 * 1024 * 1024), { input: manyB64, timeoutSec: 120 })
-    expect(many.exitCode).toBe(6)
-    expect((await call('bash', { command: 'ls from 2>/dev/null | wc -l' })).stdout.trim()).toBe('0')
-  }, 300_000)
+    const childWs = await ensureWorkstreamWorkspace(child.id)
+    const target = path.join(root, `planted-${RUN}`)
+    mkdirSync(target, { recursive: true })
+    await m.ensureDir(coordWs.id)
+    // The coordinator's `from` is a link to somewhere else on the machine.
+    symlinkSync(target, path.join(dirOf(coordWs.id), 'from'))
+    as = { workspaceId: childWs.id, workstreamId: child.id }
+    await call('bash', { command: 'echo X > x.txt' })
+    expect(await call('export_to_coordinator', { paths: ['x.txt'] })).toMatchObject({ ok: false, error: expect.stringMatching(/from: the destination is not a directory/) })
+    expect(existsSync(path.join(target, child.id))).toBe(false)
+    // A plain destination works; a file planted as a link under it is refused, not written through.
+    rmSync(path.join(dirOf(coordWs.id), 'from'))
+    mkdirSync(path.join(dirOf(coordWs.id), 'from', child.id), { recursive: true })
+    writeFileSync(path.join(target, 'victim'), 'SAFE')
+    symlinkSync(path.join(target, 'victim'), path.join(dirOf(coordWs.id), 'from', child.id, 'x.txt'))
+    expect(await call('export_to_coordinator', { paths: ['x.txt'] })).toMatchObject({ ok: false, error: expect.stringMatching(/x\.txt: the destination is not a regular file/) })
+    expect(readFileSync(path.join(target, 'victim'), 'utf8')).toBe('SAFE')
+  }, 60_000)
 })

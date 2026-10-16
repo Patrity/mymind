@@ -496,7 +496,17 @@ With the projects backbone in place (canonical entities + association + dashboar
 - **N5 (final re-review).** `caseDefinitionHash` parses a stored row against the *current* case schema; a future, stricter schema could make the suite page throw (500) instead of just reading as "differs."
 - **N6 (final re-review, eval fidelity only).** The eval's single process-wide `guard` judge slot means parallel `web_fetch`/guard calls at `eval.concurrency` above 1 can queue into a fail-closed `unverified`, flaking `expect_flagged`/`expect_tainted` cases specifically — Tony's own live runs are unaffected.
 
-### Cycle 86 backlog (artifacts — see the [cycle-86 handover](handovers/2026-10-15-artifacts.md))
+### Cycle 86 backlog (Mac mini host — see the [cycle-86 handover](handovers/2026-10-13-macmini-host.md))
+- **Mach-lookup allow-list for eval worlds.** The `sandbox-exec` profile denies a list of known out-of-process services (LaunchServices, pasteboard, securityd, imagent, sharingd, Shortcuts, ...); it is a deny-list, so a service nobody thought of still answers. An allow-list (`(deny mach-lookup)` then only what a CLI needs) is the real fix and risks breaking tools, so it needs a probe pass.
+- **`sandbox-exec` deprecation risk.** Apple marks it deprecated. If a macOS update removes or neuters it, eval commands refuse (the darwin gate and the manager health check say so) and evals stop; the replacement would be a VM or a dedicated macOS user for eval commands.
+- **Retire LXC 114's runtime after 7 days.** Once cutover has held a week: stop and disable `mymind`/`mymind-worker`, drop `mymind-db`'s container and data, remove the cycle-82 sandbox leftovers (net unit, iptables chains, image, `/opt/mymind/.workspaces`), so LXC 114 is build-only. Delete the rollback docs that point at it.
+- **Backups of `.80` are the homelab's job.** Tony confirms a schedule exists and has done a test restore; MyMind runs no DB dumps. The mini backs up nothing either (uploads at `~/mymind/data/uploads` are in no backup yet).
+- **Hard link in an eval world.** A hard link already inside a world's dir is written through to the file it shares an inode with (the `sandbox-exec` write rule is path-based; a confined command cannot create one). Accepted.
+- **Dev is a full-trust host too.** On Tony's own Mac the dev worker runs Bridget's `bash` as Tony, with his logins and no approval; only production is platform-guarded. Consider a dev default that must be opted into.
+- **Cycle 82 residual minors above (B1-B6, `checkQuota`) are moot**: the Docker sandbox they describe is gone.
+- **Not built, by decision:** any agent-run confinement (option C), a workspace quota or concurrency cap, per-command approvals.
+
+### Cycle 87 backlog (artifacts — see the [cycle-87 handover](handovers/2026-10-15-artifacts.md))
 Out of scope per spec section 10 (open):
 - **Blob garbage collection.** Deleting an artifact, replacing a bundle, or a publish that fails after its blobs are written leaves orphaned blobs in storage. Needs a mark-and-sweep over `artifact_versions.manifest` keys.
 - **Live query API for artifacts**, **backends / server code**, **per-artifact custom domains or subdomains**, **list thumbnails**, **artifact comments / collaboration.** None built; pages are static and read refreshable `data/*.json`.

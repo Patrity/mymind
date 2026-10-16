@@ -1,4 +1,4 @@
-// Cycle 86 (spec §3): artifacts — Bridget's published static pages/webapps.
+// Cycle 87 (spec §3): artifacts — Bridget's published static pages/webapps.
 import { sql } from 'drizzle-orm'
 import { pgTable, uuid, text, integer, boolean, timestamp, jsonb, uniqueIndex, index, type AnyPgColumn } from 'drizzle-orm/pg-core'
 import { projects } from './projects'

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * /artifacts/<uuid> (cycle 86) — one artifact: sandboxed preview, metadata editing, version history
+ * /artifacts/<uuid> (cycle 87) — one artifact: sandboxed preview, metadata editing, version history
  * with rollback. The route param is always the UUID so live invalidation keys match.
  */
 import { formatBytes, formSyncFor, type ArtifactFormSync } from '~/lib/artifacts/display'

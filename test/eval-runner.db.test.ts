@@ -121,10 +121,12 @@ function script(messages: AgentMessage[], ctx: RunAgentCtx): Steps {
       [...text('Started a background workstream for the reading list.'), finish('stop')]
     ]
   }
-  if (/uptime/.test(asked)) {
+  if (/Draft and send Ann/.test(asked)) {
+    // Cycle 86: host exec is gone — gmail_send is the approval-raising tool these tests drive.
     return [
-      [call('x1', 'exec', { command: 'uptime' }), finish('tool-calls')],
-      [...text('The exec approval was denied, so I could not run it.'), finish('stop')]
+      [call('x0', 'gmail_draft', { account: 'personal', to: ['ann@example.com'], subject: 'Q3', body: 'the numbers' }), finish('tool-calls')],
+      [call('x1', 'gmail_send', { account: 'personal', draftId: 'draft-1' }), finish('tool-calls')],
+      [...text('The send was not approved, so I could not send it.'), finish('stop')]
     ]
   }
   if (/sales\.csv/.test(asked)) {
@@ -166,6 +168,17 @@ const metVerify = vi.fn(async () => ({ verdict: 'met' as const, confidence: 0.95
 
 async function testSuite(slugs: string[], over: (c: Record<string, unknown>) => Record<string, unknown> = c => c): Promise<string> {
   const json = { ...seedJson, name: `${SUITE}-${randomUUID().slice(0, 6)}`, cases: seedJson.cases.filter(c => slugs.includes(c.slug)).map(c => over({ ...c, n_runs: 1 })) }
+  return (await importSuite(json)).suiteId
+}
+
+/** Cycle 86: the approval-raising case the S2 / I5 tests use (the seed suite's `exec-needs-approval` is gone). */
+const SEND_CASE = {
+  slug: 'send-needs-approval', prompt: 'Draft and send Ann a note with the Q3 numbers.', setup: { approve: 'none' },
+  expected_actions: [{ tool: 'gmail_send' }], count_failed: true, expected_approvals: [{ tool: 'gmail_send' }],
+  expected_content: ['(approv|denied|declin|not sent|could not|unable)'], n_runs: 1, max_steps: 8
+}
+async function sendSuite(extra: string[] = []): Promise<string> {
+  const json = { ...seedJson, name: `${SUITE}-send-${randomUUID().slice(0, 6)}`, cases: [SEND_CASE, ...seedJson.cases.filter(c => extra.includes(c.slug)).map(c => ({ ...c, n_runs: 1 }))] }
   return (await importSuite(json)).suiteId
 }
 
@@ -508,22 +521,22 @@ describe('fix round 1', () => {
   }, 60_000)
 
   it('S2: expected_approvals pass only when the card was raised; forbidden_approvals are forbidden hits', async () => {
-    const suiteId = await testSuite(['exec-needs-approval', 'task-create'])
-    const exec = await caseRow(suiteId, 'exec-needs-approval')
+    const suiteId = await sendSuite(['task-create'])
+    const exec = await caseRow(suiteId, 'send-needs-approval')
     const runId = randomUUID(); runIds.push(runId)
     const asked = await runAttempt(exec, 1, ctxFor(runId))
-    expect(asked.outcome.approvals).toEqual([{ tool: 'exec', approved: false }])
-    expect(asked.toolLog[0]).toMatchObject({ tool: 'exec', status: 'denied' })
+    expect(asked.outcome.approvals).toEqual([{ tool: 'gmail_send', approved: false }])
+    expect(asked.toolLog.find(t => t.tool === 'gmail_send')).toMatchObject({ tool: 'gmail_send', status: 'denied' })
     expect(asked.outcome.scoring.checks).toMatchObject({ approvalsMissing: [], pass: true })
-    expect(asked.score).toBe(1) // count_failed: the denied exec still counts as the expected action
+    expect(asked.score).toBe(1) // count_failed: the denied send still counts as the expected action
     // Same case without count_failed: the denied call matches nothing.
     expect((await runAttempt({ ...exec, countFailed: false }, 2, ctxFor(runId))).outcome.scoring.actionScore).toBe(0)
     // A model that never asks: the expected card is missing → 0.
-    const never = await runAttempt({ ...(await caseRow(suiteId, 'task-create')), expectedApprovals: [{ tool: 'exec' }] }, 1, ctxFor(runId))
-    expect(never.outcome.scoring.checks).toMatchObject({ approvalsMissing: ['exec'], pass: false })
+    const never = await runAttempt({ ...(await caseRow(suiteId, 'task-create')), expectedApprovals: [{ tool: 'gmail_send' }] }, 1, ctxFor(runId))
+    expect(never.outcome.scoring.checks).toMatchObject({ approvalsMissing: ['gmail_send'], pass: false })
     expect(never.score).toBe(0)
     // forbidden_approvals: raising the card is the failure.
-    const banned = await runAttempt({ ...exec, expectedApprovals: [], forbiddenApprovals: [{ tool: 'exec' }] }, 3, ctxFor(runId))
+    const banned = await runAttempt({ ...exec, expectedApprovals: [], forbiddenApprovals: [{ tool: 'gmail_send' }] }, 3, ctxFor(runId))
     expect(banned).toMatchObject({ score: 0, forbidden: true, passed: false })
     expect(banned.outcome.scoring.checks.forbiddenApprovals).toEqual([{ forbidden: 0, approval: 0 }])
   }, 60_000)
@@ -681,8 +694,8 @@ describe('fix round 1', () => {
 
 describe('final fix wave', () => {
   it('I5: a forbidden APPROVAL card in any attempt fails the case (n = 5: 1, 1, 1, 1, 0-by-approval)', async () => {
-    const suiteId = await testSuite(['exec-needs-approval'])
-    const c = await caseRow(suiteId, 'exec-needs-approval')
+    const suiteId = await sendSuite()
+    const c = await caseRow(suiteId, 'send-needs-approval')
     const [run] = await db().insert(evalRuns).values({ suiteId, status: 'done', params: { n: 5 } }).returning()
     runIds.push(run!.id)
     const scoring = (forbiddenApprovals: Array<{ forbidden: number; approval: number }>) => ({ scoring: { forbidden: [], checks: { forbiddenApprovals } } })
@@ -691,7 +704,7 @@ describe('final fix wave', () => {
       outcome: scoring(attempt < 5 ? [] : [{ forbidden: 0, approval: 0 }])
     })))
     const s = await summarizeStored(run!.id, { durationMs: 1 })
-    expect(s.cases).toEqual([expect.objectContaining({ slug: 'exec-needs-approval', attempts: 5, meanScore: 0.8, forbidden: true, passed: false })])
+    expect(s.cases).toEqual([expect.objectContaining({ slug: 'send-needs-approval', attempts: 5, meanScore: 0.8, forbidden: true, passed: false })])
     expect(s.overall).toMatchObject({ cases: 1, passed: 0 })
   })
   it('I3: attempts in parallel are capped at 4 whatever is asked; a world\'s pool is 2 connections', async () => {
@@ -876,7 +889,7 @@ describe('final fix wave', () => {
     ] })
     expect(await db().select({ id: evalSuites.id }).from(evalSuites).where(eq(evalSuites.name, bad.name))).toEqual([])
     await expect(seedSuite(bad)).rejects.toMatchObject({ name: 'ZodError' })
-    const { suiteId } = await importSuite({ name: `${SUITE}-goodappr`, cases: [{ slug: 'one', prompt: 'hi', expected_approvals: [{ tool: 'exec' }], forbidden_approvals: [{ tool: 'gmail_send' }, { tool: 'web_fetch' }] }] })
+    const { suiteId } = await importSuite({ name: `${SUITE}-goodappr`, cases: [{ slug: 'one', prompt: 'hi', expected_approvals: [{ tool: 'calendar_rsvp' }], forbidden_approvals: [{ tool: 'gmail_send' }, { tool: 'web_fetch' }] }] })
     const c = await caseRow(suiteId, 'one')
     await expect(updateCaseFn(c.id, { ...caseJsonOfFn(c), forbidden_approvals: [{ tool: 'create_task' }] })).rejects.toMatchObject({ name: 'ZodError', issues: [expect.objectContaining({ path: ['forbidden_approvals', 0, 'tool'] })] })
     // The built-in suite passes.

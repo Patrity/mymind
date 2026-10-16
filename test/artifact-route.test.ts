@@ -1,4 +1,4 @@
-// Cycle 86 Task 5 — /artifact/** serving route. Drives the real handler through a real h3 app on an
+// Cycle 87 Task 5 — /artifact/** serving route. Drives the real handler through a real h3 app on an
 // ephemeral port (so redirects, HEAD, 304 and streaming behave as in Nitro); only findServable,
 // storage and useAuth are mocked. All decision logic is unit-tested in artifact-serve.test.ts.
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest'

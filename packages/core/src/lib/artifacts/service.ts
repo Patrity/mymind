@@ -1,4 +1,4 @@
-// Cycle 86 (spec §4): artifacts service — DB + storage writes, versioning, in-place data updates.
+// Cycle 87 (spec §4): artifacts service — DB + storage writes, versioning, in-place data updates.
 import { Readable } from 'node:stream'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../../db'

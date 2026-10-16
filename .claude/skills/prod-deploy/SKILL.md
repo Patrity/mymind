@@ -1,361 +1,277 @@
 ---
 name: prod-deploy
-description: Use when interacting with the MyMind PRODUCTION deployment — checking app or agent-worker health/logs, restarting the services (mymind + mymind-worker), inspecting/editing prod env, running DB ops against prod, diagnosing a bad deploy, or rolling back. Prod is two native systemd units (web + agent worker) in Proxmox LXC 114, reached via SSH to the Proxmox host. Covers the access pattern, common ops, and the runtimeConfig/bind gotchas that have caused incidents.
+description: Use when interacting with the MyMind PRODUCTION deployment — checking web or agent-worker health/logs, restarting the services, inspecting/editing prod env, running DB ops against prod, running or cancelling evals, diagnosing a bad deploy, or rolling back. Since cycle 86 prod runs natively on the Mac mini (user bridget @ 192.168.2.35, launchd agents com.mymind.web + com.mymind.worker) against the central Postgres at 192.168.2.80; Proxmox LXC 114 is only the CI build box (DEPLOY_TARGET=lxc keeps the old in-LXC runtime until cutover). Covers access, common ops, CD, one-time setup, and the gotchas that have caused incidents.
 ---
 
-# Prod deployment ops (LXC 114)
-
-The MyMind production app runs **natively** (not Docker) as a `systemd` service inside an
-**unprivileged Proxmox LXC, CTID 114**, on the Proxmox host. Postgres (pgvector) and SearXNG
-stay Docker containers inside that same LXC. Full reference: `docs/DEPLOYMENT.md` §17–18.
-
-## Access — always via the Proxmox host
-
-You have SSH access. There is **no direct SSH into LXC 114**; you go through the host with `pct exec`.
-
-> ⚠️ **The single most dangerous mistake in this file — read before running anything.**
-> `ssh` joins **all** of its arguments into one command string, so your local shell's quotes are
-> stripped before the remote shell ever parses them. `bash -lc` then receives only the **first
-> word** as its script; the rest become positional parameters (`$0`, `$1`, …). This fails two
-> different ways, both silent and both exit 0:
->
-> | Your command contains | What actually happens |
-> |---|---|
-> | an unquoted `;` or `&&` | the remote shell splits there — everything after the separator runs **on the Proxmox host**, not in the container |
-> | no separator | runs in the container, but as bare `<firstword>` with every other token discarded into `$@` (e.g. `systemctl status mymind` → plain `systemctl`, `docker exec … psql …` → plain `docker` usage) |
->
-> ```bash
-> # ✗ BROKEN — prints a blank line, then "mini" (the HOST)
-> ssh root@192.168.2.50 -- pct exec 114 -- bash -lc 'echo hi; hostname'
->
-> # ✓ CORRECT — prints "hi", then "mymind" (LXC 114)
-> ssh root@192.168.2.50 "pct exec 114 -- bash -lc 'echo hi; hostname'"
-> ```
->
-> This has already burned a session: it made an intact prod look like a wiped container
-> (`/opt/mymind` "missing", `mymind` "inactive", `docker` "not found" — all true of the host,
-> none true of the LXC) and produced a confident, wrong "prod has moved" report. A
-> `systemctl restart …` or `docker exec … psql` typed the broken way silently targets the
-> **wrong machine or the wrong command**.
-> **Always verify with `hostname` when a result surprises you.**
-
-**Use these two forms.** Quote the entire remote command; never rely on an unquoted `--` chain:
-
-```bash
-# Proxmox host
-ssh root@192.168.2.50 '<host command>'
-
-# Anything INSIDE LXC 114 (the app) — note the outer double quotes
-ssh root@192.168.2.50 "pct exec 114 -- bash -lc '<command run in the LXC>'"
-```
-
-For anything with nested quotes, SQL, or `$`-expansion, skip quoting entirely and pipe base64 —
-this is the reliable form for DB work:
-
-```bash
-lxc() { local b=$(printf '%s' "$1" | base64); \
-  ssh root@192.168.2.50 "pct exec 114 -- bash -lc 'echo $b | base64 -d | bash'"; }
-
-lxc 'systemctl status mymind --no-pager'
-lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select count(*) from documents;"'
-```
-
-**SSH keys:** the authorized key is `~/.ssh/claude-code`. `~/.ssh/config` maps it for both the
-alias (`mini`) and the literal IP (`192.168.2.50`), so either host form works. If you get
-`Permission denied (publickey)`, the IP's config block has lost its `IdentityFile` line — add
-`IdentityFile ~/.ssh/claude-code` back, or fall back to `ssh mini`.
-
-Run read-only checks freely. For anything that restarts the service or edits env/DB, prefer to
-say what you're about to do first — a restart is a few seconds of downtime.
-
-## Topology
+# Prod deployment ops (Mac mini + LXC 114 build box)
 
 | Thing | Where |
 |---|---|
-| App | native systemd unit `mymind`, runs `node /opt/mymind/.output/server/index.mjs` as **root**, cwd `/opt/mymind`, listens `0.0.0.0:3000` |
-| Agent worker (cycle 81) | unit `mymind-worker`, runs `node /opt/mymind/.worker/dist/worker.mjs` — the ONLY process that executes agent runs (chat turns, jobs, workstreams, the 5s tick). Same `.env` + `.env.native`. Talks to the web only via Postgres |
-| Worker releases | `.worker/` (active), `.worker-prev/` (one-level rollback), `.worker-next/` (staged) — `deploy/worker-release.sh stage\|activate\|rollback`; preserved by the sync, ~620 MB at rest |
-| Code / build | `/opt/mymind` (tracked tree), build output `/opt/mymind/.output` |
-| Base env | `/opt/mymind/.env` (shared; has Docker-era values like `DATABASE_URL=…@db:5432`) |
-| Native overrides | `/opt/mymind/.env.native` (gitignored, **preserved across deploys**, loaded AFTER `.env`) |
-| Postgres | Docker container `mymind-db`, published `127.0.0.1:5432`, db/user `mymind` |
-| SearXNG | Docker container `mymind-searxng`, `127.0.0.1:8088` |
-| Uploads | native dir `/opt/mymind/.data/uploads` |
-| Public URL | `https://brain.costanzoclan.com` (Pangolin reverse proxy → LXC IP `:3000`) |
-| CD | GitHub Actions `deploy.yml`, self-hosted runner on the Proxmox host, drives `pct exec 114` |
+| Web | launchd agent `com.mymind.web` (user `bridget`), `node --max-old-space-size=1536 ~/mymind/app/.output/server/index.mjs`, `0.0.0.0:3000` |
+| Agent worker | launchd agent `com.mymind.worker`, `node --max-old-space-size=2048 ~/mymind/.worker/dist/worker.mjs`, `AGENT_RUNTIME_EXCLUSIVE=1` — the ONLY executor of agent runs; talks to the web only via Postgres |
+| Wrapper | `~/mymind/bin/run.sh web\|worker` (sources the env file, Homebrew PATH, heap cap, log, then `exec node`) |
+| Releases | `~/mymind/releases/{web,worker}-<sha>`; symlink pointers `app` / `.app-prev` / `.app-next` and `.worker` / `.worker-prev` / `.worker-next` — `~/mymind/bin/release.sh stage\|activate\|rollback\|restart\|health\|status` |
+| Env | `~/mymind/env/mymind.env` (0600, hand-written, never committed — see [Env file](#env-file)) |
+| Data | uploads `~/mymind/data/uploads`, workspaces `~/mymind/workspaces`, eval worlds `~/mymind/evals-scratch` |
+| Logs | `~/Library/Logs/mymind/{web,worker}.log` (size-rotated by run.sh: 50 MB × 5), `*.launchd.log` (wrapper failures only) |
+| Postgres | central `192.168.2.80:5432`, db + role `bridget` (not superuser; extensions pre-installed) |
+| Neighbours on the mini — **never touch** | BlueBubbles (app + `app.bluebubbles.server` agent, the iMessage channel), `node_exporter` (brew services) |
+| Build box | LXC 114 on the Proxmox host 192.168.2.50 — macmini deploys build in **`/opt/mymind-build`** (its own checkout); `/opt/mymind` is the retired LXC runtime, left on the pre-cutover build as the rollback target. The self-hosted runner (root on the host) drives it with `pct exec 114` |
+| Public URL | `https://brain.costanzoclan.com` (Pangolin → `192.168.2.35:3000`) |
+| CD | `.github/workflows/deploy.yml`, target from the repo variable `DEPLOY_TARGET` (`lxc` \| `macmini`) |
 
-## Common ops
+Spec: `docs/superpowers/specs/2026-10-13-macmini-host-design.md` (§5 deploy, §6 cutover runbook).
 
-Define the `lxc` helper from the Access section first — it base64-pipes the script, so nested
-quotes, `;`, `&&`, `$(…)`, and SQL all survive intact:
-
-```bash
-lxc() { local b=$(printf '%s' "$1" | base64); \
-  ssh root@192.168.2.50 "pct exec 114 -- bash -lc 'echo $b | base64 -d | bash'"; }
-
-# Sanity-check you're actually in the container before trusting anything below
-lxc 'hostname'                                    # expect "mymind", NOT "mini"
-
-# App status / logs
-lxc 'systemctl status mymind --no-pager'
-lxc 'journalctl -u mymind -n 120 --no-pager'
-lxc 'journalctl -u mymind -f'                     # live tail
-lxc 'journalctl -u mymind --since "10 min ago" --no-pager | grep -iE "error|unhandled|ECONNREFUSED"'
-
-# Restart (a few seconds of downtime)
-lxc 'systemctl restart mymind && sleep 4 && systemctl is-active mymind'
-
-# Health — /api/health does `select 1` (proves DB). /login is SSR-only and does NOT prove DB.
-lxc 'curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/health'   # expect 200
-
-# Containers (should be ONLY mymind-db + mymind-searxng)
-lxc 'docker ps'
-
-# Inspect env WITHOUT leaking secrets (mask user:pass)
-lxc 'sed -E "s#://[^@]*@#://***@#" /opt/mymind/.env.native'
-
-# What env the RUNNING process actually has (the source of truth)
-lxc 'pid=$(systemctl show -p MainPID --value mymind); tr "\0" "\n" < /proc/$pid/environ | grep -E "^(NUXT_DATABASE_URL|DATABASE_URL|NITRO_HOST|NODE_ENV)=" | sed -E "s#://[^@]*@#://***@#"'
-
-# Agent worker — status / logs / heartbeat / trapped crashes / release disk
-lxc 'systemctl status mymind-worker --no-pager'
-lxc 'journalctl -u mymind-worker -n 120 --no-pager'
-lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select boot_id, pid, started_at, now()-beat_at as age from worker_heartbeat order by beat_at desc limit 3;"'   # age > 30s = web shows "agent worker offline"
-lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select created_at, name, error->>'"'"'message'"'"' from activity_log where name like '"'"'worker:%'"'"' order by created_at desc limit 10;"'
-lxc 'du -sh /opt/mymind/.worker*'
-# Restart = DRAIN: SIGTERM → stops claiming, in-flight runs get ≤60s, then exit; systemd restarts it
-lxc 'systemctl restart mymind-worker && sleep 3 && systemctl is-active mymind-worker'
-
-# Postgres (no host port exposed beyond loopback; go via the container)
-lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select count(*) from documents;"'
-```
-
-### Sandbox ops (cycle 82 — the `mymind-sandbox` workspace)
-
-Reference: `docs/wiki/workspace.md`. Everything below is read-only (no `.env`/secret values are
-printed). If the app shows "Sandbox unavailable: `<reason>`", or a deploy's Annotations carry a
-`Sandbox` warning, start here.
+## Access
 
 ```bash
-# The image: exists? which tag is :current? how big?
-lxc 'docker image ls mymind-sandbox'
-lxc 'docker image inspect mymind-sandbox:current --format "{{.Id}} {{.Size}}"'
-
-# The network + firewall: does it exist with the right bridge/options, and are our rules live?
-lxc 'docker network inspect mymind-sandbox --format "{{json .Options}}"'
-lxc 'iptables -S DOCKER-USER'                        # expect a jump to MYMIND-SANDBOX-FWD, FIRST rule
-lxc 'iptables -S MYMIND-SANDBOX-FWD'                  # the REJECT/RETURN rule set (network.ts)
-lxc 'iptables -S INPUT | head -5'                     # expect a jump to MYMIND-SANDBOX-IN near the top
-lxc 'iptables -S MYMIND-SANDBOX-IN'
-lxc 'docker info --format "{{.FirewallBackend}}"'     # nft vs legacy — must match what the rules above assume
-lxc 'systemctl is-enabled mymind-sandbox-net; systemctl is-active mymind-sandbox-net'
-lxc 'journalctl -u mymind-sandbox-net -n 30 --no-pager'
-
-# Resource limits actually enforced (not just accepted) — run INSIDE a live sandbox container:
-lxc 'cid=$(docker ps -q --filter "label=mymind.workspace" | head -1); [ -n "$cid" ] && docker exec "$cid" sh -c "cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max" || echo "no running sandbox to probe"'
-
-# Running sandboxes (one container per workspace; name mymind-ws-<id>)
-lxc 'docker ps --filter "label=mymind.workspace" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"'
-lxc 'docker stats --no-stream $(docker ps -q --filter "label=mymind.workspace")'   # CPU/mem per sandbox, if any running
-
-# Disk (the watchdog stops everything below 4 GB / ~200k free inodes)
-lxc 'df -h /opt/mymind/.workspaces; df -i /opt/mymind/.workspaces'
-lxc 'du -sh /opt/mymind/.workspaces/*/ 2>/dev/null | sort -rh | head -10'   # the biggest workspaces
-
-# The worker's own preflight result (rides the heartbeat — what the app's banner reads)
-lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select boot_id, beat_at, status->'"'"'sandbox'"'"' as sandbox from worker_heartbeat order by beat_at desc limit 1;"'
+ssh bridget@192.168.2.35 '<command>'
 ```
+- **A non-login ssh command has no Homebrew on PATH** (`node`, `rg`, `psql` "not found"). Use absolute
+  paths (`/opt/homebrew/bin/node`, `/opt/homebrew/opt/libpq/bin/psql`) or `zsh -lc '…'`.
+- The services live in bridget's **GUI** launchd domain: `gui/$(id -u)` (uid 501). They exist only while
+  bridget is logged in — the mini autologs in after a reboot (`provision-macmini.sh --check` verifies it).
 
-Fixes (both idempotent; see §22 of `docs/DEPLOYMENT.md`):
+SQL against prod without ever printing the URL (it is read from the env file on the mini):
 ```bash
-lxc 'cd /opt/mymind && bash deploy/sandbox/install-network.sh install'   # rebuild the network + rules + oneshot
-lxc 'cd /opt/mymind && bash deploy/sandbox/build-image.sh'               # rebuild the image (needs >= 6 GB free)
+minisql() { local b; b=$(printf '%s' "$1" | base64); ssh bridget@192.168.2.35 \
+  "set -a; . ~/mymind/env/mymind.env; set +a; echo $b | base64 -d | /opt/homebrew/opt/libpq/bin/psql \"\$DATABASE_URL\" -X"; }
+minisql 'select count(*) from documents;'
 ```
 
-### Evals on prod (cycle 85 — `docs/wiki/eval.md`)
-
-An eval run uses the **same** prod Postgres instance as the app — each live world is its own
-temporary schema (`eval_<run>_<suffix>`) inside the `mymind` database, dropped when the run ends.
-Models, the judge's semaphores, Postgres connections and docker all come from the shared, capacity-
-limited pools Tony's own runs use (isolation covers *data*, not *capacity*), so run one only when
-Tony is idle (no open chat, no live workstreams), and **never during a deploy** — CD already
-cancels running evals right before `pnpm db:migrate`, but don't rely on that as the only guard.
-
-**Run one safely:**
+**LXC 114 (build box)** — only through the Proxmox host. Quote the WHOLE remote command: `ssh` joins its
+arguments, so an unquoted `;`/`&&` runs the rest **on the Proxmox host**, and without one `bash -lc`
+gets only the first word (both exit 0 — this has produced a confident, wrong "prod is wiped" report).
+Pipe base64 for anything with nested quotes; check `hostname` (expect `mymind`) when a result surprises you:
 ```bash
-# From /opt/mymind, sourcing .env.native — NODE_ENV=production is already set by the unit.
-lxc 'cd /opt/mymind && set -a && . ./.env.native && set +a && pnpm eval bridget-core --n 1'
+lxc() { local b; b=$(printf '%s' "$1" | base64); ssh root@192.168.2.50 "pct exec 114 -- bash -lc 'echo $b | base64 -d | bash'"; }
+lxc 'hostname'
 ```
-- `pnpm eval <suite>` enqueues on the real worker (job `eval:run-suite`) and tails progress;
-  `--local` is refused on prod (`NODE_ENV=production` alone blocks it — `lib/eval/local-guard.ts`).
-- Start small: `--case <slug> --n 1` before a full suite. The `/evals` dashboard
-  (`https://brain.costanzoclan.com/evals`, session auth) shows the same run live.
-- Only **one** eval run is active globally (a 409 names the other suite if one is already going);
-  cancel it first if you need to run something else.
-- Settings `eval.concurrency` (default 1 on prod) and `eval.maxTokensPerRun` (default 5,000,000)
-  bound how much of the shared model/judge/connection capacity one run can take — don't raise
-  `eval.concurrency` on prod without also checking `max_connections` (each attempt opens ~3
-  Postgres connections: a 2-connection tenant pool plus its advisory-lock session).
+Keys: `~/.ssh/claude-code` is mapped for `root@192.168.2.50` (alias `mini` in `~/.ssh/config` = the
+**Proxmox host**, not the Mac mini — mind the name).
 
-**Check for leftover eval schemas and containers** (should be empty whenever no eval is running):
-```bash
-lxc 'docker exec -i mymind-db psql -U mymind -d mymind -Atc "select nspname from pg_namespace where nspname like \$\$eval\_%\$\$;"'
-lxc 'docker ps -a --filter "label=mymind.eval.run" --format "table {{.Names}}\t{{.Status}}\t{{.Labels}}"'
-lxc 'ls /opt/mymind/.workspaces/.eval 2>/dev/null'
-lxc 'docker exec -i mymind-db psql -U mymind -d mymind -Atc "select id,suite_id,status,alive_at,error from eval_runs where status in (\$\$queued\$\$,\$\$running\$\$);"'
-```
-A leftover schema/container with no matching `queued`/`running` row is a ghost — the worker's boot
-sweep and its every-minute housekeeping tick drop these on their own within about 2 hours (or
-~2 minutes past a stale heartbeat); nothing needs to be force-removed by hand except right before a
-manual deploy (see below).
-
-**Cancel.**
-```bash
-# Cancel everything (what CD itself runs before db:migrate) and wait up to 60s for worlds to drop:
-lxc 'cd /opt/mymind && set -a && . ./.env.native && set +a && NODE_ENV=production pnpm eval --cancel-all --wait 60'
-# Cancel one run by id:
-lxc 'cd /opt/mymind && set -a && . ./.env.native && set +a && pnpm eval --cancel <runId>'
-```
-`--cancel-all` is exactly the deploy-time command (`.github/workflows/deploy.yml`, right before
-`pnpm db:migrate`), wrapped there in `|| echo …` so it can never fail the deploy — run it by hand
-first if you're doing a [manual deploy](#when-cd-never-fires-manual-deploy), since that runbook
-replicates every other CD step but not this one.
-
-### "There are errors in prod" — AI/provider errors are in `activity_log`, NOT the journal
-
-The journal only carries request-level `[request error]` lines and job progress. Every AI
-call (reasoning/bulk/embeddings/stt/tts/…) is recorded by `withFailoverOver` into
-`activity_log` (kind `attempt` per model tried, `name = <usage>:<model label>`, plus a
-`<usage>:all-failed` row when the whole chain fails) — that table is what the Activity page
-shows. Start here (the `\$\$…\$\$` quoting survives the base64 hop):
+## Common ops (Mac mini)
 
 ```bash
-# 1. What's failing, how often, and when — last 7 days
-lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select usage, provider, name, status, count(*), min(created_at), max(created_at) from activity_log where (status=\$\$error\$\$ or severity in (\$\$error\$\$,\$\$warn\$\$)) and created_at > now() - interval \$\$7 days\$\$ group by 1,2,3,4 order by max(created_at) desc limit 40;"'
-# 2. The actual error messages for one usage
-lxc 'docker exec -i mymind-db psql -U mymind -d mymind -Atc "select created_at, name, attempt, duration_ms, left(error->>\$\$message\$\$,300) from activity_log where usage=\$\$tts\$\$ and status=\$\$error\$\$ order by created_at desc limit 20;"'
-# 3. Which JOB fired it — walk the trace (job rows are kind=job in the same trace_id)
-lxc 'docker exec -i mymind-db psql -U mymind -d mymind -Atc "select created_at, kind, name, status, left(meta::text,120) from activity_log where trace_id in (select trace_id from activity_log where usage=\$\$bulk\$\$ and status=\$\$error\$\$ and created_at > now() - interval \$\$7 days\$\$) order by created_at;"'
+# Services
+ssh bridget@192.168.2.35 'launchctl print gui/501/com.mymind.web | grep -E "state|pid|last exit"'
+ssh bridget@192.168.2.35 'launchctl print gui/501/com.mymind.worker | grep -E "state|pid|last exit"'
+ssh bridget@192.168.2.35 'bash ~/mymind/bin/release.sh status'           # which release each pointer holds
+
+# Logs
+ssh bridget@192.168.2.35 'tail -n 120 ~/Library/Logs/mymind/web.log'
+ssh bridget@192.168.2.35 'tail -f ~/Library/Logs/mymind/worker.log'
+ssh bridget@192.168.2.35 'grep -iE "error|unhandled|ECONNREFUSED" ~/Library/Logs/mymind/web.log | tail -40'
+ssh bridget@192.168.2.35 'cat ~/Library/Logs/mymind/*.launchd.log'      # wrapper failures (env/release missing)
+
+# Restart = SIGTERM (the worker drains in-flight runs ≤ 60 s; ExitTimeOut 90), launchd restarts it
+ssh bridget@192.168.2.35 'bash ~/mymind/bin/release.sh restart web'
+ssh bridget@192.168.2.35 'bash ~/mymind/bin/release.sh restart worker'
+
+# Health — /api/health runs `select 1` (proves the DB); /login is SSR-only and proves nothing
+curl -s -o /dev/null -w "%{http_code}\n" http://192.168.2.35:3000/api/health      # LAN (proves the 0.0.0.0 bind)
+curl -s -o /dev/null -w "%{http_code}\n" https://brain.costanzoclan.com/api/health # through Pangolin
+ssh bridget@192.168.2.35 'bash ~/mymind/bin/release.sh health worker 30'          # launchd pid has a fresh heartbeat
+
+# Env — key NAMES only, or masked
+ssh bridget@192.168.2.35 'cut -d= -f1 ~/mymind/env/mymind.env'
+ssh bridget@192.168.2.35 "sed -E 's#://[^@]*@#://***@#; s#(SECRET|KEY|TOKEN|PASSWORD)([A-Z_]*)=.*#\1\2=***#' ~/mymind/env/mymind.env"
+
+# Worker heartbeat / trapped crashes
+minisql 'select boot_id, pid, host, started_at, now()-beat_at as age from worker_heartbeat order by beat_at desc limit 3;'
+minisql "select created_at, name, error->>'message' from activity_log where name like 'worker:%' order by created_at desc limit 10;"
+
+# Disk (workspace work pauses under 5 GB free, resumes at 8 GB) + release sizes
+ssh bridget@192.168.2.35 'df -h ~; du -sh ~/mymind/releases/* ~/mymind/workspaces ~/mymind/evals-scratch 2>/dev/null'
+
+# Provisioning state, read-only (CD runs the same script in apply mode every deploy)
+ssh bridget@192.168.2.35 'bash ~/mymind/deploy/provision-macmini.sh --check'
 ```
 
-Read the **attempt pattern**, not just the count: an `attempt=0 error` immediately followed
-(ms apart) by an `attempt=1 ok` on every call means the chain **head is wrong for the
-request** (e.g. a voice/model the primary doesn't have) and failover is masking a routing
-bug — the provider itself is fine (2026-08-16: 190 Kokoro `400 Voice 'X' not found` because
-ws.ts dropped the client's chosen provider). Errors that appear/vanish on a 5-min cadence with
-`5xx`/`fetch failed` are the upstream (LiteLLM `192.168.2.85:4000`, TTS `192.168.2.25`) —
-curl it from the LXC before touching app code. `usage='reasoning'` rows are the agent; a
-provider *labelled* "Reasoning …" under `usage='bulk'` is just the bulk chain's failover model.
+Workspace commands run **unconfined on the host as bridget** (cycle 86 option C — her Homebrew tools
+and CLI logins just work); only eval worlds run under `sandbox-exec` (offline, scratch dir). See
+`docs/wiki/workspace.md`.
+
+### "There are errors in prod" — AI/provider errors are in `activity_log`, NOT the logs
+
+The logs carry request-level `[request error]` lines and job progress. Every AI call is recorded by
+`withFailoverOver` into `activity_log` (kind `attempt` per model, `name = <usage>:<model label>`, plus
+`<usage>:all-failed`) — what the Activity page shows:
+```bash
+minisql "select usage, provider, name, status, count(*), min(created_at), max(created_at) from activity_log where (status='error' or severity in ('error','warn')) and created_at > now() - interval '7 days' group by 1,2,3,4 order by max(created_at) desc limit 40;"
+minisql "select created_at, name, attempt, duration_ms, left(error->>'message',300) from activity_log where usage='tts' and status='error' order by created_at desc limit 20;"
+```
+Read the **attempt pattern**: `attempt=0 error` then `attempt=1 ok` ms apart on every call = the chain
+head is wrong for the request (failover masking a routing bug), not an outage. Errors on a 5-min cadence
+with `5xx`/`fetch failed` are upstream (LiteLLM `192.168.2.85:4000`, the rig `192.168.2.25`) — curl it
+from the mini before touching code.
+
+### Evals on prod (`docs/wiki/eval.md`)
+
+Each eval world is a temporary schema (`eval_<run>_<suffix>`) on the prod DB plus a scratch dir under
+`~/mymind/evals-scratch`. They share model/judge/connection capacity with Tony's runs: run one only when
+Tony is idle, **never during a deploy** (CD cancels them before migrating). `eval.concurrency` (default 1)
+and `eval.maxTokensPerRun` bound one run.
+
+The eval CLI needs the workspace (`pnpm`, `tsx`), so it runs **from LXC 114's build checkout** with `/opt/mymind-build/.env.macmini`:
+```bash
+lxc 'cd /opt/mymind-build && set -a && . ./.env.macmini && set +a && NODE_ENV=production pnpm eval bridget-core --case <slug> --n 1'
+lxc 'cd /opt/mymind-build && set -a && . ./.env.macmini && set +a && NODE_ENV=production pnpm eval --cancel-all --wait 60'
+lxc 'cd /opt/mymind-build && set -a && . ./.env.macmini && set +a && NODE_ENV=production pnpm eval --cancel <runId>'
+```
+> **The eval CLI `.env` gotcha.** `pnpm eval` starts node with `--env-file-if-exists=.env`, which fills
+> every key NOT already in the environment from the cwd's `.env` — `/opt/mymind-build` has none, but
+> `/opt/mymind/.env` is the old Docker-era DB (`…@db:5432/mymind`), so never run it from there. And core prefers `NUXT_DATABASE_URL` over `DATABASE_URL` (`NITRO_DATABASE_URL`
+> beats both — never set it). So `.env.macmini` must
+> set **both** `DATABASE_URL` and `NUXT_DATABASE_URL` (→ `.80`), exported before the CLI starts; source
+> `.env.native` instead (or forget the NUXT_ twin) and the command silently talks to LXC 114's old
+> database. `NODE_ENV=production` also makes `--local` refuse (runs must go through the mini's worker).
+
+Leftover worlds (should be empty when no eval runs; the worker's sweeps drop ghosts within ~2 h):
+```bash
+minisql "select nspname from pg_namespace where nspname like 'eval\_%';"
+minisql "select id, suite_id, status, alive_at, error from eval_runs where status in ('queued','running');"
+ssh bridget@192.168.2.35 'ls ~/mymind/evals-scratch'
+```
 
 ## Deploy & rollback
 
-- **Deploy = push to `master`.** CD: sync tree → `docker compose up -d db searxng` (old app keeps
-  serving) → `provision-native.sh` → `pnpm install --frozen-lockfile` + build (`--max-old-space-size=4096`)
-  + `worker-release.sh stage` → `pnpm db:migrate` (sources `.env.native`) → cut over
-  (`systemctl restart mymind`) → `/api/health` → `worker-release.sh activate && systemctl restart
-  mymind-worker` → worker heartbeat check. **Build-before-cutover**: a failed build is a no-op, not an
-  outage. Nothing executes between the two restarts (~1–2 min); queued runs wait.
-- Watch a run: `gh run watch <id> --exit-status` — **never pipe to `tail`** (the pipe returns
-  tail's exit 0 and masks a failed deploy).
-- **Provisioning** is idempotent: `$H 'cd /opt/mymind && bash deploy/provision-native.sh'` re-writes
-  the unit, self-heals `.env.native` (NITRO_HOST, NUXT_* overrides), re-enables the service.
-- **Rollback** (full runbook: DEPLOYMENT.md §21a; migrations are never reverted):
-  - worker only, one level: `lxc 'cd /opt/mymind && bash deploy/worker-release.sh rollback && systemctl restart mymind-worker'`
-  - web+worker within cycle ≥ 81: revert on `master`, push (CD redeploys both).
-  - **below cycle 81** (no worker in that code): cancel active workstreams at `/workstreams`, then
-    `systemctl disable --now mymind-worker` **FIRST**, then deploy. Otherwise the old web
-    (`AGENT_RUNTIME_EXCLUSIVE=1`) and the still-running worker are two executors on one DB.
-  - pre-B3.1 Docker path: restore the old `docker-compose.prod.yml` (with `app`) + `docker compose up -d --build app`, then stop both units.
+**Deploy = push to `master`.** The `deploy` job's target is `${{ inputs.target || vars.DEPLOY_TARGET || 'lxc' }}`
+(a manual `workflow_dispatch` defaults to `auto` = the variable; only an explicit `lxc`/`macmini` overrides
+it). Flip at cutover: `gh variable set DEPLOY_TARGET --body macmini` and `gh variable set MYMIND_CUTOVER_DONE --body true`
+— from then on the `[lxc] Refuse after cutover` step fails any lxc run, so nothing restarts the retired
+LXC 114 units by accident.
+
+`macmini` (every step `[macmini]`):
+0. The sync step puts the commit in `/opt/mymind-build` (lxc: `/opt/mymind`). Nothing in a macmini run
+   writes `/opt/mymind` — its `.output` + `.worker` stay on the pre-cutover build for the LXC rollback.
+1. Reach the mini → `provision-native.sh --build-only` in `/opt/mymind-build` (Node/pnpm, `.env.macmini`
+   check; FAILS while the old LXC units still run).
+2. `deploy/macmini/build-artifacts.sh` in `/opt/mymind-build` (it refuses to run in `/opt/mymind`): `pnpm install` (clean when the darwin-arm64 natives are
+   missing), build (`--max-old-space-size=4096`), worker bundle + stage → `.macmini-out/{web,worker}`
+   (both get `release.env` with the sha, the worker `evals/`; `prune-arch.sh` drops linux-arm64/darwin-x64/musl
+   natives and fails the build unless linux-x64 and darwin-arm64 `*.node` binaries both remain).
+3. Ship `deploy/macmini/` to `~/mymind/deploy/` and run `provision-macmini.sh` (dirs, ripgrep/libpq,
+   `~/mymind/bin/{run,release}.sh`, plists via `plutil -lint`, env key check, Hermes guard). It NEVER
+   reloads a running agent: a changed plist waits in `~/mymind/deploy/agents/` and `release.sh restart`
+   applies it inside the gated step (bootout → wait for the exit → install → bootstrap, retried on
+   `Bootstrap failed: 5`).
+4. Stream each release as tar → `release.sh stage <kind> <sha>`: entry file, every linux native has its
+   darwin-arm64 twin, every darwin `*.node` dlopens, externals/sharp load with the mini's node. **The running services are untouched.**
+5. In `/opt/mymind-build` with `.env.macmini`: `pnpm eval --cancel-all --wait 60` (never fails the deploy) →
+   `pnpm db:migrate` against `.80`.
+6. `release.sh activate web && release.sh restart web` (returns only once launchd runs a NEW pid) →
+   `curl http://192.168.2.35:3000/api/health` from the runner until it reports `"sha":"<this commit>"`
+   (30 × 5 s; `sha` = `MYMIND_GIT_SHA` from the release's `release.env`).
+7. `release.sh activate worker && release.sh restart worker` → `release.sh health worker 120`: launchd's
+   pid differs from the one replaced, and has a heartbeat row started after the restart, on this host,
+   beating < 30 s ago.
+8. **Any failure or a cancelled run** → the last step `[macmini] Roll back web + worker on failure` runs `release.sh undo` for
+   both kinds — web and worker go back **together** (no version skew), but only a release this run
+   activated (undo is a no-op unless current is exactly the release this run staged).
+
+`lxc` (the pre-cutover path, steps `[lxc]`): sync → `docker compose up -d db` → `provision-native.sh` →
+install/build/`worker-release.sh stage` → cancel evals + migrate (`.env.native`) → `systemctl restart
+mymind` → health → `worker-release.sh activate` + `systemctl restart mymind-worker` → heartbeat.
+
+- Watch: `gh run watch <id> --exit-status` — **never pipe it to `tail`** (masks a failed deploy).
+- **Rollback (mini)**, one level, any time — both kinds together, as CD does: `ssh bridget@192.168.2.35 'for k in worker web; do bash ~/mymind/bin/release.sh rollback $k && bash ~/mymind/bin/release.sh restart $k; done'`. Rolling back only one kind leaves web and worker on different commits (they share the DB and the bus — avoid unless you know the pair is compatible). Migrations are never reverted — a rollback across a migration needs the old code to tolerate the new schema; otherwise revert on `master` and push.
+- **Back to LXC 114** (first 7 days after cutover, while its DB + data are kept) — no workflow run: `/opt/mymind`
+  still holds the pre-cutover (cycle-85) `.output` + `.worker`, because macmini deploys build in
+  `/opt/mymind-build`. (1) Stop both launchd agents on the mini (`launchctl bootout gui/501/com.mymind.worker`,
+  then `…/com.mymind.web`) — never two workers. (2) In LXC 114: `docker compose -f docker-compose.prod.yml
+  up -d db` (if stopped), then `systemctl enable --now mymind mymind-worker`. (3) Pangolin back to
+  `192.168.2.89:3000`; check the external `/api/health`. **Leave `DEPLOY_TARGET=macmini` and
+  `MYMIND_CUTOVER_DONE` set**: a push then fails harmlessly at `--build-only` (the LXC units are active), and
+  the lxc path stays refused — it would deploy NEW code onto the OLD database. Data written on `.80` since
+  the cutover is NOT in the LXC DB. Back to the mini: stop the LXC units, bootstrap the agents
+  (`release.sh restart web|worker`), Pangolin to `.35`. The host runtime refuses workspace commands on
+  Linux in production (`MYMIND_HOST_RUNTIME_ALLOWED=1` overrides — don't), so a cycle-86 build on LXC 114
+  can never hand Bridget a root shell there.
 
 ### When CD never fires (manual deploy)
 
-**First confirm the push actually failed to trigger, rather than guessing.** A push can land with
-zero workflow runs created — `git ls-remote origin master` shows your SHA, but
-`gh api "repos/Patrity/mymind/actions/runs?head_sha=$(git rev-parse HEAD)" --jq .total_count`
-returns `0`. Rule out the cheap causes first (all checkable):
-`paths-ignore` (the push must contain a non-`docs/`, non-`.md` file), a `[skip ci]` directive in any
-pushed commit message, `gh api repos/Patrity/mymind/actions/permissions` → `enabled`, and
-`gh api repos/Patrity/mymind/actions/runners` → runner `online`. If those are all clean, check
-**GitHub's own status** — this is the one that has actually bitten us:
-
+First prove no run was created: `gh api "repos/Patrity/mymind/actions/runs?head_sha=$(git rev-parse HEAD)" --jq .total_count`
+→ `0`. Rule out `paths-ignore` (docs/`.md`-only push), `[skip ci]`, Actions disabled, runner offline
+(`gh api repos/Patrity/mymind/actions/runners`), then **GitHub's status** (2026-08-06: Actions throttled
+webhooks to ~15% while Git stayed green):
 ```bash
-curl -s https://www.githubstatus.com/api/v2/components.json | \
-  python3 -c "import sys,json;[print(c['name'],c['status']) for c in json.load(sys.stdin)['components'] if c['name'] in ('Actions','Webhooks','Git Operations')]"
-curl -s https://www.githubstatus.com/api/v2/incidents/unresolved.json | head -c 2000
+curl -s https://www.githubstatus.com/api/v2/components.json | python3 -c "import sys,json;[print(c['name'],c['status']) for c in json.load(sys.stdin)['components'] if c['name'] in ('Actions','Webhooks','Git Operations')]"
+```
+Then trigger it by hand — `gh workflow run deploy.yml --ref master -f target=macmini` — or, if Actions
+itself is down, replay the `[macmini]` steps from the Proxmox host (run the full local gates on that
+exact commit first; you are skipping the `test` job). Ship the tree with `git archive` so local scratch
+never reaches prod:
+```bash
+git archive --format=tar HEAD | ssh root@192.168.2.50 "pct exec 114 -- tar -C /opt/mymind-build -xf -"
+# then, ON the Proxmox host (it holds the runner's mini key): the deploy.yml [macmini] run blocks in order,
+# with MINI=bridget@192.168.2.35 MINI_SSH="ssh -i /root/.ssh/mymind_macmini -o BatchMode=yes"
+```
+Prove the NEW code is live — a restart plus a 200 doesn't: `release.sh status` shows the sha, and grep
+the running bundle for a symbol new in this commit:
+`ssh bridget@192.168.2.35 'grep -rl "<symbol>" ~/mymind/app/.output/server/ | head -3'`. Best authed
+canary: any `mcp__mymind__*` call (they point at PROD).
+
+## One-time setup
+
+### Runner SSH key (Proxmox host → bridget@mini)
+The runner is root on the Proxmox host. CD uses `/root/.ssh/mymind_macmini` with the mini's host key
+pinned (`StrictHostKeyChecking=yes`):
+```bash
+ssh root@192.168.2.50 'ssh-keygen -t ed25519 -N "" -C mymind-cd -f /root/.ssh/mymind_macmini && cat /root/.ssh/mymind_macmini.pub'
+# append that ONE line to /Users/bridget/.ssh/authorized_keys on the mini (Tony, or ssh bridget@… from his Mac)
+ssh root@192.168.2.50 'ssh-keyscan -t ed25519 192.168.2.35 >> /root/.ssh/known_hosts'
+ssh root@192.168.2.50 'ssh -i /root/.ssh/mymind_macmini -o BatchMode=yes bridget@192.168.2.35 hostname'   # expect bridget.local
 ```
 
-**2026-08-06:** Actions was in a `major_outage` throttling webhooks to ~15%, so pushes simply did
-not create runs while Git Operations stayed green. Symptom is exactly the above: push succeeds,
-`PushEvent` registers in `repos/.../events`, no run exists. Nothing is wrong with the repo.
+### Env file
+`~/mymind/env/mymind.env` on the mini — `KEY=value` lines **sourced by bash** (quote values with spaces,
+`$`, `#` or quotes; systemd's EnvironmentFile syntax from LXC 114 is not always shell-safe). Mode 0600 in
+a 0700 dir. Required (provision checks the names, the `.80` host, `0.0.0.0`, `3000`, the uploads path):
+`DATABASE_URL` + `NUXT_DATABASE_URL` (→ `192.168.2.80:5432/bridget`), `BETTER_AUTH_SECRET` +
+`NUXT_BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` + `NUXT_BETTER_AUTH_URL` (`https://brain.costanzoclan.com`),
+`STORAGE_LOCAL_DIR` + `NUXT_STORAGE_LOCAL_DIR` (`/Users/bridget/mymind/data/uploads`), `NITRO_HOST=0.0.0.0`,
+`NITRO_PORT=3000`; plus whatever else prod set (`CONFIG_ENC_KEY`, `NUXT_GOOGLE_*`, …) with NUXT_ twins.
+**Copy `BETTER_AUTH_SECRET` (and `CONFIG_ENC_KEY` if set) from LXC 114 unchanged** — provider API keys in
+the DB are encrypted with a key derived from them, and every session is signed with it.
 
-To deploy anyway, replicate `deploy.yml`'s steps over `pct exec`. Define the `lxc` helper from the
-Access section first. **Run the full local gates (`pnpm typecheck && pnpm test && pnpm build`) on the
-exact commit you are deploying** — you are skipping the CI `test` job that normally gates `deploy`.
+`/opt/mymind-build/.env.macmini` in LXC 114 (0600, dir created by hand: `mkdir -p /opt/mymind-build`):
+`DATABASE_URL` + `NUXT_DATABASE_URL` → `.80` (both — see the eval gotcha). Preserved by CD's sync.
 
-```bash
-# 1. clear the tracked tree, preserving runtime state
-#    (.worker/.worker-prev are the running agent worker's releases — NEVER delete them)
-lxc 'cd /opt/mymind && find . -maxdepth 1 -mindepth 1 ! -name .git ! -name .env ! -name .env.native \
-  ! -name .data ! -name .output ! -name .nuxt ! -name node_modules ! -name workspace \
-  ! -name .worker ! -name .worker-prev -exec rm -rf {} +'
+### Log rotation
+None to set up: `run.sh` rotates `{web,worker}.log` itself (launchd's StandardOutPath can't be rotated
+under a running process, and system newsyslog would need sudo).
 
-# 2. sync — `git archive` beats `tar` here: it ships EXACTLY the tracked tree at HEAD,
-#    so local gitignored scratch (.superpowers/, .claude/worktrees/) cannot leak into prod
-git archive --format=tar HEAD | ssh root@192.168.2.50 "pct exec 114 -- tar -C /opt/mymind -xf -"
+## Gotchas that have bitten us
 
-# 3-5. same as CD; the OLD app keeps serving until the restart in step 6
-lxc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d db searxng'
-lxc 'cd /opt/mymind && bash deploy/provision-native.sh'
-lxc 'cd /opt/mymind && pnpm install --frozen-lockfile'
-lxc 'cd /opt/mymind && NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build'
-lxc 'cd /opt/mymind && bash deploy/worker-release.sh stage'          # → .worker-next (running worker untouched)
-lxc 'cd /opt/mymind && set -a && . ./.env.native && set +a && pnpm db:migrate'
-
-# 6. cutover (the only downtime) + health
-lxc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d --remove-orphans db searxng && systemctl restart mymind'
-lxc 'curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/health'   # expect 200
-
-# 7. worker AFTER the web is healthy: swap the staged release in, restart (drains ≤60s), check the beat
-lxc 'cd /opt/mymind && bash deploy/worker-release.sh activate && systemctl restart mymind-worker'
-lxc 'sleep 10; docker exec -i mymind-db psql -U mymind -d mymind -Atc "select count(*) from worker_heartbeat where started_at > now() - interval '"'"'3 minutes'"'"' and beat_at > now() - interval '"'"'30 seconds'"'"'"'   # expect ≥1
-```
-
-**Then prove the NEW code is live — a restart plus a 200 does not prove the build changed.** Grep the
-running bundle for a symbol unique to what you shipped, and check the authed path separately:
-
-```bash
-lxc 'ls -la --time-style=+%Y-%m-%dT%H:%M /opt/mymind/.output/server/index.mjs'   # fresh timestamp
-lxc 'grep -rl "<symbol-new-in-this-cycle>" /opt/mymind/.output/server/ | head -3'
-lxc 'journalctl -u mymind --since "3 min ago" --no-pager | grep -icE "error|unhandled|ECONNREFUSED"'
-curl -s -o /dev/null -w "%{http_code}\n" https://brain.costanzoclan.com/api/health   # external path
-```
-
-Best authed canary: call any `mcp__mymind__*` tool — they point at PROD, so a successful round-trip
-proves auth + DB end-to-end (gotcha #2), which `/login` cannot.
-
-## Gotchas that have bitten us (read before debugging a 5xx)
-
-1. **`NUXT_DATABASE_URL`, not just `DATABASE_URL`.** `useDb()` reads `useRuntimeConfig().databaseUrl`,
-   which Nuxt **bakes at build time** from the build-time `.env` (= `@db:5432`). At runtime, a plain
-   `DATABASE_URL` does **not** override a `runtimeConfig` key — only the `NUXT_`-prefixed var does. The
-   same applies to any `runtimeConfig` key (e.g. `storageLocalDir` → `NUXT_STORAGE_LOCAL_DIR`). If these
-   are missing, the app dials the baked `@db` (which resolves via DNS search to a **public IP** →
-   `ECONNREFUSED`). `migrate` still works (drizzle reads `process.env.DATABASE_URL` directly), so a
-   green deploy can hide a totally broken app.
-2. **Symptom of the DB gotcha:** `/login` → 200 (SSR, no DB) but every **authenticated** call
-   (`/api/mcp`, `/api/hooks/cc/*`) → 500. `server/middleware/auth.ts` queries `api_tokens` first, so
-   the failure surfaces only on authed requests. **Always health-check a DB-touching endpoint.**
-3. **`NITRO_HOST=0.0.0.0`, not `127.0.0.1`.** Pangolin reaches the app by the LXC's IP; a loopback
-   bind 502s externally while the in-LXC `localhost` health-check still passes.
-4. **The mymind MCP (`mcp__mymind__*`) and the Claude Code hooks point at PROD.** When prod is down,
-   your own task/memory tools and `*/hooks/cc/*` calls fail too — a useful canary, and a reason to fix
-   prod before relying on those tools.
-5. **`.env.native` is preserved across deploys** (CD sync excludes it). To change a runtime value you
-   must edit the live file + restart; a code change to the template alone won't touch an existing box
-   (that's why `provision-native.sh` has self-heal blocks).
+1. **`NUXT_DATABASE_URL`, not just `DATABASE_URL`.** The web's `useRuntimeConfig()` is **baked at build**
+   (in `/opt/mymind-build`, which has NO `.env`, so the baked values are the code defaults — empty URLs and
+   secrets); at runtime only `NUXT_*` vars override it. Every runtimeConfig key needs its NUXT_ twin in
+   `mymind.env` (provision checks it against `deploy/macmini/runtime-env-twins.txt`, derived from the
+   mapper by a test), or the web dials the build-baked value while
+   migrations (plain `DATABASE_URL`) succeed — a green deploy with a broken app.
+2. **Symptom:** `/login` 200 but every authed call (`/api/mcp`, `/api/hooks/cc/*`) 500. Always health-check
+   a DB-touching endpoint.
+3. **`NITRO_HOST=0.0.0.0`.** Pangolin reaches the mini by IP; a loopback bind passes a local curl and 502s
+   externally. CD's web gate curls the LAN IP for this reason.
+4. **The mymind MCP + Claude Code hooks point at PROD** — a useful canary when prod is down.
+5. **Cross-arch native binaries.** LXC 114 is linux/x64, the mini darwin/arm64. `pnpm-workspace.yaml`
+   `supportedArchitectures` installs the darwin-arm64 `@img/sharp-*` and `@napi-rs/canvas-*` too; pnpm
+   says "Already up to date" when only that setting changed, so `build-artifacts.sh` wipes a node_modules
+   without the darwin sharp. `release.sh stage` refuses a release with a linux native lacking its twin.
+6. **`launchctl kickstart -k` sends SIGTERM** (then SIGKILL after the plist's `ExitTimeOut`: web 20 s,
+   worker 90 s) — the worker's drain works as it did under systemd.
+7. **Non-login ssh has no Homebrew PATH**; launchd neither — `run.sh` sets it for the services (agent
+   commands get their own Homebrew-first PATH from `hostBaseEnv`, or `WORKSPACE_PATH`).
+8. **The services need bridget's GUI session**: autologin on, sleep off (`pmset -g`: `sleep 0`). A
+   reboot with autologin broken leaves MyMind down while ssh still works.
+9. **Hermes is retired** — `provision-macmini.sh` fails if any hermes launchd job is loaded or `:3000` is
+   held by anything but `com.mymind.web`.
 
 ## Don't
 
-- Don't dump unmasked `.env`/`.env.native` or `DATABASE_URL` into the conversation — always mask creds.
+- Don't print unmasked env files or `DATABASE_URL`; never `bash -x` anything that sources an env file.
+- Don't touch BlueBubbles or node_exporter on the mini.
 - Don't restart/migrate casually during active use without flagging it.
 - Don't assume `/login` 200 means healthy — use `/api/health`.
+- Don't run `pnpm eval` from LXC 114 with `.env.native` after cutover — that is the old database.

@@ -1,4 +1,4 @@
-// Cycle 86 (spec §6): Bridget's artifact tools — publish a page / built webapp, edit, list, delete.
+// Cycle 87 (spec §6): Bridget's artifact tools — publish a page / built webapp, edit, list, delete.
 // Results never throw on a bad request: an ArtifactError (or a workspace read failure) is `{ ok:false, error }`.
 import { z } from 'zod'
 import { eq } from 'drizzle-orm'
@@ -13,7 +13,7 @@ import { readWorkspaceBundle } from '../../artifacts/workspace-bundle'
 import { rootAbsoluteRefs } from '../../artifacts/html-warnings'
 import { ArtifactError, normalizeArtifactPath } from '../../artifacts/limits'
 import { workspaceRuntime } from '../../sandbox/runtime'
-import { runNetworkMode } from './workspace'
+import { runTaintMode, workspacePath } from './workspace'
 import type { AgentTool, ToolContext, ToolExecution } from '../types'
 
 const fail = (error: string, summary = 'artifact: refused'): ToolExecution => ({ result: { ok: false, error }, summary })
@@ -125,10 +125,11 @@ export const publishArtifactTool: AgentTool = {
       else {
         if (!ctx.runId) return fail('workspace_path only works inside Bridget\'s own runs (no workspace here) — pass html or files instead', 'publish_artifact: no workspace')
         const workspaceId = (await workspaceRuntime().resolve(ctx.runId)).workspaceId
-        const mode = ctx.isTainted ? runNetworkMode(ctx) : 'clean'
+        // Same taint handling as export_to_document: an `unverified`-only run reads without marking the workspace.
+        const mode = ctx.isTainted ? runTaintMode(ctx) : 'clean'
         let b: Awaited<ReturnType<typeof readWorkspaceBundle>>
         try {
-          b = await readWorkspaceBundle(workspaceId, a.workspace_path as string, { tainted: mode === 'tainted', offline: mode === 'offline', signal: ctx.signal })
+          b = await readWorkspaceBundle(workspaceId, workspacePath(a.workspace_path as string), { tainted: mode === 'tainted', ...(mode === 'unverified' ? { offline: true } : {}), signal: ctx.signal })
         } catch (e) {
           if (e instanceof ArtifactError) throw e
           return fail(errMsg(e), 'publish_artifact: could not read the workspace')

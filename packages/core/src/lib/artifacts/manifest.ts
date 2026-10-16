@@ -1,4 +1,4 @@
-// Cycle 86 (spec §3–§5): pure manifest operations.
+// Cycle 87 (spec §3–§5): pure manifest operations.
 import { ARTIFACT_MAX_FILES, ARTIFACT_MAX_TOTAL_BYTES, ArtifactError, normalizeArtifactPath, type Manifest, type ManifestEntry } from './limits'
 
 export const isDataPath = (p: string) => p.startsWith('data/')

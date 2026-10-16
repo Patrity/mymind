@@ -1,4 +1,4 @@
-// Cycle 86 (ruling R2): spot root-absolute asset refs in an entry page that will 404 under /artifact/<slug>/.
+// Cycle 87 (ruling R2): spot root-absolute asset refs in an entry page that will 404 under /artifact/<slug>/.
 // Only refs whose path matches a file actually in the bundle count — `/missing.js` and external URLs are not flagged.
 const ATTR_RE = /\b(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi
 

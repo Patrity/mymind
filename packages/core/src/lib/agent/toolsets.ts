@@ -7,7 +7,7 @@ import type { AgentTool } from './types'
 
 export type ToolsetId = 'memory' | 'docs' | 'tasks' | 'web' | 'core'
   | 'history' | 'projects' | 'doc-admin' | 'images' | 'jobs' | 'skill-admin' | 'reviews' | 'improvements' | 'channels' | 'gmail' | 'calendar'
-  | 'workspace' | 'admin' | 'coordinator' | 'artifacts'
+  | 'workspace' | 'coordinator' | 'artifacts'
 
 // Directory lines say WHEN to load the set, not only what is in it (spec §3).
 export const TOOLSETS: Record<ToolsetId, { core: boolean; description: string }> = {
@@ -32,13 +32,12 @@ export const TOOLSETS: Record<ToolsetId, { core: boolean; description: string }>
   channels: { core: false, description: 'send Tony a message over iMessage or email' },
   gmail: { core: false, description: "when Tony asks about email — search, read, draft, send, triage — or a contact's address" },
   calendar: { core: false, description: 'when Tony asks about his schedule, meetings, availability or invites' },
-  // Cycle 82 (spec §4/§5): the sandboxed workspace (pre-loaded for workstreams), and host exec.
-  workspace: { core: false, description: 'your sandboxed workspace — read/write/edit files, run shell commands and background jobs, watch for a condition; use it to write and run code' },
-  admin: { core: false, description: 'host operations on the MyMind server — DB, services, logs; prefer the workspace for everything else' },
+  // Cycle 82/86: the workspace (pre-loaded for workstreams) — Bridget's own Mac.
+  workspace: { core: false, description: 'your Mac — read/write/edit files, run shell commands (your logins, LAN and internet) and background jobs, watch for a condition; use it to write and run code' },
   // Cycle 83 (spec §4): only a top-level workstream's registry has these tools (profile.ts), so only
   // there does the directory list it — chat starts a coordinator with start_workstream({toolsets:['coordinator']}).
   coordinator: { core: false, description: 'fan the goal out to child workstreams that run in parallel — spawn, wait for, read, steer, answer and cancel them, then merge their results' },
-  // Cycle 86: artifacts — sandboxed, versioned pages Bridget publishes for Tony to open.
+  // Cycle 87: artifacts — sandboxed, versioned pages Bridget publishes for Tony to open.
   artifacts: { core: false, description: 'publish an HTML page or built webapp as a viewable artifact (dashboards, demos, visual previews), or list/edit/delete artifacts' }
 }
 

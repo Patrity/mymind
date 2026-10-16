@@ -1,4 +1,4 @@
-// Cycle 86 (spec §5): short-lived path tokens for private artifacts. The sandboxed page is an opaque
+// Cycle 87 (spec §5): short-lived path tokens for private artifacts. The sandboxed page is an opaque
 // origin, so its subresource requests don't carry the session cookie; the token in the path does.
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { coreConfig } from '../../config'

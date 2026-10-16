@@ -12,7 +12,7 @@ import { recordEvent, withSpan } from '../observability/record'
 import type { ToolsetId } from './toolsets'
 import { carriesInjectionWarning, carriesWorkspaceTaint, childTaintOf, producedContent } from './tool-history'
 import { guardOutput, guardReasons, guardWarning, outputWarningDTO, wrapFlagged, type GuardInput, type GuardVerdict } from './judge/guard'
-import { onlyUnverified, RUN_CALL_ARGS_CHARS, TAINT_SOURCES, type OutputWarningDTO, type RunCall, type RunTaint, type TaintFlag, type TaintSource } from './judge/types'
+import { RUN_CALL_ARGS_CHARS, TAINT_SOURCES, type OutputWarningDTO, type RunCall, type RunTaint, type TaintFlag, type TaintSource } from './judge/types'
 import { cutAt } from './judge/verdict'
 
 export interface RunHooks {
@@ -42,10 +42,6 @@ export interface RunHooks {
   /** Final fix wave (M5): this run is a subagent's own (research_web) — its guarded results are
    *  checked by heuristics only; the parent classifies the subagent's report once. */
   nestedGuard?: boolean
-  /** Follow-up 2 (NB4): the run just became tainted ONLY `unverified` — stop its workspace's live
-   *  background shells and cancel its watches (tests inject one). Default:
-   *  sandbox/runtime.ts quarantineRunWorkspace. */
-  quarantineWorkspace?: (runId: string | undefined) => Promise<void>
   /** Cycle 84 final fix wave (C1): the run gained a taint source (also fired once at the start when
    *  it begins tainted) — the runner persists it on the workstream at once. Errors are swallowed. */
   onTaint?: (t: RunTaint) => void
@@ -192,13 +188,12 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
   const guard = hooks.guard ?? guardOutput
   // Imported at call time: the sandbox runtime reaches back into the agent loop (watch wakes).
   const taintWorkspace = hooks.taintWorkspace ?? (async (runId: string | undefined) => (await import('../sandbox/runtime')).taintRunWorkspace(runId))
-  const quarantine = hooks.quarantineWorkspace ?? (async (runId: string | undefined) => (await import('../sandbox/runtime')).quarantineRunWorkspace(runId))
 
   /**
    * Cycle 84 Task 3 (spec §3.3): scan a `guard` tool's result. Unflagged → null (the result is
    * unchanged and nothing is tainted — an ordinary web read never taints). Flagged → the result
    * wrapped with the model-visible warning (still carrying its own untrusted note), the run tainted
-   * (outbound gated, the sandbox offline, exec off its allowlist), the workspace tainted for a
+   * (outbound gated), the workspace tainted for a
    * workspace result, the `judge:output-warning` activity (no content) and the chip's DTO.
    */
   async function guardResult(t: AgentTool, raw: unknown, callId: string, nestedFlagged: boolean): Promise<{ result: unknown; warning: OutputWarningDTO } | null> {
@@ -218,23 +213,14 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
     // Final follow-up (N2): only a REAL verdict (flag-alone heuristic, classifier, a flagged nested
     // source) is `flagged` — persisted on a workstream for life. A fail-closed flag (the check could not
     // run) is `unverified`: this run only, never persisted or inherited.
-    const wasOnlyUnverified = onlyUnverified(runTaint().sources)
     addTaint(v.by === 'fail-closed' ? 'unverified' : 'flagged')
-    // Follow-up 2 (NB4): the run JUST became tainted by `unverified` only — its commands now run
-    // offline, but live networked shells/watches would run whatever it writes: stop them first.
-    if (!wasOnlyUnverified && onlyUnverified(runTaint().sources)) {
-      try { await quarantine(hooks.runId) } catch (err) {
-        console.warn(`[guard] stopping the shells/watches of run ${hooks.runId ?? '-'} failed:`, (err as Error).message)
-        recordEvent({ kind: 'tool', name: 'judge:quarantine-failed', severity: 'error', meta: { tool: t.name, runId: hooks.runId ?? null, error: (err as Error).message.slice(0, 300) } })
-      }
-    }
     // Final fix wave (I5): only a REAL verdict — a flag-alone heuristic signal or the classifier saying
-    // injection — takes the workspace offline (persistent). A fail-closed flag (the classifier timed
-    // out, waited too long for a slot, errored, was off, or Stop cancelled it) decided nothing about
-    // the content: the RUN is still tainted and warned, the workspace keeps its network.
+    // injection — marks the workspace tainted (persistent; its results then taint their readers). A
+    // fail-closed flag (the classifier timed out, waited too long for a slot, errored, was off, or Stop
+    // cancelled it) decided nothing about the content: the RUN is still tainted and warned.
     if (t.guard === 'workspace' && workspaceTaintingVerdict(v)) {
       // The run is tainted already, so its next workspace command would taint the workspace anyway;
-      // this does it now (the networked container dies with whatever the content started there).
+      // this does it now.
       // M6: a failure is never silent — an activity error (the run itself stays tainted: fail closed).
       try { await taintWorkspace(hooks.runId) } catch (err) {
         console.warn(`[guard] tainting the workspace of run ${hooks.runId ?? '-'} failed:`, (err as Error).message)

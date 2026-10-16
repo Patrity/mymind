@@ -1,6 +1,6 @@
-// Cycle 86 Task 6 (spec §4): read a workspace directory (a built dist/) into an artifact bundle.
-// Fixed Python scripts run INSIDE the container (paths travel as JSON on stdin, realpath-contained
-// under /workspace by the shared PRELUDE); limits are enforced while walking so a huge tree never
+// Cycle 87 Task 6 (spec §4): read a workspace directory (a built dist/) into an artifact bundle.
+// Fixed Python scripts run in the workspace dir (paths travel as JSON on stdin, realpath-contained
+// under it by the shared PRELUDE); limits are enforced while walking so a huge tree never
 // leaves the sandbox; reads go in CHUNK_BYTES batches; text files are secret-masked on the way out.
 import { CHUNK_BYTES } from '../sandbox/paths'
 import { PRELUDE, py } from '../sandbox/view'
@@ -129,7 +129,7 @@ export async function readWorkspaceBundle(
   const listed = JSON.parse(await exec(BUNDLE_LIST_SCRIPT, { dir })) as { files?: unknown; error?: string; message?: string; path?: string }
   if (!Array.isArray(listed.files)) fail(listed, dir)
 
-  // The list comes from inside the container: validate it on the host before trusting any of it.
+  // The list comes from a script running in the workspace: validate it before trusting any of it.
   const all: Array<{ path: string; size: number }> = []
   const seen = new Set<string>()
   for (const e of listed.files as Array<{ path?: unknown; size?: unknown }>) {

@@ -25,3 +25,15 @@ overrides:
   '@shikijs/themes': ^4.4.3
   '@shikijs/transformers': ^4.4.3
   '@shikijs/types': ^4.4.3
+
+# Cycle 86: prod runs on the Mac mini (darwin/arm64) but CD builds in LXC 114 (linux/x64). Install
+# the mini's prebuilt native binaries (sharp's @img/*, @napi-rs/canvas) next to the build box's own,
+# so the web .output (nft copies every installed sharp platform package) and the staged worker
+# release (stage.mjs copies the closure) both carry them. A change here needs a CLEAN node_modules:
+# pnpm reports "Already up to date" otherwise (build-artifacts.sh checks for the darwin package).
+# os × cpu is a cross product (it also installs linux-arm64 and darwin-x64); build-artifacts.sh drops
+# those from the shipped releases, so only linux-x64 (this box) and darwin-arm64 (the mini) ship.
+supportedArchitectures:
+  os: [current, darwin]
+  cpu: [current, arm64]
+  libc: [current]

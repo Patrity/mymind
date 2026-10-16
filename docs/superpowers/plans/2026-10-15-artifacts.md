@@ -1,4 +1,4 @@
-# Artifacts Implementation Plan (cycle 86)
+# Artifacts Implementation Plan (cycle 87)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -142,7 +142,7 @@ describe('slugs', () => {
 - [ ] **Step 3: Implement `limits.ts`**
 
 ```ts
-// Cycle 86 (spec §3): artifact limits, the content-type allowlist and path/slug rules — pure.
+// Cycle 87 (spec §3): artifact limits, the content-type allowlist and path/slug rules — pure.
 export const ARTIFACT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 export const ARTIFACT_MAX_FILES = 500
 export const ARTIFACT_MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -193,7 +193,7 @@ export function slugFromTitle(title: string): string {
 - [ ] **Step 5: Schema** — `packages/core/src/db/schema/artifacts.ts`
 
 ```ts
-// Cycle 86 (spec §3): artifacts — Bridget's published static pages/webapps.
+// Cycle 87 (spec §3): artifacts — Bridget's published static pages/webapps.
 import { sql } from 'drizzle-orm'
 import { pgTable, uuid, text, integer, boolean, timestamp, jsonb, uniqueIndex, index, type AnyPgColumn } from 'drizzle-orm/pg-core'
 import { projects } from './projects'
@@ -407,7 +407,7 @@ describe('artifactHeaders', () => {
 - [ ] **Step 3: Implement `manifest.ts`**
 
 ```ts
-// Cycle 86 (spec §3–§5): pure manifest operations.
+// Cycle 87 (spec §3–§5): pure manifest operations.
 import { ARTIFACT_MAX_FILES, ARTIFACT_MAX_TOTAL_BYTES, ArtifactError, normalizeArtifactPath, type Manifest, type ManifestEntry } from './limits'
 
 export const isDataPath = (p: string) => p.startsWith('data/')
@@ -453,7 +453,7 @@ export function lookupPath(m: Manifest, entry: string, spaFallback: boolean, req
 - [ ] **Step 4: Implement `serve.ts`**
 
 ```ts
-// Cycle 86 (spec §5): the serving route's decisions, kept pure so every branch is unit-tested.
+// Cycle 87 (spec §5): the serving route's decisions, kept pure so every branch is unit-tested.
 import { SLUG_RE, type Manifest, type ManifestEntry } from './limits'
 import { lookupPath } from './manifest'
 
@@ -579,7 +579,7 @@ describe('view tokens', () => {
 - [ ] **Step 3: Implement**
 
 ```ts
-// Cycle 86 (spec §5): short-lived path tokens for private artifacts. The sandboxed page is an opaque
+// Cycle 87 (spec §5): short-lived path tokens for private artifacts. The sandboxed page is an opaque
 // origin, so its subresource requests don't carry the session cookie; the token in the path does.
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { coreConfig } from '../../config'
@@ -804,7 +804,7 @@ git commit -m "feat(artifacts): publish/edit/list service with versioning and in
 Route logic:
 
 ```ts
-// Cycle 86 (spec §5): /artifact/<slug>/… — outside /api, so it does its own auth. All decisions are
+// Cycle 87 (spec §5): /artifact/<slug>/… — outside /api, so it does its own auth. All decisions are
 // in @mymind/core/lib/artifacts/serve (unit-tested); this file only does IO.
 import { decideArtifactRequest, artifactHeaders, parseArtifactUrl } from '@mymind/core/lib/artifacts/serve'
 import { signViewToken, verifyViewToken } from '@mymind/core/lib/artifacts/token'
@@ -973,7 +973,7 @@ Toolset entry (`toolsets.ts`): `artifacts: { core: false, description: 'publish 
     8. every artifact tool has `toolset: 'artifacts'` and `TOOLSETS.artifacts` exists; `toolByName('publish_artifact')` is defined.
   - Gate test: add a case where a tool with `outboundWhen: a => a.public === true` in a tainted run requests approval for `{public:true}` and runs freely for `{public:false}`. Copy the existing tainted-run outbound test's setup.
 - [ ] **Step 2: Run** them — Expected: FAIL.
-- [ ] **Step 3: Implement** `outboundWhen` (types + ai-tools + judge rules + eval approval-tools), `html-warnings.ts`, `tools/artifacts.ts`, toolset entry, registration in `tools.ts` (after `...improvementTools`, with a `// ---- artifacts (cycle 86) ----` comment).
+- [ ] **Step 3: Implement** `outboundWhen` (types + ai-tools + judge rules + eval approval-tools), `html-warnings.ts`, `tools/artifacts.ts`, toolset entry, registration in `tools.ts` (after `...improvementTools`, with a `// ---- artifacts (cycle 87) ----` comment).
 - [ ] **Step 4: Run** the tests + `pnpm typecheck` + the full `pnpm vitest run` — Expected: PASS (other tool-registry snapshot tests may need the new tools added — update them, don't delete assertions).
 - [ ] **Step 5: Mutation check:** change the gate to ignore `outboundWhen`; confirm the new gate test goes red; restore via `git checkout` (commit first).
 - [ ] **Step 6: Commit** — `git commit -m "feat(artifacts): agent tools, conditional outbound gate, artifacts toolset"` (stage the files listed above).
@@ -1085,11 +1085,11 @@ fetch('/api/tasks', { credentials: 'include' })
 
 **Files:**
 - Create: `docs/wiki/artifacts.md`, `docs/handovers/2026-10-15-artifacts.md`
-- Modify: `docs/superpowers/plans/00-roadmap.md` (cycle 86 row), `docs/BACKLOG.md` (spec §10 out-of-scope items as open entries), spec frontmatter `status: built`
+- Modify: `docs/superpowers/plans/00-roadmap.md` (cycle 87 row), `docs/BACKLOG.md` (spec §10 out-of-scope items as open entries), spec frontmatter `status: built`
 
 - [ ] **Step 1: Wiki page** — match the frontmatter + structure of a recent wiki page (e.g. `docs/wiki/` page for workspaces/eval): status ladder `built`, tables + columns, the serving route and headers, the private token flow, tools + their gate classes, limits, the `data/` in-place rule, API endpoints, UI pages, known limits (no localStorage; Vite `base: './'`), and the isolation-proof result.
 - [ ] **Step 2: Handover** — frontmatter matching existing handovers (cycle, date, status, branch, what shipped, what's deferred, verification evidence incl. the Task 10 outputs and the cookie finding, deploy notes: run migration 0089 in prod; `BETTER_AUTH_SECRET` already present; check Pangolin doesn't SSO-gate `/artifact/**`).
 - [ ] **Step 3: Roadmap + backlog** updates.
 - [ ] **Step 4: Mirror the wiki page to MyMind** using the `wiki-mirror` skill.
-- [ ] **Step 5: Update the MyMind task** "Cycle 86 — Artifacts…" (id `848305ad-3666-4653-93e7-a91d37545c93`) checklist via `edit_task`.
-- [ ] **Step 6: Commit** — `git commit -m "docs(artifacts): cycle 86 wiki, handover, roadmap"`
+- [ ] **Step 5: Update the MyMind task** "Cycle 87 — Artifacts…" (id `848305ad-3666-4653-93e7-a91d37545c93`) checklist via `edit_task`.
+- [ ] **Step 6: Commit** — `git commit -m "docs(artifacts): cycle 87 wiki, handover, roadmap"`

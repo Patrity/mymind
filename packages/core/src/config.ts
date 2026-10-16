@@ -42,13 +42,6 @@ export interface CoreConfig {
   /** Bus namespace from `MYMIND_BUS_NS` (lib/bus/ns.ts); undefined ⇒ 'default'. The web and its
    *  worker must agree, so both read it from the runtime env (never baked at build). */
   busNs: string | undefined
-  /** Cycle 82 (review M1): refuse sandbox commands unless the live iptables firewall matches the plan
-   *  (lib/sandbox/network.ts). From `SANDBOX_REQUIRE_FIREWALL` (true/false); unset ⇒ true on Linux,
-   *  false elsewhere (dev Macs have no host firewall to check). Never derived from NODE_ENV. */
-  sandboxRequireFirewall: boolean
-  /** Cycle 82 final review I4: refuse the sandbox unless its memory/pids limits are enforced. From
-   *  `SANDBOX_REQUIRE_LIMITS`; unset ⇒ true on Linux, false elsewhere. */
-  sandboxRequireLimits: boolean
 }
 
 let config: CoreConfig | undefined

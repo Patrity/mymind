@@ -69,7 +69,7 @@ export const spawnWorkstreamsTool: AgentTool = {
       toolsets: z.array(z.enum(CHILD_TOOLSETS as [ToolsetId, ...ToolsetId[]])).optional().describe('On-demand toolsets to pre-load. A child has NO workspace unless "workspace" is listed here — list it only for a child that must run code or work with files'),
       budget: budgetSchema.optional().describe(`Default ${DEFAULT_CHILD_BUDGET.maxSteps} steps / ${DEFAULT_CHILD_BUDGET.maxWallMs / 60_000} min; reserved out of your tree budget`),
       model: z.string().max(200).optional().describe('A subagents model label (see the list above); omit for the default'),
-      workspace: z.enum(['own', 'shared']).optional().describe('"own" (default): its own sandbox; "shared": works in YOUR workspace')
+      workspace: z.enum(['own', 'shared']).optional().describe('"own" (default): its own workspace dir; "shared": works in YOUR workspace')
     })).min(1).max(MAX_SPAWN_PER_CALL)
   },
   handler: async (a, ctx) => {

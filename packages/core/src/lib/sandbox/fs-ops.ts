@@ -1,10 +1,11 @@
-// Cycle 82 Task 2: the commands the workspace tools run INSIDE the sandbox (spec §2 path safety:
-// nothing is ever resolved on the host). Pure builders — the tools hand them to the manager's exec.
+// Cycle 82 Task 2 / cycle 86: the commands the workspace tools run in a workspace (cwd = its dir).
+// Pure builders — the tools hand them to the manager's exec.
 //
 // Data never travels in argv: paths, contents, patterns and old/new strings go in as JSON on stdin
-// (a single argv string is capped at 128 KB, and argv is visible in /proc to every process in the
-// sandbox). The scripts are fixed text; the python ones read `{...}` from stdin and print one JSON
-// object. Relative paths resolve against the command's cwd, which is always /workspace.
+// (argv is capped and visible in `ps` to every process on the machine). The scripts are fixed text;
+// the python ones read `{...}` from stdin and print one JSON object. Relative paths resolve against
+// the command's cwd — the workspace dir; absolute paths go wherever they point (spec D5).
+// Portable (macOS + Linux): no setsid, /proc, GNU stat/base64 flags — the host is Bridget's Mac.
 
 /** POSIX single-quote a string for a shell command line. */
 export function shq(s: string): string {
@@ -158,12 +159,19 @@ export const LIST_SCRIPT = py([
 
 export const GREP_MAX = 200
 
-/** ripgrep, ≤ GREP_MAX matching lines (+1 to know there were more). Exit 0 = matches, 1 = none,
- *  2 = error (bad regex…), 141 = more lines than the cap (head closed the pipe). */
+/** ripgrep (BSD/GNU `grep -rnIE` when rg is not installed), ≤ GREP_MAX matching lines (+1 to know
+ *  there were more). Exit 0 = matches, 1 = none, 2 = error (bad regex…), 141 = more lines than the
+ *  cap (head closed the pipe). */
 export function grepCommand(o: { pattern: string; path?: string; glob?: string }): string {
-  const args = ['rg', '--line-number', '--no-heading', '--color', 'never', '--hidden', '--max-columns', '300', '--max-columns-preview',
+  const rg = ['rg', '--line-number', '--no-heading', '--color', 'never', '--hidden', '--max-columns', '300', '--max-columns-preview',
     ...NOISE.flatMap(n => ['-g', `!${n}`]), ...(o.glob ? ['-g', o.glob] : []), '-e', o.pattern, '--', o.path || '.']
-  return `${args.map(shq).join(' ')} | head -n ${GREP_MAX + 1}; exit "\${PIPESTATUS[0]}"`
+  const grep = ['grep', '-rnIE', ...NOISE.map(n => `--exclude-dir=${n}`), ...(o.glob ? [`--include=${o.glob}`] : []), '-e', o.pattern, '--', o.path || '.']
+  // grep has no --max-columns: long lines are cut by awk with rg's own marker (maskLineCuts trims it).
+  const cut = `awk '{ if (length($0) > 300) print substr($0, 1, 300) " [... omitted end of long line]"; else print }'`
+  return [
+    `if command -v rg >/dev/null 2>&1; then ${rg.map(shq).join(' ')} | head -n ${GREP_MAX + 1}; exit "\${PIPESTATUS[0]}"; fi`,
+    `${grep.map(shq).join(' ')} | ${cut} | head -n ${GREP_MAX + 1}; s="\${PIPESTATUS[0]}"; [ "$s" = 0 ] || [ "$s" = 1 ] || [ "$s" = 141 ] || s=2; exit "$s"`
+  ].join('\n')
 }
 
 // ── diff ───────────────────────────────────────────────────────────────────────────────────────
@@ -180,8 +188,9 @@ export function diffCommand(path?: string): string {
     'set -e',
     `if [ ! -d .git ]; then ${g} init -q; printf '%s\\n' ${shq(`${META_DIR}/`)} >> .git/info/exclude; ${g} add -A; ${g} commit -q --allow-empty -m 'workspace baseline'; echo ${DIFF_INIT_MARK}; fi`,
     `${g} add -A -N 2>/dev/null || true`,
-    `${g} diff --no-color${path ? ` -- ${shq(path)}` : ''} > /tmp/.mm-diff`,
-    `n=$(wc -c < /tmp/.mm-diff); head -c ${DIFF_MAX_BYTES} /tmp/.mm-diff; printf '\\n${DIFF_BYTES_MARK}%s\\n' "$n"`
+    't="${TMPDIR:-/tmp}/.mm-diff.$$"',
+    `${g} diff --no-color${path ? ` -- ${shq(path)}` : ''} > "$t"`,
+    `n=$(wc -c < "$t" | tr -d ' '); head -c ${DIFF_MAX_BYTES} "$t"; rm -f "$t"; printf '\\n${DIFF_BYTES_MARK}%s\\n' "$n"`
   ].join('\n')
 }
 
@@ -205,37 +214,41 @@ export const SHELL_PID_MARK = '__mm_shell_pid__:'
 export const SHELL_STATUS_MARK = '__mm_shell__:'
 
 /**
- * Start a background shell: the command (on stdin) is saved as `<dir>/cmd` and run by a `setsid`
- * session leader (its own process group — kill_shell kills the group) with output to `<dir>/out`
- * and its exit code to `<dir>/exit` (written atomically). The launcher returns at once with the pid.
- * The leader's argv carries the dir, so a reused pid after a restart is never mistaken for it.
+ * Start a background shell: the command (on stdin) is saved as `<dir>/cmd` and run by a session
+ * leader in its own process group (python's os.setsid — portable; kill_shell kills the group) with
+ * output to `<dir>/out` and its exit code to `<dir>/exit` (written atomically). The launcher returns
+ * at once with the pid. The leader's argv carries the dir, so a reused pid after a restart is never
+ * mistaken for it.
  */
 export function shellStartCommand(id: string): string {
   const d = shellDir(id)
   const leader = 'echo $$ > "$1/pid"; /bin/bash "$1/cmd" > "$1/out" 2>&1 < /dev/null; echo $? > "$1/exit.tmp"; mv "$1/exit.tmp" "$1/exit"'
+  const setsid = 'import os, sys; os.setsid(); os.execv("/bin/sh", ["/bin/sh", "-c", sys.argv[1], "mm-shell", sys.argv[2]])'
   return [
     `d="$PWD/${d}"; mkdir -p "$d"; cat > "$d/cmd"`,
-    `setsid /bin/sh -c ${shq(leader)} mm-shell "$d" > /dev/null 2>&1 < /dev/null &`,
+    `python3 -I -c ${shq(setsid)} ${shq(leader)} "$d" > /dev/null 2>&1 < /dev/null &`,
     'i=0; while [ ! -s "$d/pid" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i+1)); done',
     `printf '${SHELL_PID_MARK}%s\\n' "$(cat "$d/pid" 2>/dev/null)"`
   ].join('\n')
 }
 
-/** Is the shell's leader alive (pid + argv check), exited (code), or gone (no exit code)? */
+/** Is the shell's leader alive (pid + argv check via ps), exited (code), or gone (no exit code)? */
 function shellStatusLines(d: string): string[] {
   return [
     `d="$PWD/${d}"`,
     'st=missing; p=$(cat "$d/pid" 2>/dev/null || true)',
-    'if [ -n "$p" ] && tr "\\0" " " < "/proc/$p/cmdline" 2>/dev/null | grep -qF "mm-shell $d"; then st=running',
+    'case "$p" in ""|*[!0-9]*) p="" ;; esac',
+    'if [ -n "$p" ] && ps -ww -o args= -p "$p" 2>/dev/null | grep -qF "mm-shell $d"; then st=running',
     'elif [ -f "$d/exit" ]; then st="exit:$(cat "$d/exit")"',
     'elif [ -d "$d" ]; then st=gone; fi',
-    'sz=$(stat -c %s "$d/out" 2>/dev/null || echo 0)'
+    // Only a regular, non-link file is sized (fix round 2: `wc -c` on a FIFO would block).
+    'sz=0; if [ -f "$d/out" ] && [ ! -L "$d/out" ]; then sz=$(wc -c < "$d/out" 2>/dev/null | tr -d " "); [ -n "$sz" ] || sz=0; fi'
   ]
 }
 
-/** Status + the output from byte `offset` on (at most `max` bytes), BASE64 (Task 3 fix round 2:
- *  bash_output cuts its window in exact bytes — never inside a UTF-8 code point or a secret — which
- *  needs the bytes themselves, not a lossy UTF-8 decode of them). */
+/** Status + the output from byte `offset` on (at most `max` bytes), BASE64 (bash_output cuts its
+ *  window in exact bytes — never inside a UTF-8 code point or a secret — which needs the bytes
+ *  themselves, not a lossy UTF-8 decode of them). */
 export function shellOutputCommand(id: string, offset: number, max: number): string {
   const off = Math.max(0, Math.floor(offset))
   const m = Math.max(1, Math.floor(max))
@@ -243,7 +256,7 @@ export function shellOutputCommand(id: string, offset: number, max: number): str
     ...shellStatusLines(shellDir(id)),
     `n=$((sz - ${off})); [ "$n" -gt ${m} ] && n=${m}; [ "$n" -lt 0 ] && n=0`,
     `printf '${SHELL_STATUS_MARK}%s:%s:%s\\n' "$st" "$sz" "$n"`,
-    `[ "$n" -gt 0 ] && tail -c +${off + 1} "$d/out" | head -c "$n" | base64 -w0; exit 0`
+    `[ "$n" -gt 0 ] && python3 -I -c ${shq(SHELL_READ_SCRIPT)} ${shq(id)} ${off} "$n" b64; exit 0`
   ].join('\n')
 }
 
@@ -252,14 +265,14 @@ export function shellStatusCommand(id: string): string {
   return [...shellStatusLines(shellDir(id)), `printf '${SHELL_STATUS_MARK}%s:%s:0\\n' "$st" "$sz"`].join('\n')
 }
 
-/** Status + the LAST `max` bytes of the output (the Shells UI, Task 3) — never moves bash_output's offset. */
+/** Status + the LAST `max` bytes of the output (the Shells UI) — never moves bash_output's offset. */
 export function shellTailCommand(id: string, max: number): string {
   const m = Math.max(1, Math.floor(max))
   return [
     ...shellStatusLines(shellDir(id)),
     `n=$sz; [ "$n" -gt ${m} ] && n=${m}`,
     `printf '${SHELL_STATUS_MARK}%s:%s:%s\\n' "$st" "$sz" "$n"`,
-    `[ "$n" -gt 0 ] && tail -c "$n" "$d/out"; exit 0`
+    `[ "$n" -gt 0 ] && python3 -I -c ${shq(SHELL_READ_SCRIPT)} ${shq(id)} $((sz - n)) "$n" raw; exit 0`
   ].join('\n')
 }
 
@@ -355,19 +368,66 @@ export const DELETE_SCRIPT = py([
 /** Largest file export_to_document copies into a MyMind document. */
 export const EXPORT_MAX_BYTES = 400_000
 
+/** Python: open a path RELATIVE to the cwd with O_NOFOLLOW at every component (dir_fd chain), so
+ *  no symlink — a final one or one in a parent — is ever followed. Raises OSError (ELOOP/ENOTDIR).
+ *  The final open is O_NONBLOCK (fix round 2): a FIFO opens at once instead of wedging the reader
+ *  until its timeout; the caller then refuses it as not a regular file. */
+const PY_OPEN_NOFOLLOW = [
+  'def open_nofollow(rel):',
+  '    parts = [x for x in rel.split("/") if x not in ("", ".")]',
+  '    if not parts or ".." in parts or rel.startswith("/"): raise OSError(1, "not a relative path inside the workspace")',
+  '    fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY)',
+  '    try:',
+  '        for x in parts[:-1]:',
+  '            nfd = os.open(x, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd); os.close(fd); fd = nfd',
+  '        return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)',
+  '    finally: os.close(fd)'
+].join('\n')
+
+/**
+ * A whole UTF-8 text file for export_to_document. `strict` (fix round 1 — the run or the workspace is
+ * tainted; this script runs unconfined as MyMind's own): only a relative path inside the workspace,
+ * opened with O_NOFOLLOW at every component, so neither an absolute path nor a planted symlink can
+ * pull Bridget's credentials into a document.
+ */
 export const READ_TEXT_SCRIPT = py([
   PY_PRELUDE,
+  PY_OPEN_NOFOLLOW,
   `p = a["path"]; cap = ${EXPORT_MAX_BYTES}`,
-  'try: st = os.stat(p)',
-  'except FileNotFoundError: out({"error": "not_found"})',
-  'except PermissionError: out({"error": "permission_denied"})',
+  'if a.get("strict"):',
+  '    if p.startswith("/") or ".." in p.split("/"): out({"error": "outside", "message": "after reading mail or calendar content only files inside the workspace (a relative path, no ..) can be exported"})',
+  '    try: fd = open_nofollow(p)',
+  '    except FileNotFoundError: out({"error": "not_found"})',
+  '    except PermissionError: out({"error": "permission_denied"})',
+  '    except OSError: out({"error": "symlink", "message": "a symbolic link (in the path or the file itself) can not be exported after reading mail or calendar content"})',
+  'else:',
+  '    try: fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK)',
+  '    except FileNotFoundError: out({"error": "not_found"})',
+  '    except PermissionError: out({"error": "permission_denied"})',
+  '    except IsADirectoryError: out({"error": "not_a_regular_file"})',
+  'st = os.fstat(fd)',
   'if not stat.S_ISREG(st.st_mode): out({"error": "not_a_regular_file"})',
   'if st.st_size > cap: out({"error": "too_large", "message": "%d bytes (the limit is %d)" % (st.st_size, cap)})',
-  'with open(p, "rb") as f: raw = f.read(cap + 1)',
+  'with os.fdopen(fd, "rb") as f: raw = f.read(cap + 1)',
   'if b"\\0" in raw[:8192]: out({"error": "binary", "message": "binary file — only text can become a document"})',
   'try: text = raw.decode("utf-8")',
   'except UnicodeDecodeError: out({"error": "not_utf8", "message": "not UTF-8 text"})',
   'out({"content": text, "bytes": len(raw), "path": os.path.abspath(p)})'
 ].join('\n'))
+
+/** Background-shell output (bash_output / the Shells tail): `.mymind/shells/<id>/out` from byte
+ *  argv[2], at most argv[3] bytes, base64 when argv[4] == "b64" — always O_NOFOLLOW at every
+ *  component (fix round 1: the out file lives in the writable workspace; a command could swap it for
+ *  a symlink to a file it can't otherwise reach and this reader would hand it back). */
+export const SHELL_READ_SCRIPT = [
+  'import os, sys, base64',
+  PY_OPEN_NOFOLLOW,
+  'try: fd = open_nofollow(".mymind/shells/%s/out" % sys.argv[1])',
+  'except OSError: sys.exit(3)',
+  'import stat',
+  'if not stat.S_ISREG(os.fstat(fd).st_mode): sys.exit(3)',
+  'os.lseek(fd, int(sys.argv[2]), 0); data = os.read(fd, int(sys.argv[3]))',
+  'sys.stdout.buffer.write(base64.b64encode(data) if sys.argv[4] == "b64" else data)'
+].join('\n')
 /** JSON-escaped (≤ 2× for text), an export-sized file stays under this. */
 export const READ_TEXT_CAP_BYTES = 1024 * 1024

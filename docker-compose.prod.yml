@@ -1,6 +1,6 @@
-# Production compose for MyMind — db + searxng only.
+# Production compose for MyMind — db only.
 # The APP now runs NATIVELY via systemd (deploy/mymind.service), not as a container.
-#   docker compose -f docker-compose.prod.yml up -d --remove-orphans db searxng
+#   docker compose -f docker-compose.prod.yml up -d --remove-orphans db
 # See docs/DEPLOYMENT.md (Native deploy).
 services:
   db:
@@ -21,19 +21,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-
-  searxng:
-    image: searxng/searxng:latest
-    container_name: mymind-searxng
-    restart: unless-stopped
-    environment:
-      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env}
-    volumes:
-      - ./searxng:/etc/searxng:rw
-    # LAN-published so other homelab services can share it; the native app reaches it at
-    # http://127.0.0.1:8088. Keep LAN-only — do NOT expose to the internet.
-    ports:
-      - "${SEARXNG_PORT:-8088}:8080"
 
 volumes:
   mymind-pgdata:

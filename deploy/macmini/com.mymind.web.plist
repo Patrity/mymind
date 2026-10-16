@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- MyMind web (Nuxt/Nitro on :3000). Template: provision-macmini.sh replaces __HOME__ and installs it to
+     ~/Library/LaunchAgents/com.mymind.web.plist (user bridget; the mini autologs in, so the agent
+     starts at boot). run.sh sources the env file, sets the heap cap and the log, then execs node. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mymind.web</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HOME__/mymind/bin/run.sh</string>
+    <string>web</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__HOME__/mymind</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Restart on any exit (crash, OOM, a dead DB at boot), forever. -->
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <!-- kickstart -k / bootout: SIGTERM, then SIGKILL after this many seconds. -->
+  <key>ExitTimeOut</key>
+  <integer>20</integer>
+  <!-- A server, not a background task: no App Nap-style CPU/IO throttling. -->
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <!-- Only run.sh's own failures land here (before it redirects to the rotated web.log). -->
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/mymind/web.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/mymind/web.launchd.log</string>
+</dict>
+</plist>

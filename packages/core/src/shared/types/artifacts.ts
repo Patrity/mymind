@@ -1,4 +1,4 @@
-// Cycle 86: artifact DTOs shared by the service, the API and the UI.
+// Cycle 87: artifact DTOs shared by the service, the API and the UI.
 export interface ArtifactDTO {
   id: string
   slug: string

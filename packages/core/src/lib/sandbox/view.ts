@@ -1,11 +1,13 @@
-// Cycle 82 Task 3 (spec §7): what the Files and Shells UI reads from a workspace — run in the WORKER
-// (it owns the sandbox; the web asks over the `workspace-view` / `workspace-kill-shell` commands).
+// Cycle 82 Task 3 (spec §7) / cycle 86: what the Files and Shells UI reads from a workspace — run in
+// the WORKER (it owns the workspaces; the web asks over the `workspace-view` / `workspace-kill-shell`
+// commands). The scripts are MyMind's own (`internal`: never confined outside an eval world, never
+// counted as use).
 //
-// Path safety (spec §2): nothing is resolved on the host. A UI path must be RELATIVE, without `..`
-// or NUL (checked in the web route, again in the worker, and a third time inside the container,
-// where the path is resolved with realpath and refused when it lands outside /workspace — a symlink
-// to /etc/passwd shows as a link in the tree and cannot be opened or downloaded). The scripts are
-// fixed text; the path travels as JSON on stdin.
+// Path safety: the UI shows the WORKSPACE, not the machine. A UI path must be RELATIVE, without `..`
+// or NUL (checked in the web route, again in the worker, and a third time in the script, where the
+// path is resolved with realpath and refused when it lands outside the workspace dir — a symlink to
+// /etc/passwd shows as a link in the tree and cannot be opened or downloaded). The scripts are fixed
+// text; the path travels as JSON on stdin.
 //
 // Limits: the tree lists ≤ 500 entries; a file view returns ≤ 2000 lines / 1 MB (flagged
 // `truncated`); a download streams in chunks (the web stops at 100 MB with 413). Secret values are
@@ -27,12 +29,12 @@ export class WorkspaceViewError extends Error {
   constructor(message: string, readonly code: 'bad_path' | 'not_found' | 'not_a_file' | 'outside' | 'changed' | 'failed' = 'failed') { super(message) }
 }
 
-// `-I` (fix round 1, M3): isolated mode — the cwd (/workspace) is NOT put on sys.path and user
-// site/PYTHON* env are ignored, so a workspace file named json.py / base64.py (or a usercustomize
-// under the writable /home/agent) can't run inside a UI read and forge its answer or the path check.
+// `-I` (fix round 1, M3): isolated mode — the cwd (the workspace) is NOT put on sys.path and user
+// site/PYTHON* env are ignored, so a workspace file named json.py / base64.py (or a usercustomize)
+// can't run inside a UI read and forge its answer or the path check.
 export const py = (lines: string[]) => `python3 -I -c ${shq(lines.join('\n'))}`
 
-// Shared: read {..} from stdin, resolve a path INSIDE the container and refuse what leaves /workspace.
+// Shared: read {..} from stdin, resolve a path with realpath and refuse what leaves the workspace dir.
 export const PRELUDE = [
   'import sys, os, json, stat',
   'sys.stdout.reconfigure(encoding="utf-8", errors="replace")',
@@ -145,9 +147,10 @@ function checkPath(p: string): void {
 }
 
 const exec = (id: string, script: string, o: { input?: string; capBytes?: number; timeoutSec?: number; noStart?: boolean } = {}) =>
-  workspaceRuntime().manager.exec(id, script, { timeoutSec: 60, ...o })
+  workspaceRuntime().manager.exec(id, script, { timeoutSec: 60, ...o, internal: true })
 
-/** `noStart` (final review M5): an API-token read never starts a stopped sandbox. */
+/** `noStart` (final review M5): cycle 82's "an API-token read never starts a stopped sandbox" — the
+ *  host runtime has nothing to start; accepted and ignored. */
 export interface ViewOptions { noStart?: boolean }
 
 /** Final review (parked): the mask list for a UI read — an unreadable secret store is a friendly

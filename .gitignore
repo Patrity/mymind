@@ -39,8 +39,6 @@ IMG_*.png
 .superpowers
 docs/screenshots/voice-agent.gif
 
-# SearXNG writes this on first boot — generated, not tracked
-searxng/uwsgi.ini
 
 # superpowers brainstorm visual companion
 .superpowers/

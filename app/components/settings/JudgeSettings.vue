@@ -83,8 +83,8 @@ function reset() {
       </h2>
       <p class="text-sm text-muted">
         A second model reviews every approval card and shows its verdict. With Smart Approvals on, a
-        call it approves with enough confidence runs without asking you. Host commands, risky rule
-        matches and anything in a run that has read untrusted content always wait for you.
+        call it approves with enough confidence runs without asking you. Risky rule matches and
+        anything in a run that has read untrusted content always wait for you.
       </p>
     </div>
     <UAlert

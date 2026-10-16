@@ -1,4 +1,4 @@
-// Cycle 86 Task 6: the REAL scripts run against a temp dir (cwd = the "workspace root").
+// Cycle 87 Task 6: the REAL scripts run against a temp dir (cwd = the "workspace root").
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'

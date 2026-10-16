@@ -1,4 +1,4 @@
-// Cycle 86: pure display helpers for artifacts (list/detail pages and the chat card).
+// Cycle 87: pure display helpers for artifacts (list/detail pages and the chat card).
 
 /** The artifact iframe's sandbox. Deliberately NO allow-same-origin: artifact JS must stay in an opaque origin. */
 export const ARTIFACT_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals allow-downloads'

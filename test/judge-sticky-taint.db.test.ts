@@ -38,7 +38,7 @@ import type { AgentTool } from '@mymind/core/lib/agent/types'
 import type { JudgeVerdict, RunTaint } from '@mymind/core/lib/agent/judge/types'
 import type { GuardInput, GuardVerdict } from '@mymind/core/lib/agent/judge/guard'
 import { GUARD_WARNING_LEAD } from '@mymind/core/lib/agent/tool-history'
-import { runNetworkMode } from '@mymind/core/lib/agent/tools/workspace'
+import { runTaintMode } from '@mymind/core/lib/agent/tools/workspace'
 import { segmentTaintDeps } from '@mymind/core/lib/agent/workstreams/loop'
 import { spawnWorkstreamsTool } from '@mymind/core/lib/agent/tools/coordinator'
 import { addWorkstreamTaint } from '@mymind/core/lib/agent/workstreams/store'
@@ -391,7 +391,7 @@ describe('I1: work started from a tainted run starts tainted', () => {
 const modes: string[] = []
 const netProbe: AgentTool = {
   name: 'net_probe', description: 'Report the network mode', kind: 'read', toolset: 'core', schema: {},
-  handler: async (_a, ctx) => { modes.push(runNetworkMode(ctx)); return { result: { ok: true }, summary: 'probed' } }
+  handler: async (_a, ctx) => { modes.push(runTaintMode(ctx)); return { result: { ok: true }, summary: 'probed' } }
 }
 /** A web read whose result carries workspace taint (as a tainted workspace's output does) — in history. */
 const wsRead: AgentTool = {
@@ -405,8 +405,8 @@ const guardedFetch: AgentTool = {
 const FAIL_CLOSED: GuardVerdict = { flagged: true, by: 'fail-closed', score: 4, labels: ['override'], suspicious: true, textChars: 30, latencyMs: 15000, llm: { injection: false, confidence: 0, reasons: [], model: null, latencyMs: 15000, error: 'guard timed out' } }
 const REAL_FLAG: GuardVerdict = { flagged: true, by: 'llm', score: 4, labels: ['override'], suspicious: true, textChars: 30, latencyMs: 5, llm: { injection: true, confidence: 0.95, reasons: ['asks the agent'], model: 'J', latencyMs: 5 } }
 
-describe('follow-up N1: `workspace` is derived live — Re-enable network works again', () => {
-  it('after a tainted-workspace segment and a re-enable, the next segment is clean (history marker ignored) and has network; a row with mail stays tainted', async () => {
+describe('follow-up N1: `workspace` is derived live from the row\'s flag', () => {
+  it('after a tainted-workspace segment and the flag cleared, the next segment is clean (history marker ignored); a row with mail stays tainted', async () => {
     modes.length = 0
     const ws = await newWorkstream('reenable')
     await until(async () => (await useDb().select().from(workspaces).where(eq(workspaces.workstreamId, ws.id)))[0])
@@ -417,25 +417,34 @@ describe('follow-up N1: `workspace` is derived live — Re-enable network works 
     expect(seen[0]!.initial).toEqual(['workspace'])
     expect(modes).toEqual(['tainted'])
     expect(await getWorkstream(ws.id)).toMatchObject({ tainted: false, taintSources: [] })   // never persisted
-    // Tony re-enables the network: the next segment (its history still holds the workspaceTainted
-    // result in the window) starts clean and its commands have network.
+    // The flag is cleared: the next segment (its history still holds the workspaceTainted result in
+    // the window) starts clean.
     await useDb().update(workspaces).set({ tainted: false }).where(eq(workspaces.workstreamId, ws.id))
     const { seen: seen2, runFn: run2 } = harness(() => [[...text('again'), call('p2', 'net_probe', {}), finish('tool-calls')], [...text('ok'), finish('stop')]], [netProbe])
     await driveSegment(ws.conversationId, run2, ws.id)
     expect(seen2[0]!.historySaw.sources).toContain('workspace')
     expect(seen2[0]!.initial).toEqual([])
     expect(modes).toEqual(['tainted', 'clean'])
-    // With a mail read on the row, the next segment is tainted (no network) all the same.
+    // With a mail read on the row, the next segment is tainted all the same.
     await addWorkstreamTaint(ws.id, ['mail'])
     const { seen: seen3, runFn: run3 } = harness(() => [[...text('more'), call('p3', 'net_probe', {}), finish('tool-calls')], [...text('ok'), finish('stop')]], [netProbe])
     await driveSegment(ws.conversationId, run3, ws.id)
     expect(seen3[0]!.initial).toEqual(['mail'])
     expect(modes).toEqual(['tainted', 'clean', 'tainted'])
   }, 60_000)
+  it('mark trusted clears only the WORKSPACE flag — a workstream\'s own sticky taint stays', async () => {
+    const { markWorkspaceTrusted } = await import('@mymind/core/lib/sandbox/store')
+    const ws = await newWorkstream('trust-sticky')
+    const space = await until(async () => (await useDb().select().from(workspaces).where(eq(workspaces.workstreamId, ws.id)))[0])
+    await useDb().update(workspaces).set({ tainted: true, taintedAt: new Date() }).where(eq(workspaces.id, space.id))
+    await addWorkstreamTaint(ws.id, ['mail'])
+    expect(await markWorkspaceTrusted(space.id, { record: () => {} })).toMatchObject({ tainted: false })
+    expect(await getWorkstream(ws.id)).toMatchObject({ tainted: true, taintSources: ['mail'] })
+  }, 60_000)
 })
 
 describe('follow-up N2/I5: a guard timeout is run-only (`unverified`)', () => {
-  it('nothing is persisted, spawned children start clean, and the run\'s commands run offline (the workspace flag stays false)', async () => {
+  it('nothing is persisted, spawned children start clean, and the run\'s commands do not mark the workspace (mode `unverified`; the flag stays false)', async () => {
     modes.length = 0
     guardSeam = async () => FAIL_CLOSED
     const ws = await newWorkstream('guard timeout')
@@ -446,7 +455,7 @@ describe('follow-up N2/I5: a guard timeout is run-only (`unverified`)', () => {
     ], [guardedFetch, netProbe, spawnWorkstreamsTool])
     // spawn_workstreams is outbound: in a tainted run it needs Tony — approve it.
     await driveSegment(ws.conversationId, runFn, ws.id, () => true)
-    expect(modes).toEqual(['offline'])
+    expect(modes).toEqual(['unverified'])
     expect(await getWorkstream(ws.id)).toMatchObject({ tainted: false, taintSources: [] })
     const [kid] = await useDb().select().from(workstreams).where(eq(workstreams.parentId, ws.id))
     expect(kid).toBeTruthy()

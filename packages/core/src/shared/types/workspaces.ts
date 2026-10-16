@@ -57,6 +57,7 @@ export interface WorkspaceShellTail {
   truncated: boolean
 }
 
-/** Cycle 82 final review I6: the worker's sandbox preflight result, carried on its heartbeat (the
- *  web shows "Sandbox unavailable: <reason>"; CD turns it into a deploy warning). */
+/** Cycle 82 final review I6 / cycle 86: the worker's workspace health (the dir is writable, macOS
+ *  sandbox-exec works, the disk is not low), carried on its heartbeat (the web shows "Workspace
+ *  unavailable: <reason>"; CD turns it into a deploy warning). */
 export type SandboxHealth = { ok: true; checkedAt: string } | { ok: false; reason: string; checkedAt: string }

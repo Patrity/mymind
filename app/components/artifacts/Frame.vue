@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Cycle 86: the sandboxed view of a published artifact. The sandbox deliberately omits
+// Cycle 87: the sandboxed view of a published artifact. The sandbox deliberately omits
 // allow-same-origin: artifact JS runs in an opaque origin and can never touch MyMind's session.
 import { ARTIFACT_SANDBOX } from '~/lib/artifacts/display'
 

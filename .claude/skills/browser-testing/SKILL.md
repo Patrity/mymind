@@ -311,7 +311,7 @@ The session's `mcp__mymind__*` tools point at **PROD**, so they can't validate a
 4. Assert real behaviour (create a doc → read/grep/edit → get_document to verify content → move → delete → get_document is null). Expected-error paths (not-found, non-unique, invalid regex) must return `{error}`, never throw.
 5. **Clean up**: delete the token row + any test docs/tasks (`delete from chunks where source_id=any(...)` before `documents`), then stop the dev server. Note: an `&`-backgrounded `pnpm dev` still boots — verify with `curl -s -o /dev/null -w "%{http_code}" localhost:3000/login`.
 
-## Artifacts (cycle 86)
+## Artifacts (cycle 87)
 - **Seed** with a tsx script at the repo root (delete it after): `initCore(fromEnv(process.env,{dev:true}))`, then `(await import('@mymind/core/lib/artifacts/service')).publishArtifact({ slug, title, files:[{path,content}], isPublic })`; run `node_modules/.bin/tsx --env-file=.env _seed.ts`. Fixtures live in `test/fixtures/artifacts/` (`isolation/` probes cookie/localStorage/origin/`/api/tasks`/`./data/x.json`/`./app.js` into `<pre id="out">`; `vite-app/` has a committed `dist/`). Hard-delete the rows at the end (`artifact_versions` then `artifacts`; blobs live in `.data/uploads`).
 - **Private token redirect:** opening `/artifact/<slug>/` while logged in 302s to `/artifact/<slug>/~<token>/`; logged out it goes to `/login?redirect=/artifact/<slug>/` and lands back on the artifact after login. The expected isolation output is `cookie=threw localStorage=threw origin=null api=blocked` (anything with `api=status 200` or `localStorage=ok` means the sandbox CSP is gone).
 - **Non-navigation fetches get no SPA fallback** by design: `fetch('/artifact/x/settings')` is a 404; `goto` it (or use the iframe) to test `spa_fallback`.

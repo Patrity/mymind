@@ -1,13 +1,13 @@
-// Cycle 82 Task 2: the workspace runtime in the WORKER — which workspace a run works in, the
-// background-shell registry and the watch runtime bound to the shared sandbox manager, and their
+// Cycle 82 Task 2 / cycle 86: the workspace runtime in the WORKER — which workspace a run works in,
+// the background-shell registry and the watch runtime bound to the shared manager, and their
 // boot/stop (main.ts startSandbox).
 //
 //   Workspace selection: a run in a workstream's thread works in that workstream's workspace; every
 //   other run (chat, jobs, wakes, replayed proposals) works in the single `home` workspace. Both are
 //   created on first use.
-//   Boot: after the container reconcile, running background shells are re-attached (or marked
-//   lost/exited) and armed watches re-armed. The manager's isBusy (no idle stop while a shell runs
-//   or a watch is armed) and onOverQuota (kill shells, cancel watches) hooks are installed here.
+//   Boot: running background shells are re-attached (or marked lost/exited) and armed watches
+//   re-armed. The manager's isBusy (no idle stop while a watch is armed), onStopped and refresh
+//   hooks are installed here.
 import { currentEvalScope } from '../eval/context'
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
@@ -20,7 +20,6 @@ import { READ_TEXT_CAP_BYTES, READ_TEXT_SCRIPT } from './fs-ops'
 import { executionMode } from '../agent/runtime/execution-mode'
 import { setWorkstreamTerminalHook } from '../agent/workstreams/store'
 import { busNs } from '../bus/ns'
-import type { ExecOptions } from './manager'
 
 export interface WorkspaceRef {
   workspaceId: string
@@ -115,7 +114,7 @@ export function workspaceRuntime(): WorkspaceRuntime {
 }
 
 /** Fix round 2 (N6): an eval world is disposed — stop its runtime's watch timers (they would keep
- *  polling a removed container and pin the scope). Idempotent. */
+ *  polling a removed scratch dir and pin the scope). Idempotent. */
 export function stopEvalWorkspaceRuntime(scope: object): void {
   const rt = evalRuntimes.get(scope)
   if (!rt) return
@@ -134,19 +133,6 @@ export async function taintRunWorkspace(runId: string | undefined): Promise<void
   await rt.manager.markTainted(ref.workspaceId)
 }
 
-/** Follow-up 2 (NB4): the run that works in this workspace read content the injection check could
- *  not verify — its live background shells are stopped and its watches cancelled (they would run
- *  files that run writes, with network). The workspace keeps its network for later untainted runs. */
-export const UNVERIFIED_REASON = 'a run in this workspace read content the injection check could not verify'
-export async function quarantineRunWorkspace(runId: string | undefined): Promise<void> {
-  const rt = workspaceRuntime()
-  const ref = await rt.resolve(runId)
-  await rt.shells.killAll(ref.workspaceId, `stopped: ${UNVERIFIED_REASON}`)
-  await rt.watches.cancelFor(ref.workspaceId, UNVERIFIED_REASON)
-}
-
-export const OVER_QUOTA_REASON = 'the workspace went over its disk quota (or the server ran low on disk)'
-
 /** Build a runtime around a given manager (tests: a labelled manager on a temp dir). */
 export function createWorkspaceRuntime(manager: SandboxManager, o: { resolve?: WorkspaceRuntime['resolve']; deliver?: Parameters<typeof createWatchRuntime>[0]['deliver'] } = {}): WorkspaceRuntime {
   const deps = { exec: manager.exec, workspace: (id: string) => dbWorkspaceStore.get(id) }
@@ -158,30 +144,14 @@ export function createWorkspaceRuntime(manager: SandboxManager, o: { resolve?: W
   }
 }
 
-export const TAINTED_REASON = "this workspace's network was turned off (it handled mail/calendar content)"
-
-/** isBusy / onOverQuota / onTainted for the manager (exported for tests). onOverQuota and
- *  onTainted are idempotent: they only touch running shells / armed watches, so repeats (every 5s
- *  in a low-disk episode; every tainted command) find nothing to do. */
+/** isBusy / onStopped / refresh for the manager (exported for tests). */
 export function runtimeHooks(rt: Pick<WorkspaceRuntime, 'shells' | 'watches'>) {
   return {
-    // Fix round 1 (M2): the networked container is gone — its shells are recorded as stopped and
-    // its watches cancelled (a watch would otherwise spawn a no-network one-off every poll).
-    onTainted: async (id: string) => {
-      await rt.shells.killAll(id, `stopped: ${TAINTED_REASON}`)
-      await rt.watches.cancelFor(id, TAINTED_REASON)
-    },
-    // Final review I2 ruling: only an armed watch keeps a sandbox up past 15 idle minutes. A running
-    // background shell does not (shells are for jobs, not servers) — but it is never EVICTED for
-    // capacity while it runs (hasLiveShell, I3).
+    // Final review I2 ruling: only an armed watch keeps a workspace's shells up past 15 idle minutes
+    // (shells are for jobs, not servers).
     isBusy: (id: string) => rt.watches.hasArmed(id),
-    hasLiveShell: (id: string) => rt.shells.hasRunning(id),
     onStopped: async (id: string, reason: string) => { await rt.shells.killAll(id, reason) },
-    refresh: async (id: string) => { await rt.shells.refresh(id) },
-    onOverQuota: async (id: string) => {
-      await rt.shells.killAll(id, `killed: ${OVER_QUOTA_REASON}`)
-      await rt.watches.cancelFor(id, OVER_QUOTA_REASON)
-    }
+    refresh: async (id: string) => { await rt.shells.refresh(id) }
   }
 }
 
@@ -189,14 +159,14 @@ export const WORKSTREAM_ENDED_REASON = 'its workstream has ended'
 
 /**
  * Final review I2: a workstream reached done / failed / cancelled — kill its background shells,
- * cancel its watches (nobody to tell) and stop its sandbox. Idempotent. Its files stay until the
- * deletion sweep (30 days after it finished — store.listExpired).
+ * cancel its watches (nobody to tell) and mark its workspace stopped. Idempotent. Its files stay
+ * until the deletion sweep (30 days after it finished — store.listExpired).
  */
 export async function teardownWorkstreamWorkspace(rt: Pick<WorkspaceRuntime, 'manager' | 'shells' | 'watches'>, workstreamId: string): Promise<boolean> {
   const [row] = await useDb().select().from(workspaces).where(and(eq(workspaces.workstreamId, workstreamId), isNull(workspaces.deletedAt))).limit(1)
   if (!row) return false
   // Follow-up N4: re-checked UNDER the workspace lock right before acting — a workstream resumed
-  // since it ended (resumeWorkstream: failed/cancelled → running) keeps its watch, shells, sandbox.
+  // since it ended (resumeWorkstream: failed/cancelled → running) keeps its watch and shells.
   const { getWorkstream } = await import('../agent/workstreams/store')
   const { TERMINAL_WORKSTREAM_STATES } = await import('../../shared/types/workstreams')
   const stillEnded = async () => {
@@ -204,14 +174,13 @@ export async function teardownWorkstreamWorkspace(rt: Pick<WorkspaceRuntime, 'ma
     return !!ws && TERMINAL_WORKSTREAM_STATES.includes(ws.state)
   }
   return rt.manager.stopIf(row.id, stillEnded, async () => {
-    // N8: never starts a container to kill shells in it.
-    await rt.shells.killAll(row.id, `killed: ${WORKSTREAM_ENDED_REASON}`, { noStart: true })
+    await rt.shells.killAll(row.id, `killed: ${WORKSTREAM_ENDED_REASON}`)
     await rt.watches.cancelFor(row.id, WORKSTREAM_ENDED_REASON, { quiet: true })
   }, `killed: ${WORKSTREAM_ENDED_REASON}`)
 }
 
 /** The minute tick's backstop: workspaces of FINISHED workstreams that still have something live
- *  (a running container, a running shell row or an armed watch) — e.g. the workstream ended in the
+ *  (a `running` workspace, a running shell row or an armed watch) — e.g. the workstream ended in the
  *  web process, where the worker's hook isn't installed. */
 export async function finishedWorkstreamsWithLiveWorkspaces(): Promise<string[]> {
   const rows = await useDb().select({ workstreamId: workspaces.workstreamId }).from(workspaces)
@@ -230,20 +199,19 @@ export async function finishedWorkstreamsWithLiveWorkspaces(): Promise<string[]>
 }
 
 /**
- * Worker start: install the manager hooks now; once the container reconcile has run (housekeeping's
- * first tick calls `afterReconcile`), re-attach shells and re-arm watches. Returns stop().
+ * Worker start: install the manager hooks now; housekeeping's first tick calls `afterReconcile`:
+ * re-attach shells and re-arm watches. Returns stop().
  */
 export function startWorkspaceRuntime(log: Pick<Console, 'info' | 'warn' | 'error'> = console): { afterReconcile: () => Promise<void>; onTick: () => Promise<void>; stop: () => void } {
   const rt = workspaceRuntime()
   setSandboxRuntimeHooks(runtimeHooks(rt))
   let stopped = false
   // I2: a workstream that ends here tears its workspace down at once (fire-and-forget: the
-  // transition never waits on Docker); the minute tick catches anything this missed.
+  // transition never waits on it); the minute tick catches anything this missed.
   setWorkstreamTerminalHook((workstreamId) => {
     if (stopped) return
     // Cycle 85 final fix wave (Task 4): a workstream that ends INSIDE an eval world is torn down by
-    // that world's runtime (its offline manager, its container names) — never by Tony's, whose
-    // container names the world's docker guard refuses.
+    // that world's runtime (its confined manager, its scratch dir) — never by Tony's.
     const target = currentEvalScope() ? workspaceRuntime() : rt
     void teardownWorkstreamWorkspace(target, workstreamId).catch(err => log.warn(`[sandbox] teardown of workstream ${workstreamId}'s workspace failed:`, (err as Error).message))
   })
@@ -273,20 +241,25 @@ export function startWorkspaceRuntime(log: Pick<Console, 'info' | 'warn' | 'erro
 export class WorkspaceFileError extends Error { override name = 'WorkspaceFileError' }
 
 /**
- * A whole UTF-8 text file of a workspace (≤ EXPORT_MAX_BYTES), read INSIDE its sandbox. In the web
- * process (an approved export_to_document proposal is replayed there) the worker does the read —
- * the sandbox is the worker's.
+ * A whole UTF-8 text file of a workspace (≤ EXPORT_MAX_BYTES) — MyMind's own read script (internal),
+ * carrying the run's taint. In the web process (an approved export_to_document proposal is replayed
+ * there) the worker does the read — the workspaces are the worker's.
  */
-export async function readWorkspaceText(workspaceId: string, path: string, o: Pick<ExecOptions, 'tainted' | 'offline' | 'signal'> = {}): Promise<{ content: string; bytes: number; path: string; tainted: boolean }> {
+export async function readWorkspaceText(workspaceId: string, path: string, o: { tainted?: boolean; offline?: boolean; signal?: AbortSignal } = {}): Promise<{ content: string; bytes: number; path: string; tainted: boolean }> {
   if (executionMode() === 'remote') {
     const { sendCommand } = await import('../bus/commands')
-    // Fix round 1 (M3): the taint travels with the command (the worker runs it no-network). The
-    // abort signal can't cross the bus: the worker's own 60s exec timeout bounds the read.
+    // Fix round 1 (M3): the taint travels with the command (the workspace is marked as it would be
+    // locally). The abort signal can't cross the bus: the worker's own 60s exec timeout bounds the read.
     const r = await sendCommand('workspace-read-text', { workspaceId, path, ...(o.tainted ? { tainted: true } : {}), ...(o.offline ? { offline: true } : {}) }, { awaitResult: true, timeoutMs: 75_000 })
     if (!r) throw new WorkspaceFileError('the agent worker returned nothing')
     return r
   }
-  const r = await workspaceRuntime().manager.exec(workspaceId, READ_TEXT_SCRIPT, { input: JSON.stringify({ path }), capBytes: READ_TEXT_CAP_BYTES, timeoutSec: 60, ...o })
+  // Fix round 1: this is MyMind's own reader — after mail/calendar content (the run or
+  // the workspace is tainted) it reads only a relative path inside the workspace, never through a
+  // symlink, so a tainted run can't export Bridget's credentials. Fails closed: an unreadable row is strict.
+  const row = await dbWorkspaceStore.get(workspaceId).catch(() => null)
+  const strict = o.tainted === true || o.offline === true || row?.tainted !== false
+  const r = await workspaceRuntime().manager.exec(workspaceId, READ_TEXT_SCRIPT, { input: JSON.stringify({ path, ...(strict ? { strict: true } : {}) }), capBytes: READ_TEXT_CAP_BYTES, timeoutSec: 60, ...(o.tainted ? { tainted: true } : {}), ...(o.signal ? { signal: o.signal } : {}), internal: true })
   let j: { content?: string; bytes?: number; path?: string; error?: string; message?: string } | null = null
   try { j = r.exitCode === 0 ? JSON.parse(r.stdout) : null } catch { j = null }
   if (!j) throw new WorkspaceFileError(r.truncated ? 'the file is too large to export' : `could not read ${path}: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
