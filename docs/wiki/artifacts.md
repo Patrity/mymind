@@ -4,7 +4,7 @@ status: built
 cycle: 86
 updated: 2026-10-15
 mymind_id: f60aa8d8-a6f1-4558-9838-1f549a55b82e
-mymind_hash: 95101631628284050c71cfb431effd2cc5ef6c87fe01865bc6916111e60e2441
+mymind_hash: ebe1766da79de32245c7bfb9b058c418d115c699734852f37aa3a1e3b6dfc067
 ---
 
 # Artifacts (cycle 86)
@@ -54,7 +54,11 @@ every service write (create/update; restore also emits `created`), including wor
 ## 2. Limits and allowed types
 
 - 500 files, 25 MB total, 10 MB per file (`ARTIFACT_MAX_FILES`, `ARTIFACT_MAX_TOTAL_BYTES`, `ARTIFACT_MAX_FILE_BYTES`).
-- Paths: relative, `/`-separated, no `..`, no empty segments, no backslashes or NUL, no leading/trailing `/`.
+- Paths: relative, `/`-separated, no `..`, no backslashes or NUL, no leading/trailing `/`; empty and `.` segments are
+  collapsed (`./a//b.js` -> `a/b.js`).
+- Slugs: `^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`, and never UUID-shaped (`bad_slug`: an id-or-slug lookup would
+  match an artifact id first). Derived from the title by NFKD + dropping combining marks (`Résumé` -> `resume`); a
+  UUID-shaped title gets an `artifact-` prefix.
 - Content-type **allowlist by extension**: html htm js mjs css json map txt csv svg png jpg jpeg gif webp avif ico
   woff woff2 ttf wasm mp3 mp4 webm. Anything else is `bad_type` when passed directly.
 - `ArtifactError` codes: `bad_path bad_type too_large too_many no_entry bad_slug not_found bad_input refused`.
@@ -87,7 +91,9 @@ Decision table (`u` = parsed URL; navigation = `Sec-Fetch-Dest` document/iframe 
 
 | request | result |
 |---|---|
-| unknown/deleted slug, or invalid slug | 404 |
+| invalid slug | 404 |
+| unknown/deleted slug: non-navigation, or navigation **with** a session | 404 |
+| unknown/deleted slug: navigation, **no** session | exactly like a private one (no slash: 301; else 302 to `/login?redirect=/artifact/<slug>/`) so a private slug's existence never leaks to a logged-out visitor |
 | no trailing slash | public: 301 to `/artifact/<slug>/`; private + non-navigation: 404 (looks missing); private navigation: 301 |
 | public | serve |
 | private + valid token for *this* artifact | serve |
@@ -136,29 +142,43 @@ login, lands on `/artifact/<slug>/~<token>/` rendered.
 
 | tool | kind / class | notes |
 |---|---|---|
-| `publish_artifact` | `create`; `outboundWhen: public === true`, `proposeWhen` same | exactly one of `html` / `files` (map path -> text) / `workspace_path`; `files: {}` counts as absent; zero sources -> `{ok:false}` "nothing to publish"; `entry`, `spa_fallback`, `public`, `project` (slug), `merge`, `slug`, `title`, `description` |
-| `edit_artifact` | `create`; `outboundWhen`/`proposeWhen` when `public: true` | title, description, slug, `public`, `project` (null clears), `rollback_to` (version number) |
+| `publish_artifact` | `create`; **`outbound: true`** (R9) + `outboundDetail`; `proposeWhen: public === true && no workspace_path` | exactly one of `html` / `files` (map path -> text) / `workspace_path`; `files: {}` counts as absent; zero sources -> `{ok:false}` "nothing to publish"; `entry`, `spa_fallback`, `public`, `project` (slug), `merge`, `slug`, `title`, `description` |
+| `edit_artifact` | `create`; `outboundWhen: public === true \|\| rollback_to set` (+ `outboundDetail`); `proposeWhen: public === true` | title, description, slug, `public`, `project` (null clears), `rollback_to` (version number) |
 | `list_artifacts` | `read` | newest first, optional `project`, `limit` (1-100) |
 | `delete_artifact` | `destructive`, `dangerous`, `describeApproval` | soft delete; undo restores (fails if the slug was reused) |
 
 Gate behaviour:
 
-- A **private** publish/edit is Bridget's own output: `publish_artifact`/`edit_artifact` sit in `APPEND_TOOLS`
+- An **untainted** publish/edit is Bridget's own output: `publish_artifact`/`edit_artifact` sit in `APPEND_TOOLS`
   (`runtime/gate.ts`) so they run without approval, with undo, and a rollback-capable chat card.
-- A call with `public: true` is **outbound**: the judge rule tier treats it like `gmail_send`-class outbound
-  (`outboundWhen` in `judge/rules.ts`), needs Tony's approval in a live run, and in a headless run is **proposed**
-  (`proposeWhen`) rather than executed.
-- **Tainted run + already-public target + no explicit `public` flag -> `{ok:false}` refusal** ("pass public: true ...
-  Tony must approve"): an args-only gate cannot see that the stored artifact is already public, so the call is forced
-  through the gate. `public: false` (making it private) is allowed.
+- **Every publish is outbound (ruling R9).** The model-written HTML/JS runs the moment the chat card's iframe mounts,
+  so a page can beacon or navigate (`new Image().src=`, `location=`, popups) with whatever the run read — a zero-click
+  exfil channel, the same class as model markdown rendered in chat (`agentMarkdownProps`, see
+  [`google-connections.md`](google-connections.md)). So `publish_artifact` is statically `outbound`: in a
+  **tainted run** (any visibility, new or existing target) Tony approves each publish, and a tainted **headless**
+  publish is **auto-denied** (no approval channel). `edit_artifact` is outbound only for `public: true` or
+  `rollback_to` (other content becomes current); title/description/slug/project/making-private edits run freely.
+  Untainted runs are not gated at all. The approval card's `outboundDetail` shows the target (`/artifact/<slug>/
+  (exists, PUBLIC|private)` or `new artifact`), visibility after, the source kind, up to 20 file names, and the first
+  2 000 chars of the entry HTML when it is inline (the full args are also listed). The judge rule tier runs its
+  outbound URL checks over the args (`judge/rules.ts`: raw IPs / paste hosts / long queries -> high).
+  **Design data-refresh jobs to avoid tainting reads**: a job that did a `web_fetch` flagged by the guard, or read
+  mail, cannot publish (its publish is denied) — fetch in one untainted job, or have Tony run it interactively.
+- **Headless public publishes.** An untainted headless `public: true` publish of `html`/`files` is **proposed**
+  (`proposeWhen`) and replayed on approval. One with `workspace_path` is **refused** instead (ruling R10:
+  `{ok:false}` "publish it privately first (omit public), then ask to make it public with edit_artifact — Tony
+  approves that"): the web process replays approvals in `remote` execution mode, where the workspace cannot be read.
+  So the R10 flow is: publish privately (runs headless) -> `edit_artifact public: true` (proposed) -> Tony approves.
+  "Headless" = a live run with no approval channel (`ctx.runId` set, `ctx.requestApproval` absent).
 - `delete_artifact` is `dangerous`, so it lives on `bridgetProfile` (`artifactDangerousTools`), **never** in the shared
   `agentTools`/MCP registry (`test/mcp-dangerous.test.ts`).
 - **MCP:** `publish_artifact`, `edit_artifact`, `list_artifacts` are exposed (the toolset is not MCP-excluded). Public
   publish over MCP is **ungated**: MCP callers are Tony's own authenticated clients with no taint model, equivalent to
   Tony flipping the switch in the UI. `workspace_path` is refused over MCP (no workspace); `delete_artifact` is not offered.
 - **Proposal replay.** An approved headless proposal re-runs the handler with `ctx.replay = true` (set only by
-  `runtime/replay.ts`); `proposalArgs` pinned the originating `workspaceId` and `conversationId`, honoured only under
-  `replay`. Live runs ignore model-supplied ids and resolve from the run; MCP ignores them too.
+  `runtime/replay.ts`); `proposalArgs` pins the originating `conversationId`, honoured only under `replay`. Proposals
+  never carry `workspace_path` (R10), so a replay (no run) with one is a clean `{ok:false}`. Live runs ignore a
+  model-supplied `conversationId` and resolve from the run; MCP ignores it too.
 - Undo (`ToolExecution.undo`): a create -> soft delete; a new version -> set `current_version_id` back to the
   previous version, restoring metadata *first* (a once-private version must never be briefly current on a still-public
   artifact); an edit -> restores title/description/slug/visibility/project (and the prior current version after a rollback).
@@ -198,7 +218,7 @@ slug race on the unique index and the loser retries (bounded, 3) as an update.
 
 | route | notes |
 |---|---|
-| `GET /api/artifacts` | list (`?project=` uuid) |
+| `GET /api/artifacts` | list (`?project=` uuid; anything else non-empty -> 400) |
 | `GET /api/artifacts/:id` | detail with `versions[]` (`id, version, entry, fileCount, totalBytes, createdAt, current`); `:id` is a uuid or a slug |
 | `PATCH /api/artifacts/:id` | `{ title, description, slug, isPublic, projectId, rollbackTo }` (zod; 400 on bad body/`ArtifactError`) |
 | `DELETE /api/artifacts/:id` | soft delete |
@@ -213,8 +233,10 @@ The service emits the live-bus change; routes do not.
 - `/artifacts/[id]`: sandboxed iframe preview (`sandbox="allow-scripts allow-forms allow-popups allow-modals
   allow-downloads"`, constant `ARTIFACT_SANDBOX` pinned by a test, never `allow-same-origin`), metadata form, version
   history with rollback, project and source-conversation links. The iframe is keyed on `url@currentVersion` so it
-  remounts after a new version/rollback. The form re-syncs from live refetches only for a different artifact or while
-  it is still clean (never overwrites unsaved edits).
+  remounts after a new version/rollback. The form re-syncs from live refetches only for a different artifact, while it
+  still equals the last-synced snapshot, or when it already equals the incoming artifact (`formSyncFor` in
+  `app/lib/artifacts/display.ts`); a successful save refreshes the snapshot, so later remote edits flow in. It never
+  overwrites unsaved edits.
 - Chat card: `publish_artifact`/`edit_artifact` results render an inline iframe preview with Open / Copy link
   (`ChatCard.vue` via `ToolPart.vue`). Each card mints a view-url; the card's iframe does not remount on later versions.
 
@@ -228,4 +250,8 @@ The service emits the live-bus change; routes do not.
 - **No blob GC**: deleting an artifact, a failed publish, or replacing a bundle leaves orphaned blobs in storage.
 - No backends/server code, custom domains, thumbnails, comments. View tokens last 12 h and cannot be revoked
   individually (rotate `BETTER_AUTH_SECRET` to kill them all, which also logs everyone out).
-- Public pages are cached 60 s, so a data refresh shows within a minute.
+- **A private iframe left open more than 12 h stops loading relative assets** (its path token expired: subresources
+  get 403) until the page is reloaded, which mints a fresh token.
+- Public pages are cached 60 s (`public, max-age=60`), so a data refresh shows within a minute — and **after a
+  public -> private flip, Cloudflare/Pangolin may keep serving the cached public files for up to 60 s**.
+- Every publish in a tainted run needs Tony's approval; tainted headless publishes are denied (§ 6, R9).

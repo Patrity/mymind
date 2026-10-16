@@ -2,7 +2,7 @@
 title: "Artifacts — Bridget publishes sandboxed static pages and webapps at /artifact/<slug>/ (cycle 86)"
 cycle: 86
 date: 2026-10-15
-status: shipped  # built + E2E-verified on feat/artifacts; NOT yet merged or deployed
+status: in-progress  # built + E2E-verified on feat/artifacts + final fix wave; becomes shipped at merge
 branch: feat/artifacts (worktree .claude/worktrees/artifacts, merge-base master 2cb28f7)
 merged: false
 deployed: false
@@ -20,7 +20,7 @@ shipped:
   - /artifact/** serving route with CSP sandbox, ACAO *, nosniff, no-referrer, cache, ETag/304, HEAD/OPTIONS on every response
   - private access by 12 h path token minted from the session (subresources carry no cookie, verified)
   - workspace_path publishing from the sandbox (in-container walk/read, secret masking, skipped types)
-  - toolset artifacts - publish_artifact, edit_artifact, list_artifacts (shared/MCP), delete_artifact (bridgetProfile only); public = outbound/proposed, tainted+public-target refusal, replay marker, undo
+  - toolset artifacts - publish_artifact, edit_artifact, list_artifacts (shared/MCP), delete_artifact (bridgetProfile only); every publish outbound in a tainted run (R9, approval card shows target/files/entry HTML), headless public html proposed, headless public workspace_path refused (R10), replay marker (conversationId), undo
   - /artifacts and /artifacts/[id] pages, sidebar entry, chat card, live updates
   - eval case artifact-publish-chart in bridget-core
 deferred:
@@ -37,9 +37,9 @@ page or a built webapp as a versioned **artifact** and Tony opens it at `/artifa
 in a browser sandbox with no access to MyMind. Current-state reference: [`wiki/artifacts.md`](../wiki/artifacts.md).
 Spec (intent): [`2026-10-15-artifacts-design.md`](../superpowers/specs/2026-10-15-artifacts-design.md).
 
-**Status: built, E2E-verified, not merged, not deployed.** Gates on the last commit before docs: typecheck exit 0,
+**Status: built, E2E-verified, final fix wave applied (R9/R10), not merged, not deployed.** Gates on the last commit before docs: typecheck exit 0,
 `pnpm vitest run` 408 files / 4994 passed (1 skipped), `pnpm test:db service.db.test.ts` 14 passed, `pnpm build` exit 0
-(at Task 10; the Task 10b fix wave re-ran typecheck/vitest/db tests).
+(at Task 10; the Task 10b fix wave re-ran typecheck/vitest/db tests). Final fix wave: typecheck exit 0, vitest 408 files / 5010 passed (1 skipped), `service.db.test.ts` 14 passed; build not re-run.
 
 ## What shipped, by task
 1. Library: `limits`, `manifest`, `html-warnings` (+ schema, migration 0089).
@@ -51,16 +51,17 @@ Spec (intent): [`2026-10-15-artifacts-design.md`](../superpowers/specs/2026-10-1
 7. Agent tools, gate wiring, toolset, judge `outboundWhen`.
 8. API + `useArtifacts` + live bus.
 9. UI pages, `Frame`, `ChatCard`, nav, login redirect.
-10/10b. E2E proof + fix wave. 11. Docs.
+10/10b. E2E proof + fix wave. 11. Docs. Final fix wave: R9, R10, detail-form sync after save (`formSyncFor`), unknown-slug login parity, uuid-shaped slugs rejected, accent-stripping slugs, `?project=` uuid validation.
 
 ## Rulings that changed or refined the spec (shipped behaviour)
 - **R1** error codes gained `bad_input` and `refused`. **R2** `rootAbsoluteRefs(html, paths)` checks the entry HTML only when the entry is among the files it was given. **R3** `edit_artifact` returns the same ok-shape as publish so the chat card renders for both.
 - **R4** workspace publish **skips** non-allowlisted file types and warns (Vite dists carry `.webmanifest`/LICENSE/`.gz`) instead of failing the publish.
 - **R5** public publish over **MCP is ungated** (Tony's own authenticated clients, no taint model, same as flipping the UI switch). `workspace_path` is refused over MCP. `delete_artifact` is never on MCP (lives on `bridgetProfile`; `test/mcp-dangerous.test.ts`).
-- **R6** a tainted run that targets an **already-public** artifact without an explicit `public` flag is refused (`ok:false`) so the call must go through the gate; an args-only `outboundWhen` could not see the stored visibility.
+- **R6** (superseded by R9 and removed) a tainted run targeting an already-public artifact without `public` was refused with `ok:false`.
 - **R7** `Access-Control-Allow-Origin: *` (no credentials) on every artifact response and an OPTIONS answer, found in Task 9: the opaque origin makes the page's own `fetch('./data/x.json')` cross-origin.
 - **R8** inserted Task 10b before the docs so they describe final behaviour.
-- Headless proposals replay with `ctx.replay = true` (set only in `runtime/replay.ts`); only then are the proposal-pinned `workspaceId`/`conversationId` honoured. MCP and live runs ignore model-supplied ids.
+- **R9** (final review Critical: zero-click exfil) `publish_artifact` is statically `outbound`: its HTML/JS runs as soon as the chat card's iframe mounts, so in a **tainted** run every publish (private too) needs Tony's approval and a tainted **headless** publish is auto-denied. `edit_artifact` is outbound for `public: true` or `rollback_to`. `outboundDetail` puts the target (exists? public?), source kind, ≤ 20 file names and the first 2 000 chars of inline entry HTML on the card. Consequence: design data-refresh jobs to avoid tainting reads (a job that read mail or got a guard-flagged `web_fetch` cannot publish).
+- **R10** the web process replays approvals in `remote` execution mode, which cannot read a workspace, so a headless `public: true` publish with `workspace_path` is **not proposed**: it returns `ok:false` "publish it privately first (omit public), then ask to make it public with edit_artifact — Tony approves that". Flow: private publish (runs) -> `edit_artifact public: true` (proposed) -> approve. The `workspaceId` replay pin was removed (dead); proposals pin only `conversationId`, honoured under `ctx.replay` alone.
 - 403 (not 404) for an invalid/expired token on a subresource: spec section 5 mandates it; navigation already reveals slug existence via the login redirect.
 - Off-list edits accepted in Task 7: `gate.ts` `APPEND_TOOLS`, `profile.ts`, `judge/rules.ts` (`outboundWhen`), `types.ts`.
 
@@ -87,14 +88,15 @@ Spec (intent): [`2026-10-15-artifacts-design.md`](../superpowers/specs/2026-10-1
 - Roll back: set the artifact private or delete from `/artifacts`; the route itself is inert without rows.
 
 ## Deferred minors (from the ledger; mirrored in BACKLOG.md)
-- T1: `slugFromTitle` leaves combining marks ("résumé" -> "re-sume"); `ext()` maps dotfiles like `.js`; no per-path length / control-char limit.
+- T1: `ext()` maps dotfiles like `.js`; no per-path length / control-char limit.
 - T2: a root file named `~x` is unreachable (parsed as a token); "25 MB" message hardcoded.
 - T3: token test has a filler assertion, no sig-flip / `now === exp` boundary test, default-secret path untested.
 - T4: a publish that loses the lock to a concurrent slug rename falls into the create path; `restoreArtifact` emits `created`; no tests for single-file `too_large`, once-after-commit `publishChange`, entry/spaFallback-only change -> new version, summed-bytes pre-put branch; the new-slug race test is probabilistic.
 - T5: route test resolves h3 via nuxt->nitropack (brittle); `HEAD` on a missing blob returns 200.
 - T6: masking is literal-only and text-types-only; read-script realpath->open TOCTOU inside the container; forged-list malformed cases assert only `instanceof`.
-- T7: `rootAbsoluteRefs` misses unquoted attrs; republish overwrites `conversationId` and undo does not restore it; a uuid-shaped slug equal to another artifact's id skips the taint refusal/undo snapshot.
-- T8: view-url query key nested under `['artifact', id]` refetches/mints a token on every update event; `project` query param not uuid-validated (500 vs 400); detail must be keyed by uuid.
+- T7: `rootAbsoluteRefs` misses unquoted attrs; republish overwrites `conversationId` and undo does not restore it.
+- T8: view-url query key nested under `['artifact', id]` refetches/mints a token on every update event; detail must be keyed by uuid.
 - T9: dates use browser-local `toLocaleString` (accepted); every chat card mints a view-url and mounts an iframe; rollback has no confirm.
 - R7: `OPTIONS` returns 204 for any `/artifact/**` path before slug parse (harmless).
-- 10b: detail form `synced` snapshot goes stale after a save, so later remote edits are ignored while the form looks clean.
+- Ops notes: after a public -> private flip, Cloudflare/Pangolin may serve the cached public files for up to 60 s; a private iframe open > 12 h stops loading relative assets (token TTL, 403) until reloaded.
+- Final fix wave: the approval card's lead line comes from `ai-tools.ts`'s generic background-work wording ("sets up work that runs later"), which fits a publish only loosely; the `outboundDetail` first line states the real risk.
