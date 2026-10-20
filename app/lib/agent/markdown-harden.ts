@@ -79,7 +79,7 @@ export function sanitizeAgentNodes(nodes: MdNode[]): MdNode[] {
     if (tag === null) continue // comment node
     const name = String(tag).toLowerCase()
     if (DROP.has(name)) continue
-    const rules = ALLOWED[name]
+    const rules = Object.hasOwn(ALLOWED, name) ? ALLOWED[name] : undefined // not ALLOWED['constructor']
     if (!rules) { out.push(...sanitizeAgentNodes(kids)); continue } // div/span/MDC component → its content
     if (name === 'img' && !isAllowedAgentImage(attrs?.src)) {
       const alt = typeof attrs?.alt === 'string' ? attrs.alt : ''
@@ -89,8 +89,9 @@ export function sanitizeAgentNodes(nodes: MdNode[]): MdNode[] {
     if (name === 'input' && attrs?.type !== 'checkbox') continue
     const clean: Attrs = {}
     for (const [k, v] of Object.entries(attrs ?? {})) {
-      if (k === 'class') { const c = safeClassValue(v); if (c !== undefined && rules.class) clean[k] = c }
-      else if (rules[k]?.(v)) clean[k] = v
+      if (!Object.hasOwn(rules, k)) continue // not rules['prototype'] / ['toString']
+      if (k === 'class') { const c = safeClassValue(v); if (c !== undefined) clean[k] = c }
+      else if (rules[k]!(v)) clean[k] = v
     }
     out.push([name, clean, ...sanitizeAgentNodes(kids)])
   }

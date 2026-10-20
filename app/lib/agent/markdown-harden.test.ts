@@ -109,4 +109,17 @@ describe('isAllowedAgentImage / sanitizeAgentNodes', () => {
       ['th', { style: 'text-align:left;background:url(x)' }, 'h2']
     ])).toEqual(['kept', ['strong', { class: 'italic' }, 'b'], ['th', { style: 'text-align:left' }, 'h'], ['th', {}, 'h2']])
   })
+  it('prototype-named tags/attributes are not allowlisted and never throw (cycle 88 I3)', () => {
+    expect(sanitizeAgentNodes([
+      ['constructor', { prototype: 'x' }, 'hi'],
+      ['__proto__', { keys: 'x' }, 'p'],
+      ['p', { constructor: 'x', toString: 'y', __proto__: 'z', hasOwnProperty: 'w' }, 'k']
+    ])).toEqual(['hi', 'p', ['p', {}, 'k']])
+  })
+  it('a <constructor prototype=x> / <__proto__> reply renders its text instead of crashing', async () => {
+    const el = await render('before <constructor prototype="x">hi</constructor> <__proto__ keys="y">there</__proto__> after')
+    expect(el.textContent).toContain('before')
+    expect(el.textContent).toContain('after')
+    expect(el.querySelector('constructor')).toBeNull()
+  })
 })
