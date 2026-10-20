@@ -92,10 +92,10 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/init/01-extensions.sql
           printf 'DATABASE_URL=%s\nBETTER_AUTH_SECRET=ci-only-secret\n' "$DATABASE_URL" > .env
           pnpm db:migrate
-          # Still a required gate for deploy; one retry per failing test absorbs a flake (review
-          # I5) without letting a real failure through. Note: --retry does not cover an UNHANDLED
-          # error (vitest exits 1 on those regardless).
-          pnpm test:db --retry=1
+          # Still a required gate for deploy. `--retry=1` absorbs a flaky test; it does NOT cover an
+          # unhandled error (vitest exits 1 on those regardless — seen once as ECONNRESET), so the
+          # whole run gets one more attempt. A real failure fails both runs and blocks the deploy.
+          pnpm test:db --retry=1 || { echo "::warning::test:db failed once; re-running the suite"; pnpm test:db --retry=1; }
 
   deploy:
     needs: test
