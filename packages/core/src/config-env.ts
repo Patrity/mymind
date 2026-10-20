@@ -17,6 +17,7 @@
 //    its own (false in the esbuild bundle, NODE_ENV=development under `tsx watch`).
 import { destr } from 'destr'
 import type { CoreConfig } from './config'
+import { parseTtsProvider } from './lib/voice/tts-provider'
 
 export type Env = Record<string, string | undefined>
 
@@ -31,9 +32,14 @@ export type CoreRuntimeKey =
 export type CoreRuntimeConfigSource = { [K in CoreRuntimeKey]?: unknown }
 
 /** CoreConfig fields read from the runtime process env (both processes), never from runtimeConfig. */
-export const ENV_BACKED_FIELDS = ['busNs'] as const
+export const ENV_BACKED_FIELDS = ['busNs', 'ttsProvider', 'ttsAudiocppBaseUrl', 'ttsAudiocppMaxCallChars', 'ttsAudiocppBusyTimeoutMs'] as const
 
 export const BUS_NS_ENV_NAME = 'MYMIND_BUS_NS'
+/** The TTS engine switch and audio.cpp's two knobs — see lib/voice/tts-provider.ts. */
+export const TTS_PROVIDER_ENV_NAME = 'AI_TTS_PROVIDER'
+export const TTS_AUDIOCPP_BASE_URL_ENV_NAME = 'AI_TTS_AUDIOCPP_BASE_URL'
+export const TTS_AUDIOCPP_MAX_CALL_CHARS_ENV_NAME = 'AI_TTS_AUDIOCPP_MAX_CALL_CHARS'
+export const TTS_AUDIOCPP_BUSY_TIMEOUT_MS_ENV_NAME = 'AI_TTS_AUDIOCPP_BUSY_TIMEOUT_MS'
 
 /**
  * nuxt.config.ts's runtimeConfig entries for core, as a function of the BUILD-time env. nuxt.config
@@ -154,8 +160,16 @@ export function fromRuntimeConfig(rc: CoreRuntimeConfigSource, host: HostFacts =
 
 /** The env-backed fields, from the runtime env. */
 export function envBacked(env: Env): Pick<CoreConfig, typeof ENV_BACKED_FIELDS[number]> {
+  const maxCallChars = Number(env[TTS_AUDIOCPP_MAX_CALL_CHARS_ENV_NAME])
+  const busyTimeoutMs = Number(env[TTS_AUDIOCPP_BUSY_TIMEOUT_MS_ENV_NAME])
   return {
-    busNs: env[BUS_NS_ENV_NAME] || undefined
+    busNs: env[BUS_NS_ENV_NAME] || undefined,
+    ttsProvider: parseTtsProvider(env[TTS_PROVIDER_ENV_NAME]),
+    ttsAudiocppBaseUrl: env[TTS_AUDIOCPP_BASE_URL_ENV_NAME] || undefined,
+    // A positive integer or nothing: `Number('')` is 0 and `Number('lots')` is NaN, and either
+    // must read as "not set" so the adapter's measured default applies, never 0 or NaN.
+    ttsAudiocppMaxCallChars: Number.isFinite(maxCallChars) && maxCallChars > 0 ? Math.floor(maxCallChars) : undefined,
+    ttsAudiocppBusyTimeoutMs: Number.isFinite(busyTimeoutMs) && busyTimeoutMs > 0 ? Math.floor(busyTimeoutMs) : undefined
   }
 }
 

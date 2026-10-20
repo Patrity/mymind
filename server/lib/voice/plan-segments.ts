@@ -59,10 +59,13 @@ export function planSegments(
   text: string,
   preset: { instruction: string | null; refStorageKey: string | null; maxSegmentChars: number },
   mode: SpeakMode,
-  realtimeMaxChars: number
+  realtimeMaxChars: number,
+  /** `designBudget`: the live TTS provider's single-call budget for a reference-free preset
+   *  (designPromptBudgetFor). Defaults to the Breeze-Python measurement above. */
+  opts: { designBudget?: number } = {}
 ): SegmentPlan {
   const trimmed = text.trim()
-  const ceiling = maxCallChars(preset)
+  const ceiling = maxCallChars(preset, opts.designBudget ?? DESIGN_PROMPT_BUDGET)
 
   // Guarded before the single-call branch below, which would otherwise return [''] and send
   // an empty segment to the rig for a 400.
