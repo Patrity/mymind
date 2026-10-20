@@ -56,11 +56,21 @@ export function isAllowedStoredImage(src: unknown, opts: HardenOptions = {}): bo
   if (/^blob:/i.test(s)) return opts.origin ? s.slice(5).startsWith(`${opts.origin}/`) : true
   let path = s
   if (opts.origin && s.startsWith(`${opts.origin}/`)) path = s.slice(opts.origin.length)
-  return IMAGE_PREFIXES.some(p => path.startsWith(p))
-    && !path.includes('..')
-    && !path.includes('\\')
-    && !path.slice(1).includes('//')
-    && !/[\s"'<>]/.test(path)
+  // Check the DECODED path too (review M4): `/api/images/%2e%2e/%2e%2e/x` passes every raw-text
+  // test below, yet the browser's URL parser normalizes `%2e%2e` to `..` and requests `/x`.
+  let decoded: string
+  try { decoded = decodeURIComponent(path) } catch { return false }
+  const ok = (p: string) => IMAGE_PREFIXES.some(pre => p.startsWith(pre))
+    && !p.includes('..')
+    && !p.includes('\\')
+    && !p.slice(1).includes('//')
+    && !/[\s"'<>]/.test(p)
+  if (!ok(path) || !ok(decoded)) return false
+  // …and what the browser will actually request: the normalized pathname, same origin.
+  const BASE = 'http://same-origin.invalid'
+  let url: URL
+  try { url = new URL(path, BASE) } catch { return false }
+  return url.origin === BASE && ok(url.pathname)
 }
 
 const SAFE_HREF = /^(?:https?:|mailto:|tel:|#|\/|\.{1,2}\/|[^:/?#]*(?:[/?#]|$))/i

@@ -33,11 +33,10 @@ export const AGENT_IMAGE_PREFIX = '/api/images/'
 
 /** A same-origin `/api/images/…` path with no traversal or scheme tricks. */
 export function isAllowedAgentImage(src: unknown): boolean {
-  return typeof src === 'string'
-    && src.startsWith(AGENT_IMAGE_PREFIX)
-    && !src.includes('..')
-    && !src.includes('\\')
-    && !src.includes('//')
+  if (typeof src !== 'string') return false
+  const ok = (p: string) => p.startsWith(AGENT_IMAGE_PREFIX) && !p.includes('..') && !p.includes('\\') && !p.includes('//')
+  // Decoded too (cycle 88 M4): the browser normalizes `%2e%2e` to `..` before requesting.
+  try { return ok(src) && ok(decodeURIComponent(src)) } catch { return false }
 }
 
 const TEXT_ALIGN = /^text-align:\s*(?:left|right|center);?$/

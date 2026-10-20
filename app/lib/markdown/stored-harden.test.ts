@@ -247,7 +247,7 @@ describe('hardenStoredHtml (clipboard rich HTML) — real DOMPurify + HTML parse
 describe('isAllowedStoredImage / isSafeHref / hardenMdcBody', () => {
   const o = { origin: ORIGIN }
   it.each(['/api/images/x/raw', '/api/i/slug', `${ORIGIN}/api/i/slug`, 'data:image/png;base64,AAAA', `blob:${ORIGIN}/uuid`])('allows image %s', s => expect(isAllowedStoredImage(s, o)).toBe(true))
-  it.each([`${EVIL}/x.png`, '//evil.example/x', '/api/images/../../x', '/api/images//evil.example', '/x.png', 'data:image/svg+xml,<svg/>', 'data:text/html,x', `${EVIL}/api/i/x`, 'blob:https://evil.example/u', undefined])('refuses image %s', s => expect(isAllowedStoredImage(s, o)).toBe(false))
+  it.each([`${EVIL}/x.png`, '//evil.example/x', '/api/images/../../x', '/api/images/%2e%2e/%2e%2e/api/health', '/api/images/.%2E/x', '/api/i/%2E%2E%2Fx', '/api/images/%2f%2fevil.example/x', '/api/images/%5c..%5cx', '/api/images/%zz', '/api/images//evil.example', '/x.png', 'data:image/svg+xml,<svg/>', 'data:text/html,x', `${EVIL}/api/i/x`, 'blob:https://evil.example/u', undefined])('refuses image %s', s => expect(isAllowedStoredImage(s, o)).toBe(false))
   it.each(['https://x', 'http://x', 'mailto:a@b', '#frag', '/documents', './a', 'page'])('allows href %s', h2 => expect(isSafeHref(h2)).toBe(true))
   it.each(['javascript:alert(1)', ' JavaScript:x', 'data:text/html,x', 'vbscript:x', 'java\tscript:x'])('refuses href %s', h2 => expect(isSafeHref(h2)).toBe(false))
   it.each(['i-lucide-house', 'i-simple-icons-github', 'lucide:star'])('local icon %s', n => expect(isLocalIcon(n)).toBe(true))

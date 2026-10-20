@@ -98,7 +98,7 @@ describe('agent markdown class allowlist (cycle 88 I2)', () => {
 
 describe('isAllowedAgentImage / sanitizeAgentNodes', () => {
   it.each(['/api/images/x/raw', '/api/images/abc'])('allows %s', s => expect(isAllowedAgentImage(s)).toBe(true))
-  it.each(['https://evil.example/x', '//evil.example/x', '/api/images/../../api/health', '/api/images//evil.example', '/x', 'data:image/png;base64,x', undefined])
+  it.each(['https://evil.example/x', '//evil.example/x', '/api/images/../../api/health', '/api/images/%2e%2e/%2e%2e/api/health', '/api/images/%2F%2Fevil.example', '/api/images//evil.example', '/x', 'data:image/png;base64,x', undefined])
   ('refuses %s', s => expect(isAllowedAgentImage(s)).toBe(false))
   it('drops style/link content, unwraps div, strips non-allowlisted attributes', () => {
     expect(sanitizeAgentNodes([
