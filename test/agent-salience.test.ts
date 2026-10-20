@@ -10,7 +10,7 @@ const mem = (id: string, over: Partial<MemoryDTO> = {}): MemoryDTO => ({
   reviewedAt: '2026-09-01T00:00:00.000Z', sourceDate: '2026-09-20T00:00:00.000Z',
   createdAt: '2026-09-20T00:00:00.000Z', updatedAt: '2026-09-20T00:00:00.000Z',
   relevance: 0.5, ...over
-})
+} as MemoryDTO)
 
 const ctx = (over: Partial<Parameters<typeof extractFeatures>[1]> = {}) =>
   ({ now: NOW, contradictedIds: new Set<string>(), ...over })

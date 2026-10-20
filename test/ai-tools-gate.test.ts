@@ -6,7 +6,7 @@ import { z } from 'zod'
 
 function dangerTool(): AgentTool {
   return {
-    name: 'exec', description: 'x', kind: 'destructive', dangerous: true,
+    name: 'exec', toolset: 'core', description: 'x', kind: 'destructive', dangerous: true,
     schema: { command: z.string() },
     describeApproval: (a) => ({ tool: 'exec', command: a.command as string, proposedPattern: 'echo *' }),
     handler: async (a) => ({ result: { ran: a.command }, summary: 'ran' })
@@ -14,7 +14,7 @@ function dangerTool(): AgentTool {
 }
 const exec = (set: ReturnType<typeof buildAiTools>, args: unknown) =>
   // AI SDK tool exposes execute(input, ctx?) — call it directly for the test.
-  (set.exec as { execute: (i: unknown) => Promise<unknown> }).execute(args)
+  (set.exec as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(args)
 
 describe('buildAiTools dangerous-tool gate', () => {
   it('runs the handler when approval is granted', async () => {
@@ -67,10 +67,10 @@ describe('buildAiTools dangerous-tool gate', () => {
     expect(res).toEqual({ denied: true })
   })
   it('does not gate a non-dangerous tool', async () => {
-    const t: AgentTool = { name: 'ping', description: 'x', kind: 'read', schema: {}, handler: async () => ({ result: 'pong', summary: 'p' }) }
+    const t: AgentTool = { name: 'ping', toolset: 'core', description: 'x', kind: 'read', schema: {}, handler: async () => ({ result: 'pong', summary: 'p' }) }
     const requestApproval = vi.fn()
     const set = buildAiTools([t], { signal: new AbortController().signal, onEvent: () => {}, requestApproval })
-    const res = await (set.ping as { execute: (i: unknown) => Promise<unknown> }).execute({})
+    const res = await (set.ping as unknown as { execute: (i: unknown) => Promise<unknown> }).execute({})
     expect(requestApproval).not.toHaveBeenCalled()
     expect(res).toBe('pong')
   })

@@ -10,7 +10,19 @@ const Body = z.object({
 })
 export default defineEventHandler(async (event) => {
   const body = Body.parse(await readBody(event))
-  const doc = await createDoc(body)
+  let doc
+  try {
+    doc = await createDoc(body)
+  } catch (err) {
+    // documents_path_live_uidx: a live document already owns this path. Surface a 409, not a 500.
+    const e = err as { code?: string, constraint?: string, cause?: { code?: string, constraint?: string } }
+    const code = e?.code ?? e?.cause?.code
+    const constraint = e?.constraint ?? e?.cause?.constraint
+    if (code === '23505' && constraint === 'documents_path_live_uidx') {
+      throw createError({ statusCode: 409, statusMessage: 'Conflict', message: `A document already exists at ${body.path}` })
+    }
+    throw err
+  }
   publishChange({ resource: 'document', action: 'created', id: doc.id })
   return doc
 })

@@ -29,6 +29,7 @@ afterAll(async () => {
 let calls = 0
 const tools: AgentTool[] = [{
   name: 'edit_task',
+  toolset: 'core',
   description: '',
   kind: 'destructive',
   schema: { id: z.string(), status: z.string() },
@@ -79,7 +80,7 @@ describe('agent-action review', () => {
 
   it('refuses to replay a dangerous tool even if one was somehow stored', async () => {
     const r = await replayAgentAction({ tool: 'exec', args: { command: 'ls' } }, {
-      tools: [{ name: 'exec', description: '', kind: 'destructive', dangerous: true, schema: {}, handler: async () => ({ result: 1, summary: '' }) }]
+      tools: [{ name: 'exec', toolset: 'core', description: '', kind: 'destructive', dangerous: true, schema: {}, handler: async () => ({ result: 1, summary: '' }) }]
     })
     expect(r).toEqual({ ok: false, error: 'exec is not replayable' })
   })
@@ -104,6 +105,7 @@ describe('agent-action review', () => {
   it('registers an undo token when the replayed tool returns one', async () => {
     const undoTools: AgentTool[] = [{
       name: 'edit_task',
+      toolset: 'core',
       description: '',
       kind: 'destructive',
       schema: { id: z.string(), status: z.string() },

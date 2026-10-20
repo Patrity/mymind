@@ -69,7 +69,7 @@ describe('jevCheck', () => {
     const ask = answering({ unrelated: 0.9 })
     const v = await jevCheck({ ...skill, kind: 'job.disable', target: 'heartbeat', content: undefined }, { ask, cfg })
     expect(v !== 'unavailable' && v.risky).toBe(true)
-    expect(Object.keys(ask.mock.calls[0]![1] as object)).toEqual(['unrelated'])
+    expect(Object.keys((ask.mock.calls[0] as any[])[1] as object)).toEqual(['unrelated'])
     expect((ask.mock.calls[0] as unknown as [string])[0]).toBe('job.disable\n\nheartbeat\n\nTony corrected it\n\nalways file receipts')
   })
 })

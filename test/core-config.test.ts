@@ -51,7 +51,7 @@ describe('fromRuntimeConfig', () => {
   })
 
   it('env-backed fields come from the RUNTIME env, never from runtimeConfig; dev from the host', () => {
-    const rc = { ...sentinelRuntimeConfig(), busNs: 'baked-ns' }
+    const rc = { ...sentinelRuntimeConfig(), busNs: 'baked-ns' } as Parameters<typeof fromRuntimeConfig>[0]
     const cfg = fromRuntimeConfig(rc, { env: { MYMIND_BUS_NS: 'live-ns' }, dev: true })
     expect(cfg.busNs).toBe('live-ns')
     expect(cfg.dev).toBe(true)

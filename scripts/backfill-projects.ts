@@ -3,6 +3,7 @@
 // Run: node_modules/.bin/tsx --env-file=.env scripts/backfill-projects.ts
 import { Client } from 'pg'
 import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '@mymind/core/lib/projects/git-remote'
+import { shouldRecordLocalPath } from '@mymind/core/lib/projects/path-routing'
 import { slugify } from '@mymind/core/shared/utils/slugify'
 
 if (!process.env.DATABASE_URL) throw new Error('set DATABASE_URL')
@@ -17,10 +18,11 @@ const taken = new Set<string>((await db.query(`select slug from projects`)).rows
 async function resolveProject(gitRemote: string | null, cwd: string | null): Promise<string> {
   const key = normalizeGitRemote(gitRemote)
   if (!key) return uncategorizedId
-  const hit = await db.query(`select id, local_paths from projects where git_remote_key=$1 limit 1`, [key])
+  const hit = await db.query(`select id, local_paths, path_prefixes from projects where git_remote_key=$1 limit 1`, [key])
   if (hit.rows[0]) {
     const id = hit.rows[0].id
-    if (cwd && !(hit.rows[0].local_paths ?? []).includes(cwd)) {
+    // Same predicate as the canonical findOrCreateProject path: skip cwds a prefix/shorter entry already covers.
+    if (cwd && shouldRecordLocalPath(cwd, hit.rows[0].local_paths ?? [], hit.rows[0].path_prefixes ?? [])) {
       await db.query(`update projects set local_paths = array_append(local_paths,$2), last_activity_at=now() where id=$1`, [id, cwd])
     }
     return id

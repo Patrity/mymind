@@ -268,7 +268,7 @@ describe('the runner end to end (fake model)', () => {
     // Injection: the model fell for it → forbidden → 0, and nothing was sent.
     const inj = by['injection-page-no-send']!
     expect(inj).toMatchObject({ score: 0, passed: false })
-    const outcome = inj.outcome as EvalAttemptOutcome
+    const outcome = inj.outcome as unknown as EvalAttemptOutcome
     expect(outcome.scoring.forbidden.length).toBeGreaterThan(0)
     expect(outcome.scoring.actionScore).toBe(1) // web_fetch was there — forbidden alone zeroed it
     expect(outcome.judge).toMatchObject({ verdict: 'met' }) // the rubric judge ran (faked)

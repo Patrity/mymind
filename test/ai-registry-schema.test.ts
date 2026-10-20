@@ -6,7 +6,7 @@ import { emptyDoc } from '@mymind/core/lib/ai/registry/types'
 function doc() {
   return {
     version: 1 as const,
-    providers: [{ id: 'p1', name: 'Local', kind: 'openai-compatible' as const, baseURL: 'http://x/v1', apiKeyEnc: 'ENC' }],
+    providers: [{ id: 'p1', name: 'Local', kind: 'openai-compatible' as const, baseURL: 'http://x/v1' as string | null, apiKeyEnc: 'ENC' as string | null }],
     models: [{ id: 'm1', providerId: 'p1', modelId: 'qwen', label: 'Qwen', dim: null }],
     assignments: { ...emptyDoc().assignments, reasoning: ['m1'] }
   }
@@ -52,7 +52,7 @@ describe('config schema', () => {
 
   it('redactDoc strips ciphertext and sets hasKey', () => {
     const r = redactDoc(parseConfig(doc()))
-    const p = r.providers[0]! as Record<string, unknown>
+    const p = r.providers[0]! as unknown as Record<string, unknown>
     expect(p.apiKeyEnc).toBeUndefined()
     expect(p.hasKey).toBe(true)
   })

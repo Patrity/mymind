@@ -10,7 +10,7 @@
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "lint": "eslint .",
-    "typecheck": "nuxt typecheck && tsc -p packages/core --noEmit && tsc -p apps/worker --noEmit",
+    "typecheck": "nuxt typecheck && tsc -p tsconfig.test.json && tsc -p packages/core --noEmit && tsc -p apps/worker --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:db": "vitest run --config vitest.db.config.ts",

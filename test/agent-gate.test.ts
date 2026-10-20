@@ -29,14 +29,14 @@ describe('headless gate', () => {
   })
   it('a proposed tool does not run its handler and returns the proposal receipt', async () => {
     let ran = false
-    const fake: AgentTool = { name: 'edit_task', description: '', schema: {}, kind: 'destructive', handler: async () => { ran = true; return { result: 1, summary: '' } } }
+    const fake: AgentTool = { name: 'edit_task', toolset: 'core', description: '', schema: {}, kind: 'destructive', handler: async () => { ran = true; return { result: 1, summary: '' } } }
     const [gated] = headlessTools([fake], { id: 'run-1', conversationId: 'c-1' }, async (p) => { expect(p).toMatchObject({ runId: 'run-1', conversationId: 'c-1', tool: 'edit_task', args: { id: 't' } }); return 'rev-1' })
     const out = await gated!.handler({ id: 't' }, { signal: new AbortController().signal })
     expect(ran).toBe(false)
     expect(out.result).toEqual({ proposed: true, reviewId: 'rev-1', note: "Queued for Tony's approval in /review." })
   })
   it('an unknown create-kind tool throws rather than defaulting to run', () => {
-    const t: AgentTool = { name: 'brand_new_tool', description: '', schema: {}, kind: 'create', handler: async () => ({ result: 1, summary: '' }) }
+    const t: AgentTool = { name: 'brand_new_tool', toolset: 'core', description: '', schema: {}, kind: 'create', handler: async () => ({ result: 1, summary: '' }) }
     expect(() => classifyForHeadless(t)).toThrow(/unclassified/)
   })
 })

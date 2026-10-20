@@ -341,7 +341,7 @@ describe('Stop always beats a late 👍 (reliability Task 2)', () => {
   function gatedExec(run: string, signal: AbortSignal) {
     const ran: string[] = []
     const t: AgentTool = {
-      name: 'fake_exec', description: 'test', kind: 'write', dangerous: true,
+      name: 'fake_exec', toolset: 'core', description: 'test', kind: 'destructive', dangerous: true,
       schema: { command: z.string() },
       describeApproval: () => REQ,
       handler: async (input) => { ran.push(String(input.command)); return { result: { ok: true }, summary: 'ran' } }

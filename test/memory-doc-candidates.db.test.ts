@@ -122,7 +122,7 @@ describe('fileDocCandidate', () => {
     )
     expect(r).not.toBeNull()
     try {
-      const doc = await getDoc(r!.docId)
+      const doc = await getDoc((r as { docId: string }).docId)
       expect(doc).not.toBeNull()
       expect(doc!.path.startsWith('/input/')).toBe(true)
       expect(doc!.content).toBe(
@@ -131,7 +131,7 @@ describe('fileDocCandidate', () => {
       // Titled by the text's first line, not the (often generic) hint.
       expect(doc!.title).toBe(`ingest skips poisoned rows one at a time (${t})`)
     } finally {
-      await deleteDoc(r!.docId)
+      await deleteDoc((r as { docId: string }).docId)
     }
   })
 
@@ -145,7 +145,7 @@ describe('fileDocCandidate', () => {
     )
     expect(r).not.toBeNull()
     try {
-      const doc = await getDoc(r!.docId)
+      const doc = await getDoc((r as { docId: string }).docId)
       expect(doc!.content).toBe(
         `a detail worth documenting (${t})\n\n— From memory extraction (project: (no project); suggested doc: none)`
       )
@@ -153,7 +153,7 @@ describe('fileDocCandidate', () => {
       // quick_capture's untitled-capture path (server/lib/agent/tools.ts).
       expect(doc!.path).toMatch(/^\/input\/[\w-]+\.md$/)
     } finally {
-      await deleteDoc(r!.docId)
+      await deleteDoc((r as { docId: string }).docId)
     }
   })
 
@@ -167,14 +167,14 @@ describe('fileDocCandidate', () => {
     try {
       expect(a).not.toBeNull()
       expect(b).not.toBeNull()
-      const [docA, docB] = await Promise.all([getDoc(a!.docId), getDoc(b!.docId)])
+      const [docA, docB] = await Promise.all([getDoc((a as { docId: string }).docId), getDoc((b as { docId: string }).docId)])
       expect(docA!.path).toBe(`/input/${hint.replace(' ', '-')}.md`)
       expect(docB!.path).toMatch(new RegExp(`^/input/${hint.replace(' ', '-')}-[\\w-]{6}\\.md$`))
       expect(docB!.content.startsWith('second detail')).toBe(true)
-      expect(triageCapture).toHaveBeenCalledWith(b!.docId)
+      expect(triageCapture).toHaveBeenCalledWith((b as { docId: string }).docId)
     } finally {
-      if (a) await deleteDoc(a.docId)
-      if (b) await deleteDoc(b.docId)
+      if (a) await deleteDoc((a as { docId: string }).docId)
+      if (b) await deleteDoc((b as { docId: string }).docId)
     }
   })
 
@@ -188,9 +188,9 @@ describe('fileDocCandidate', () => {
       // triageGate.real is false (default) — the stubbed triageCapture above resolves
       // immediately without touching classify() or claiming the document.
       expect(classify).not.toHaveBeenCalled()
-      expect(triageCapture).toHaveBeenCalledWith(r!.docId)
+      expect(triageCapture).toHaveBeenCalledWith((r as { docId: string }).docId)
     } finally {
-      await deleteDoc(r!.docId)
+      await deleteDoc((r as { docId: string }).docId)
     }
   })
 })
