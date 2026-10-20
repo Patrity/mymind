@@ -9,6 +9,8 @@ import type { DocumentSummaryDTO } from '../shared/types/summaries'
 import { collapseChunksToHits } from '../lib/chunking/collapse'
 import { embedOne } from '../lib/ai/embeddings'
 import { getSearchConfig } from '../lib/search/config'
+import { withHnswSession } from '../lib/search/hnsw'
+import { runLexicalLane, ftsMatch, ftsRank } from '../lib/search/lexical'
 import { rrfFuse } from '../lib/ai/rrf'
 import { projectFromPath, PROJECTS_ROOT } from '../lib/projects/doc-path'
 import { matchProjectByLabel } from './projects'
@@ -307,38 +309,48 @@ async function searchDocIds(q: string, opts: { project?: string } = {}): Promise
   // Optional project scoping — filters both lanes by the denormalized project slug.
   const projectFilter = opts.project ? eq(documents.project, opts.project) : undefined
 
-  // Lane 1: trigram — ILIKE filter + similarity ordering
-  const trigramRows = await db.select({ id: documents.id }).from(documents)
-    .where(and(live(), notSkill(), projectFilter, or(ilike(documents.title, `%${q}%`), ilike(documents.content, `%${q}%`))))
-    .orderBy(sql`similarity(coalesce(${documents.title},'') || ' ' || ${documents.content}, ${q}) desc`)
-    .limit(50)
-  const trigramIds = trigramRows.map(r => r.id)
+  const cfg = await getSearchConfig()
 
-  // Lane 2: vector — cosine distance via HNSW index, with fallback if rig is unavailable
+  // Lane 1: lexical — documents.tsv FTS (title + content), ILIKE + trigram as the fallback
+  const tsv = sql`${documents.tsv}`
+  const { ids: lexicalIds } = await runLexicalLane({
+    q, enabled: cfg.lexicalFts,
+    fts: async () => (await db.select({ id: documents.id }).from(documents)
+      .where(and(live(), notSkill(), projectFilter, ftsMatch(tsv, q)))
+      .orderBy(ftsRank(tsv, q))
+      .limit(50)).map(r => r.id),
+    fallback: async () => (await db.select({ id: documents.id }).from(documents)
+      .where(and(live(), notSkill(), projectFilter, or(ilike(documents.title, `%${q}%`), ilike(documents.content, `%${q}%`))))
+      .orderBy(sql`similarity(coalesce(${documents.title},'') || ' ' || ${documents.content}, ${q}) desc`)
+      .limit(50)).map(r => r.id)
+  })
+
+  // Lane 2: vector — cosine distance via HNSW index, with fallback if rig is unavailable.
+  // ef_search ≥ 200 for this LIMIT 100 lane; iterative scan when project-scoped.
   let vectorIds: string[] = []
   try {
-    const { cosineFloor } = await getSearchConfig()
     const qv = await embedOne(q)
     const lit = `[${qv.join(',')}]`
-    const chunkRows = await db.select({
-      sourceId: chunks.sourceId,
-      distance: sql<number>`${chunks.embedding} <=> ${lit}::halfvec`
-    })
-      .from(chunks)
-      .innerJoin(documents, eq(chunks.sourceId, documents.id))
-      .where(and(eq(chunks.sourceType, 'document'), live(), notSkill(), projectFilter))
-      .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
-      .limit(100)
+    const chunkRows = await withHnswSession(db, { limit: 100, filtered: !!projectFilter, efSearchMin: cfg.hnswEfSearchMin, iterativeScan: cfg.hnswIterativeScan }, tx =>
+      tx.select({
+        sourceId: chunks.sourceId,
+        distance: sql<number>`${chunks.embedding} <=> ${lit}::halfvec`
+      })
+        .from(chunks)
+        .innerJoin(documents, eq(chunks.sourceId, documents.id))
+        .where(and(eq(chunks.sourceType, 'document'), live(), notSkill(), projectFilter))
+        .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
+        .limit(100))
     vectorIds = collapseChunksToHits(chunkRows)
-      .filter(h => h.distance <= cosineFloor)
+      .filter(h => h.distance <= cfg.cosineFloor)
       .map(h => h.sourceId)
       .slice(0, 50)
   } catch (err) {
-    console.warn('[searchDocs] vector lane failed, falling back to trigram-only:', err)
+    console.warn('[searchDocs] vector lane failed, falling back to lexical-only:', err)
   }
 
   // Fuse the two ranked lanes with RRF
-  return rrfFuse([trigramIds, vectorIds]).slice(0, 50)
+  return rrfFuse([lexicalIds, vectorIds]).slice(0, 50)
 }
 
 export async function searchDocs(q: string, opts: { project?: string } = {}): Promise<DocumentDTO[]> {
@@ -394,22 +406,77 @@ export async function getByPublicSlug(slug: string): Promise<DocumentDTO | null>
   return r ? toDTO(r) : null
 }
 
+/**
+ * Passage search: a lexical lane over `chunks.tsv` (heading_path + context + content) fused by RRF
+ * with the vector lane. Until 2026-10 this was vector-only, so an exact identifier inside a chunk
+ * was found only if the embedding happened to carry it. Each lane keeps `limit` candidates and the
+ * fused list is cut to `limit`, so the result count is unchanged; a vector-lane failure (rig down)
+ * now degrades to lexical-only instead of throwing.
+ */
 export async function searchPassages(q: string, opts: { project?: string, limit?: number } = {}): Promise<ChunkHit[]> {
   if (!q.trim()) return []
   const db = useDb()
+  const limit = opts.limit ?? 10
   const projectFilter = opts.project ? eq(documents.project, opts.project) : undefined
-  const qv = await embedOne(q)
-  const lit = `[${qv.join(',')}]`
+  const base = and(eq(chunks.sourceType, 'document'), live(), notSkill(), projectFilter)
+  const cfg = await getSearchConfig()
+
+  // Lane 1: lexical
+  const tsv = sql`${chunks.tsv}`
+  const { ids: lexicalIds } = await runLexicalLane({
+    q, enabled: cfg.lexicalFts,
+    fts: async () => (await db.select({ id: chunks.id }).from(chunks)
+      .innerJoin(documents, eq(chunks.sourceId, documents.id))
+      .where(and(base, ftsMatch(tsv, q)))
+      .orderBy(ftsRank(tsv, q))
+      .limit(limit)).map(r => r.id),
+    fallback: async () => (await db.select({ id: chunks.id }).from(chunks)
+      .innerJoin(documents, eq(chunks.sourceId, documents.id))
+      .where(and(base, or(ilike(chunks.content, `%${q}%`), ilike(chunks.context, `%${q}%`), ilike(chunks.headingPath, `%${q}%`))))
+      .orderBy(sql`similarity(coalesce(${chunks.context},'') || ' ' || ${chunks.content}, ${q}) desc`)
+      .limit(limit)).map(r => r.id)
+  })
+
+  // Lane 2: vector
+  let vectorIds: string[] = []
+  let lit: string | null = null
+  try {
+    const qv = await embedOne(q)
+    const vec = `[${qv.join(',')}]`
+    const rows = await withHnswSession(db, { limit, filtered: !!projectFilter, efSearchMin: cfg.hnswEfSearchMin, iterativeScan: cfg.hnswIterativeScan }, tx =>
+      tx.select({ id: chunks.id, distance: sql<number>`${chunks.embedding} <=> ${vec}::halfvec` })
+        .from(chunks)
+        .innerJoin(documents, eq(chunks.sourceId, documents.id))
+        .where(base)
+        .orderBy(sql`${chunks.embedding} <=> ${vec}::halfvec`)
+        .limit(limit))
+    vectorIds = rows.filter(r => r.distance <= cfg.cosineFloor).map(r => r.id)
+    lit = vec
+  } catch (err) {
+    console.warn('[searchPassages] vector lane failed, falling back to lexical-only:', err)
+  }
+
+  const fusedIds = rrfFuse([lexicalIds, vectorIds]).slice(0, limit)
+  if (!fusedIds.length) return []
+
+  // Hydrate in fused order. `distance` is the real cosine distance when we have a query vector
+  // (also for lexical-only hits), else 1 — the "orthogonal" ceiling, so callers that sort or
+  // threshold on it keep working.
   const rows = await db.select({
+    id: chunks.id,
     sourceType: chunks.sourceType, sourceId: chunks.sourceId, ord: chunks.ord,
     content: chunks.content, headingPath: chunks.headingPath, context: chunks.context,
     docTitle: documents.title, docPath: documents.path,
-    distance: sql<number>`${chunks.embedding} <=> ${lit}::halfvec`
+    distance: lit ? sql<number>`coalesce(${chunks.embedding} <=> ${lit}::halfvec, 1)` : sql<number>`1::float8`
   })
     .from(chunks)
     .innerJoin(documents, eq(chunks.sourceId, documents.id))
-    .where(and(eq(chunks.sourceType, 'document'), live(), notSkill(), projectFilter))
-    .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
-    .limit(opts.limit ?? 10)
-  return rows as ChunkHit[]
+    .where(inArray(chunks.id, fusedIds))
+  const byId = new Map(rows.map(r => [r.id, r]))
+  return fusedIds.flatMap((id) => {
+    const r = byId.get(id)
+    if (!r) return []
+    const { id: _id, ...hit } = r
+    return [{ ...hit, distance: Number(hit.distance) } as ChunkHit]
+  })
 }

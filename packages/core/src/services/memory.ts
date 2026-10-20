@@ -7,6 +7,8 @@ import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
 import { rerank } from '../lib/ai/rerank'
 import { getSearchConfig } from '../lib/search/config'
+import { withHnswSession } from '../lib/search/hnsw'
+import { runLexicalLane, ftsMatch, ftsRank } from '../lib/search/lexical'
 import { resolveChain } from '../lib/ai/registry/resolve'
 import { dedupDecision, type DedupCandidate } from './memory-dedup'
 import { publishChange } from '../utils/live-bus'
@@ -501,34 +503,47 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
 
   const baseWhere = and(...baseConditions)
 
-  // Lane 1: trigram — ILIKE filter + similarity ordering
-  const trigramRows = await db.select({ id: memories.id }).from(memories)
-    .where(and(baseWhere, or(ilike(memories.content, `%${q}%`))))
-    .orderBy(sql`similarity(${memories.content}, ${q}) desc`)
-    .limit(50)
-  const trigramIds = trigramRows.map(r => r.id)
+  const cfg = await getSearchConfig()
 
-  // Lane 2: vector — cosine distance via HNSW index, with fallback
+  // Lane 1: lexical — `tsv` FTS (websearch_to_tsquery + ts_rank_cd); the old ILIKE + trigram
+  // query is the fallback for identifier-like queries and empty tsquery results (lexical.ts).
+  const tsv = sql`${memories.tsv}`
+  const { ids: lexicalIds } = await runLexicalLane({
+    q, enabled: cfg.lexicalFts,
+    fts: async () => (await db.select({ id: memories.id }).from(memories)
+      .where(and(baseWhere, ftsMatch(tsv, q)))
+      .orderBy(ftsRank(tsv, q))
+      .limit(50)).map(r => r.id),
+    fallback: async () => (await db.select({ id: memories.id }).from(memories)
+      .where(and(baseWhere, or(ilike(memories.content, `%${q}%`))))
+      .orderBy(sql`similarity(${memories.content}, ${q}) desc`)
+      .limit(50)).map(r => r.id)
+  })
+
+  // Lane 2: vector — cosine distance via HNSW index, with fallback. Runs in its own transaction
+  // with hnsw.ef_search ≥ 2×LIMIT (pgvector's default 40 capped a LIMIT 50 lane at ~40 rows) and
+  // iterative scan when the caller filtered by scope/project/tags/review/score.
   let vectorIds: string[] = []
   try {
-    const { cosineFloor } = await getSearchConfig()
     const qv = await embedOne(q)
     const lit = `[${qv.join(',')}]`
-    const vecRows = await db.select({
-      id: memories.id,
-      distance: sql<number>`${memories.embedding} <=> ${lit}::halfvec`
-    })
-      .from(memories)
-      .where(and(baseWhere, isNotNull(memories.embedding)))
-      .orderBy(sql`${memories.embedding} <=> ${lit}::halfvec`)
-      .limit(50)
-    vectorIds = vecRows.filter(r => r.distance <= cosineFloor).map(r => r.id)
+    const filtered = baseConditions.length > 1 // anything beyond live()
+    const vecRows = await withHnswSession(db, { limit: 50, filtered, efSearchMin: cfg.hnswEfSearchMin, iterativeScan: cfg.hnswIterativeScan }, tx =>
+      tx.select({
+        id: memories.id,
+        distance: sql<number>`${memories.embedding} <=> ${lit}::halfvec`
+      })
+        .from(memories)
+        .where(and(baseWhere, isNotNull(memories.embedding)))
+        .orderBy(sql`${memories.embedding} <=> ${lit}::halfvec`)
+        .limit(50))
+    vectorIds = vecRows.filter(r => r.distance <= cfg.cosineFloor).map(r => r.id)
   } catch (err) {
-    console.warn('[searchMemories] vector lane failed, falling back to trigram-only:', err)
+    console.warn('[searchMemories] vector lane failed, falling back to lexical-only:', err)
   }
 
   // Fuse with RRF
-  const fusedIds = rrfFuse([trigramIds, vectorIds]).slice(0, limit)
+  const fusedIds = rrfFuse([lexicalIds, vectorIds]).slice(0, limit)
   if (fusedIds.length === 0) return []
 
   // Hydrate and re-order

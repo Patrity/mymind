@@ -101,7 +101,7 @@ jobs:
     needs: test
     if: github.ref == 'refs/heads/master'
     runs-on: [self-hosted, proxmox]
-    timeout-minutes: 40
+    timeout-minutes: 60  # 0091 rewrites messages on two DBs (LXC + .80): minutes each
     env:
       # Cycle 86: `lxc` = the old runtime (web + worker as systemd units in LXC 114, its own Docker
       # Postgres); `macmini` = LXC 114 only BUILDS, the release runs on the Mac mini (launchd) against the

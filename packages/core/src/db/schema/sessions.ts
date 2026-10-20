@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { pgTable, uuid, text, integer, jsonb, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core'
 import { halfvec } from '../types/halfvec'
+import { tsvector } from '../types/tsvector'
 
 export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
@@ -25,11 +26,15 @@ export const sessions = pgTable('sessions', {
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
   lastActive: timestamp('last_active', { withTimezone: true }).notNull().defaultNow(),
   summaryEmbedding: halfvec(2560, 'summary_embedding'),
+  /** Lexical-lane source (migration 0090): maintained by Postgres, GIN-indexed, queried with
+   *  websearch_to_tsquery — see lib/search/lexical.ts. */
+  tsv: tsvector('tsv').generatedAlwaysAs(sql`to_tsvector('english', coalesce(title, '') || ' ' || coalesce(summary, ''))`),
   lastEmbeddedAt: timestamp('last_embedded_at', { withTimezone: true }),
   metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`)
 }, (t) => [
   uniqueIndex('sessions_source_external_uidx').on(t.source, t.externalId),
   index('sessions_machine_idx').on(t.machineId),
+  index('sessions_tsv_gin').using('gin', t.tsv),
   index('sessions_project_id_idx').on(t.projectId)
 ])
 
