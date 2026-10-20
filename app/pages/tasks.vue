@@ -533,7 +533,7 @@ const filterProjectItems = computed(() => [
             :items="filterPriorityItems"
             value-key="value"
             size="xs"
-            class="w-36"
+            class="w-24 sm:w-36"
           />
           <!-- Project filter -->
           <USelectMenu
@@ -541,15 +541,18 @@ const filterProjectItems = computed(() => [
             :items="filterProjectItems"
             value-key="value"
             size="xs"
-            class="w-36"
+            class="w-24 sm:w-36"
           />
+          <!-- Icon-only below `sm` so the header fits a 375px phone -->
           <UButton
             icon="i-lucide-plus"
             size="xs"
             color="primary"
-            label="New task"
+            aria-label="New task"
             @click="openNewModal"
-          />
+          >
+            <span class="hidden sm:inline">New task</span>
+          </UButton>
         </template>
       </UDashboardNavbar>
     </template>
