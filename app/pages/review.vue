@@ -443,7 +443,9 @@ async function undoDiscard(undoToken: string) {
     </template>
 
     <template #body>
-      <div class="p-4 space-y-4 max-w-3xl mx-auto">
+      <!-- w-full min-w-0: the body is a flex column, so `mx-auto` alone shrink-wraps this to its
+           widest child and wide content (captured text, paths) overflowed past the viewport. -->
+      <div class="p-4 space-y-4 w-full min-w-0 max-w-3xl mx-auto">
         <!-- Loading -->
         <div
           v-if="isPending"

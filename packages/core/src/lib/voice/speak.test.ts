@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createSpeaker, pcmToWav, collectPcm, type SpeakChunk } from './speak'
+import { createSpeaker, appSpeakDeps, pcmToWav, collectPcm, type SpeakChunk } from './speak'
 import { createBreezeQueue } from './breeze-queue'
-import { BreezeError } from './breeze'
+import { BreezeError, breezeSpeak } from './breeze'
+import { audiocppSpeak } from './audiocpp'
+import type { ResolvedModel } from '../ai/registry/types'
 import type { VoicePresetDTO } from '../../shared/types/voice-presets'
 
 const design: VoicePresetDTO = {
@@ -261,6 +263,34 @@ describe('createSpeaker — cancellation drains, never aborts', () => {
     expect(calls).toBe(5)
   })
 
+  // D3 B1: the dial itself must be abortable — the adapter decides what that means (audio.cpp
+  // cancels the fetch; Breeze ignores it), but createSpeaker has to hand the signal over.
+  it('passes the caller\'s signal to the adapter as the dial options', async () => {
+    const speakFn = fakeSpeak([[1]])
+    const speaker = createSpeaker({ baseURL: async () => 'http://rig:8885', queue: createBreezeQueue(), speakFn: speakFn as never })
+    const ac = new AbortController()
+    await drain(speaker('hi', preset, 'agent', ac.signal))
+    expect(speakFn.mock.calls[0]![2]).toEqual({ signal: ac.signal })
+  })
+
+  it('a barge-in while the adapter is still dialling settles promptly and frees the slot', async () => {
+    const queue = createBreezeQueue()
+    // An adapter that honours the signal the way audiocppSpeak does: hangs until aborted.
+    const speakFn = vi.fn((_b: string, _r: unknown, opts?: { signal?: AbortSignal }) => new Promise<never>((_, reject) => {
+      opts?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    }))
+    const speaker = createSpeaker({ baseURL: async () => 'http://rig:8885', queue, speakFn: speakFn as never, sleep: async () => {} })
+    const ac = new AbortController()
+    const started = Date.now()
+    setTimeout(() => ac.abort(), 10)
+    await expect(drain(speaker('hi', preset, 'agent', ac.signal))).rejects.toMatchObject({ name: 'AbortError' })
+    expect(Date.now() - started).toBeLessThan(500)
+    let granted = false
+    void queue.acquire('agent').then(r => { granted = true; r() })
+    await new Promise(r => setTimeout(r, 5))
+    expect(granted).toBe(true) // the slot was released with the dial, not after a 5x busy retry
+  })
+
   it('does not retry a non-busy failure', async () => {
     let calls = 0
     const speaker = createSpeaker({
@@ -271,5 +301,74 @@ describe('createSpeaker — cancellation drains, never aborts', () => {
     })
     await expect(drain(speaker('hi', preset, 'studio'))).rejects.toMatchObject({ code: 'http' })
     expect(calls).toBe(1)
+  })
+})
+
+// ── Provider switch ────────────────────────────────────────────────────────────────────
+
+const ttsModel = (baseURL: string): ResolvedModel => ({
+  usage: 'tts', modelDefId: 'm1', providerKind: 'openai-compatible', baseURL, apiKey: null,
+  modelId: 'breeze-tts', label: 'tts', dim: null, contextWindow: null
+})
+
+describe('appSpeakDeps — which engine the app-wired speaker dials', () => {
+  // Merging must change nothing: with the switch unset the deps are exactly what production
+  // used before the audio.cpp adapter existed.
+  it('defaults to Breeze at the registry\'s tts base URL with /v1 stripped', async () => {
+    const deps = appSpeakDeps(
+      () => ({ ttsProvider: 'breeze', ttsAudiocppBaseUrl: undefined }),
+      async () => [ttsModel('http://192.168.2.25:8880/v1')])
+    expect(deps.speakFn).toBe(breezeSpeak)
+    await expect(deps.baseURL()).resolves.toBe('http://192.168.2.25:8880')
+  })
+
+  it('dials audio.cpp at the env override when the switch is flipped', async () => {
+    const deps = appSpeakDeps(
+      () => ({ ttsProvider: 'audiocpp', ttsAudiocppBaseUrl: 'http://192.168.2.25:8885/v1/' }),
+      async () => [ttsModel('http://192.168.2.25:8880/v1')])
+    expect(deps.speakFn).toBe(audiocppSpeak)
+    await expect(deps.baseURL()).resolves.toBe('http://192.168.2.25:8885')
+  })
+
+  // The override is optional: with only the provider flipped, the registry's tts assignment
+  // is the base URL — Settings → Models stays the one place a URL is edited.
+  it('falls back to the registry URL for audio.cpp when no override is set', async () => {
+    const deps = appSpeakDeps(
+      () => ({ ttsProvider: 'audiocpp', ttsAudiocppBaseUrl: undefined }),
+      async () => [ttsModel('http://192.168.2.25:8885/v1')])
+    await expect(deps.baseURL()).resolves.toBe('http://192.168.2.25:8885')
+  })
+
+  // An audio.cpp URL left in the env must not silently redirect Breeze.
+  it('ignores the audio.cpp override while the provider is breeze', async () => {
+    const deps = appSpeakDeps(
+      () => ({ ttsProvider: 'breeze', ttsAudiocppBaseUrl: 'http://192.168.2.25:8885' }),
+      async () => [ttsModel('http://192.168.2.25:8880/v1')])
+    await expect(deps.baseURL()).resolves.toBe('http://192.168.2.25:8880')
+  })
+
+  // D3 B1: `AI_TTS_AUDIOCPP_BUSY_TIMEOUT_MS` overrides the adapter's 2 s default; with it unset the
+  // adapter is used as-is (the identity assertions above still hold).
+  it('forwards a configured busy timeout to audio.cpp requests', async () => {
+    // Rest param so `.mock.calls[n]` is indexable under noUncheckedIndexedAccess (see fakeSpeak).
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response('busy', { status: 503 }))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const deps = appSpeakDeps(
+        () => ({ ttsProvider: 'audiocpp', ttsAudiocppBaseUrl: 'http://192.168.2.25:8885', ttsAudiocppBusyTimeoutMs: 5000 }),
+        async () => [])
+      await expect(deps.speakFn('http://192.168.2.25:8885', {
+        text: 'hi', instruction: null, cfgScale: 1, seed: 1, temperature: 0.9, topP: 1, topK: 50, refAudio: null, refText: null
+      })).rejects.toMatchObject({ code: 'busy' })
+      const body = JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body)) as { busy_timeout_ms: number }
+      expect(body.busy_timeout_ms).toBe(5000)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('still reports a missing tts assignment as the Settings error', async () => {
+    const deps = appSpeakDeps(() => ({ ttsProvider: 'breeze', ttsAudiocppBaseUrl: undefined }), async () => [])
+    await expect(deps.baseURL()).rejects.toThrow(/Settings/)
   })
 })

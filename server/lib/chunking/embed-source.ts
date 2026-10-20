@@ -3,8 +3,9 @@ import { and, eq } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
 import { chunks } from '@mymind/core/db/schema'
 import { embed } from '@mymind/core/lib/ai/embeddings'
-import { chunkMarkdown } from '@mymind/core/lib/chunking/chunk-markdown'
+import { chunkMarkdown, estimateTokens } from '@mymind/core/lib/chunking/chunk-markdown'
 import { contextualizeChunk } from './contextualize'
+import { buildContextWindow, shouldContextualize } from './context-window'
 import { getChunkingConfig } from './config'
 
 /**
@@ -29,10 +30,15 @@ export async function chunkAndEmbedSource(opts: {
     return 0
   }
 
-  // Contextualize sequentially (keeps the doc prefix warm for prefix-caching servers).
+  // Contextualize sequentially (keeps the doc prefix warm for prefix-caching servers). Each call
+  // sees a BOUNDED window of the document, not all of it, and a short or single-chunk document
+  // skips the model entirely — its heading path is the context, exactly as `contextual: false`.
+  const contextual = shouldContextualize(parts, estimateTokens(full), { enabled: cfg.contextual, minDocTokens: cfg.contextMinDocTokens })
+  const window = { maxTokens: cfg.contextWindowTokens, neighbours: cfg.contextNeighbours }
   const contexts: string[] = []
-  for (const p of parts) {
-    contexts.push(await contextualizeChunk({ doc: full, chunk: p.content, headingPath: p.headingPath, enabled: cfg.contextual }))
+  for (const [i, p] of parts.entries()) {
+    const doc = contextual ? buildContextWindow(full, parts, i, window) : ''
+    contexts.push(await contextualizeChunk({ doc, chunk: p.content, headingPath: p.headingPath, enabled: contextual }))
   }
 
   // Embed prefixed texts in sub-batches.

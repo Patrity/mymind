@@ -274,7 +274,7 @@ describe('outcome judge — while verifying', () => {
     expect(await waitForInFlight(10_000)).toBe(true)
     expect(out).toMatchObject({ result: { ok: false, error: expect.stringMatching(/was stopped while its outcome was being checked/) } })
     const row = (await getWorkstream(ws.id))!
-    expect(row).toMatchObject({ state: 'paused', sendBacks: 0, stateDetail: null, summary: null })
+    expect(row).toMatchObject({ state: 'paused', sendBacks: 0, stateDetail: null, summary: undefined })
     expect((await thread(origin)).some(m => m.origin === `workstream:${ws.id}` && /done/.test(m.content))).toBe(false)
   })
 
@@ -317,7 +317,7 @@ describe('outcome judge — while verifying', () => {
     await a.drive(wa.ws.conversationId, 1)
     expect(out).toMatchObject({ result: { ok: false, error: expect.stringMatching(/^Tony has a pending question in this workstream — it cannot finish until he answers/) } })
     expect(verifyCalls).toBe(0)
-    expect(await getWorkstream(wa.ws.id)).toMatchObject({ state: 'attention', attention: { kind: 'question', text: 'Which NAS budget?' }, summary: null })
+    expect(await getWorkstream(wa.ws.id)).toMatchObject({ state: 'attention', attention: { kind: 'question', text: 'Which NAS budget?' }, summary: undefined })
     // (b) the question lands WHILE the finish is being verified (met): the done write is refused.
     const g = gate()
     script = [async () => { await g.p; return V() }]
@@ -395,7 +395,7 @@ describe('outcome judge — coordinators and evidence', () => {
     const { ws } = await newWorkstream('coordinator', { toolsets: ['coordinator'] })
     const live = await childRow(ws, { goal: 'T85 child running', state: 'running' })
     await childRow(ws, { goal: 'T85 child A', state: 'done', summary: 'A: prices found', verification: { verdict: 'met', confidence: 0.9, gaps: [], nextStep: null, model: 'm', latencyMs: 1, outcome: 'finished', sendBacks: 0, at: new Date().toISOString() } })
-    await childRow(ws, { goal: 'T85 child B', state: 'failed', summary: null })
+    await childRow(ws, { goal: 'T85 child B', state: 'failed', summary: undefined })
     // Segment 1: refused (a child still going) — the verifier is never asked.
     await drive(ws.conversationId, 1)
     expect(results[0]!.result).toMatchObject({ ok: false, error: expect.stringMatching(/still going/) })

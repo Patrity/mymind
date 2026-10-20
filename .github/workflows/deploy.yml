@@ -24,6 +24,23 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Throwaway Postgres for `pnpm test:db` (the *.db.test.ts suite). Same image/major as prod
+    # (docker-compose.prod.yml: pgvector/pgvector:pg16). Service containers can't mount
+    # db/init, so the extensions are created in the "Test (DB)" step.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: mymind
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: mymind_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mymind -d mymind_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -60,6 +77,25 @@ jobs:
       # external package loads from the release dir — what CD runs on the box).
       - name: Build + stage worker release
         run: pnpm --filter worker build && node apps/worker/stage.mjs "$RUNNER_TEMP/worker-release"
+
+      # DB-backed tests (*.db.test.ts) against the service Postgres: create the extensions the schema
+      # needs (db/init/01-extensions.sql: pgcrypto, pg_trgm, ltree, vector), apply the real migrations,
+      # then run the suite. DB_TESTS_CI=1 skips the files that need Tony's populated dev DB / AI rig
+      # (list + reasons in vitest.db.config.ts). The tests call process.loadEnvFile('.env'), which throws
+      # when the file is missing, so write a minimal one (process env already wins over it). Runs LAST so
+      # this .env can't leak into `pnpm build`.
+      - name: Test (DB)
+        env:
+          DATABASE_URL: postgres://mymind:ci@127.0.0.1:5432/mymind_ci
+          DB_TESTS_CI: '1'
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/init/01-extensions.sql
+          printf 'DATABASE_URL=%s\nBETTER_AUTH_SECRET=ci-only-secret\n' "$DATABASE_URL" > .env
+          pnpm db:migrate
+          # Still a required gate for deploy. `--retry=1` absorbs a flaky test; it does NOT cover an
+          # unhandled error (vitest exits 1 on those regardless — seen once as ECONNRESET), so the
+          # whole run gets one more attempt. A real failure fails both runs and blocks the deploy.
+          pnpm test:db --retry=1 || { echo "::warning::test:db failed once; re-running the suite"; pnpm test:db --retry=1; }
 
   deploy:
     needs: test

@@ -23,7 +23,7 @@ describe('RESEND_FAKE dev stub', () => {
     vi.stubEnv('RESEND_FAKE', '1')
     await sendResendEmail(opts)
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(fetchMock.mock.calls[0]![0]).toBe('https://api.resend.com/emails')
+    expect((fetchMock.mock.calls[0] as any[])[0]).toBe('https://api.resend.com/emails')
   })
 
   it('on a dev host (coreConfig().dev), RESEND_FAKE=1 logs and never calls Resend', async () => {
@@ -34,7 +34,7 @@ describe('RESEND_FAKE dev stub', () => {
     try {
       await sendResendEmail(opts)
       expect(fetchMock).not.toHaveBeenCalled()
-      expect(log.mock.calls[0]![0]).toMatch(/^\[resend-fake\] would send to=tony@example.com/)
+      expect((log.mock.calls[0] as any[])[0]).toMatch(/^\[resend-fake\] would send to=tony@example.com/)
     } finally { spy.mockRestore(); log.mockRestore() }
   })
 })

@@ -65,7 +65,12 @@ export async function maybeSummarize(conversationId: string, opts: {
   const [conv] = await useDb().select({ summary: conversations.summary, epoch: sql<string | null>`${conversations.contextEpochAt}::text` })
     .from(conversations).where(eq(conversations.id, conversationId)).limit(1)
   if (!conv) return 'skipped'
-  const { rows } = await loadActivePath(conversationId, { sinceEpoch: true, sinceSummary: true })
+  // Cycle 88: a summary folded from ANOTHER branch is not this path's — start this path's summary
+  // fresh (prev = null, and `rows` is then the whole path, since loadActivePath only applies the
+  // summarized_through cut for a summary that applies). The old summary is overwritten by the
+  // write below, never nulled ahead of it.
+  const { rows, summaryApplies } = await loadActivePath(conversationId, { sinceEpoch: true, sinceSummary: true })
+  const prevSummary = summaryApplies ? conv.summary ?? null : null
   const msgs = rows.map(r => ({ row: r, msg: rowToAgentMessage(r) }))
   const turns = groupTurns(msgs.map(m => m.msg))
   const tokens = costTurns(turns).reduce((n, t) => n + t.tokens, 0)
@@ -88,7 +93,7 @@ export async function maybeSummarize(conversationId: string, opts: {
 
   let summary: string
   try {
-    summary = (await (opts.summarizer ?? defaultSummarizer)(conv.summary ?? null, transcript)).trim()
+    summary = (await (opts.summarizer ?? defaultSummarizer)(prevSummary, transcript)).trim()
   } catch (err) {
     console.warn('[summarize] summarizer failed — tail stays longer, next trigger retries:', err)
     return 'failed'
@@ -97,9 +102,10 @@ export async function maybeSummarize(conversationId: string, opts: {
   let vec: number[] | null = null
   try { vec = await (opts.embed ?? embedOne)(summary) } catch { /* keep null; next fold re-embeds */ }
 
-  const through = folded[folded.length - 1]!.row.createdAt
+  const last = folded[folded.length - 1]!.row
+  const through = last.createdAt
   const written = await useDb().update(conversations).set({
-    summary, summarizedThrough: through, ...(vec ? { summaryEmbedding: vec as never } : {}), updatedAt: sql`now()`
+    summary, summarizedThrough: through, summaryLeafId: last.id, ...(vec ? { summaryEmbedding: vec as never } : {}), updatedAt: sql`now()`
   }).where(and(
     eq(conversations.id, conversationId),
     sql`${conversations.contextEpochAt} is not distinct from ${conv.epoch}::timestamptz`

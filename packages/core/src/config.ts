@@ -7,6 +7,8 @@
 // speculative fields. Each field is named after the Nuxt runtimeConfig key it replaces (see
 // server/utils/core-config.ts fromRuntimeConfig, whose table test pins every source key), and is
 // typed as the old call site cast it: values pass through untouched, no coercion or defaults.
+import type { TtsProviderId } from './lib/voice/tts-provider'
+
 export interface CoreConfig {
   /** server/db/index.ts — the Postgres connection string. */
   databaseUrl: string | undefined
@@ -42,6 +44,19 @@ export interface CoreConfig {
   /** Bus namespace from `MYMIND_BUS_NS` (lib/bus/ns.ts); undefined ⇒ 'default'. The web and its
    *  worker must agree, so both read it from the runtime env (never baked at build). */
   busNs: string | undefined
+  /** TTS engine from `AI_TTS_PROVIDER` (lib/voice/tts-provider.ts); absent or unknown ⇒ 'breeze',
+   *  the engine production ran before the switch existed. Read at startup like every env-backed
+   *  field: flipping it is an env edit + restart, and rollback is the same edit in reverse. */
+  ttsProvider: TtsProviderId
+  /** `AI_TTS_AUDIOCPP_BASE_URL` — where audio.cpp listens when `ttsProvider` is 'audiocpp'.
+   *  Optional: unset ⇒ the registry's `tts` assignment is used, exactly as for Breeze. */
+  ttsAudiocppBaseUrl: string | undefined
+  /** `AI_TTS_AUDIOCPP_MAX_CALL_CHARS` — override for audio.cpp's single-call design ceiling
+   *  (default AUDIOCPP_DESIGN_PROMPT_BUDGET). undefined ⇒ the default. */
+  ttsAudiocppMaxCallChars: number | undefined
+  /** `AI_TTS_AUDIOCPP_BUSY_TIMEOUT_MS` — how long audio.cpp may hold a colliding request before
+   *  answering busy (default AUDIOCPP_BUSY_TIMEOUT_MS, 2 s — D3 B1). undefined ⇒ the default. */
+  ttsAudiocppBusyTimeoutMs: number | undefined
 }
 
 let config: CoreConfig | undefined

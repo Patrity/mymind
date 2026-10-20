@@ -8,6 +8,8 @@
 // requirement of navigator.clipboard.write() would otherwise gate us out.
 //
 // Ported from copipasta as-is (copy strategies are stack-independent).
+import { hardenStoredHtml } from '~/lib/markdown/stored-harden'
+
 export function useClipboard() {
   const toast = useToast()
 
@@ -117,9 +119,11 @@ function execCopyText(text: string): boolean {
 function execCopyHtml(html: string): boolean {
   // contenteditable holds rendered HTML; the browser preserves formatting
   // when copying the live DOM, not the source string.
+  // The div is attached to the live document, so the stored HTML is rendered: harden it first
+  // (cycle 88) — raw, an <img src=remote> would fetch and an on* handler would run.
   const div = document.createElement('div')
   div.contentEditable = 'true'
-  div.innerHTML = html
+  div.innerHTML = hardenStoredHtml(html, { origin: window.location.origin })
   div.style.position = 'fixed'
   div.style.top = '0'
   div.style.left = '-9999px'

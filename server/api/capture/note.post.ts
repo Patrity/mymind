@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { nanoid } from 'nanoid'
 import { createDoc } from '@mymind/core/services/documents'
+import { gateSecret, SECRET_REVIEW_TAG } from '@mymind/core/lib/memory/secret-gate'
 import { publishChange } from '@mymind/core/utils/live-bus'
 import { triageCapture } from '@mymind/core/services/triage'
 
@@ -25,10 +26,14 @@ export default defineEventHandler(async (event) => {
   const body = Body.parse(await readBody(event))
   const slug = body.title ? toSlug(body.title) : nanoid(10)
   const path = `/input/${slug}.md`
+  // Same write-time secret gate as the quick_capture tool (stack review 2026-10-19 D1): flagged
+  // text is stored redacted + tagged for review; the gate fails open, so capture never blocks on Clef.
+  const gate = await gateSecret(body.text)
   const doc = await createDoc({
     path,
     title: body.title ?? null,
-    content: body.text
+    content: gate.text,
+    ...(gate.flagged ? { tags: [SECRET_REVIEW_TAG] } : {})
   })
   publishChange({ resource: 'document', action: 'created', id: doc.id })
 

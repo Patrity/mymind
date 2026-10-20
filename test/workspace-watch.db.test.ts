@@ -273,7 +273,7 @@ describe('watch × workstreams', () => {
     const [home] = await useDb().insert(workspaces).values({ kind: 'workstream', ns: NS }).returning() // stands in for home
     wsIds.push(home!.id)
     met = true
-    const w = await rt.watches.create({ workspaceId: home!.id, workstreamId: null, conversationId: conv.id, command: 'test -f done', until: { kind: 'exit0' }, intervalSec: 600, timeoutMin: 5 })
+    const w = await rt.watches.create({ workspaceId: home!.id, workstreamId: null, conversationId: conv.id, command: 'test -f done', until: { kind: 'exit0' }, intervalSec: 600, timeoutMin: 5 }) as { id: string }
     const note = await (async () => {
       for (let i = 0; i < 100; i++) {
         const m = (await thread(conv.id)).find(x => x.origin === 'workspace:watch:met')

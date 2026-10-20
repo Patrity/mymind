@@ -21,7 +21,7 @@ function makeDocDto(overrides: Partial<DocumentDTO> = {}): DocumentDTO {
     ocrId: null,
     updatedAt: new Date().toISOString(),
     ...overrides
-  }
+  } as DocumentDTO
 }
 
 describe('parseProposal', () => {

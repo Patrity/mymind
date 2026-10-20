@@ -231,6 +231,11 @@ export interface CreateMemoryInput {
   reviewed?: boolean
   /** Extraction prompt that produced this memory (e.g. 'extract-v3'); stamped on insert only. */
   extractPromptVersion?: string | null
+  /**
+   * Insert UNREVIEWED whatever `reviewed`/`confidence` say (D3 A4) — set by the secret gate so a
+   * redacted memory surfaces in /review instead of entering recall. Mirrors memory-resolve's hold.
+   */
+  holdForReview?: boolean
 }
 
 export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO> {
@@ -280,7 +285,7 @@ export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO>
   try {
     const autoReview = shouldAutoReview(input.confidence, threshold)
     const finalTags = (autoReview || input.reviewed) ? stripUnreviewed(input.tags ?? []) : (input.tags ?? [])
-    const finalReviewedAt = (input.reviewed || autoReview) ? new Date() : null
+    const finalReviewedAt = input.holdForReview ? null : (input.reviewed || autoReview) ? new Date() : null
 
     const [inserted] = await db.insert(memories).values({
       scope,

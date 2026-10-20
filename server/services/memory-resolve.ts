@@ -5,6 +5,7 @@ import { memories, memoryRelations, reviewQueue } from '@mymind/core/db/schema'
 import { embedOne } from '@mymind/core/lib/ai/embeddings'
 import { judgeRelations, type Verdict } from '@mymind/core/lib/ai/memory-judge'
 import { stripUnreviewed } from '@mymind/core/services/memory'
+import { gateSecret, redactEvidence, withSecretReviewTag } from '@mymind/core/lib/memory/secret-gate'
 import { publishChange } from '@mymind/core/utils/live-bus'
 import type { MemoryScope } from '@mymind/core/shared/types/memory'
 
@@ -21,6 +22,8 @@ export interface ResolveInput {
   evidence?: unknown[]
   /** Extraction prompt that produced this memory (e.g. 'extract-v3'); stamped on insert only. */
   extractPromptVersion?: string | null
+  /** Set by the secret gate: insert UNREVIEWED so the (redacted) memory surfaces in /review. */
+  holdForReview?: boolean
 }
 export type ResolveAction =
   'duplicate' | 'insert' | 'supersede' | 'review-supersede' | 'contradict' | 'review-contradict'
@@ -119,7 +122,10 @@ async function insertFresh(input: ResolveInput, vec: number[], contentHash: stri
     evidence: (input.evidence ?? []) as unknown as string, project: input.project ?? null,
     projectId: input.projectId ?? null,
     sourceDate: input.sourceDate ?? null,
-    sessionId: input.sessionId ?? null, enrichedAt: new Date(), reviewedAt: new Date(), reviewGatePending: true,
+    sessionId: input.sessionId ?? null, enrichedAt: new Date(),
+    // A secret-gate hold is the one case enrichment inserts unreviewed: the row shows up in /review
+    // as a memory-unreviewed card carrying the `needs-review:secret` tag.
+    reviewedAt: input.holdForReview ? null : new Date(), reviewGatePending: true,
     extractPromptVersion: input.extractPromptVersion ?? null
   }).returning({ id: memories.id })
   publishChange({ resource: 'memory', action: 'created', id: row!.id })
@@ -142,6 +148,21 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
   const config = useRuntimeConfig()
   const threshold = (config.memoryAutoReviewThreshold as number) ?? 0.75
   const scope = input.scope ?? 'agent'
+
+  // Write-time secret gate (stack review 2026-10-19 D1, @mymind/core/lib/memory/secret-gate.ts):
+  // a credential VALUE never reaches the table raw. Flagged ⇒ the redacted text is what gets
+  // hashed, embedded, judged and stored, tagged and held for review — and the evidence entries
+  // (the extractor's verbatim quote/reasoning, which carry the same value) are redacted with it,
+  // on this insert AND on the duplicate/merge paths below that append `input.evidence` (D3 A3).
+  // Fails open on any Clef problem.
+  const gate = await gateSecret(input.content)
+  if (gate.flagged) {
+    input = {
+      ...input, content: gate.text, tags: withSecretReviewTag(input.tags), holdForReview: true,
+      evidence: redactEvidence(input.evidence)
+    }
+  }
+
   const contentHash = createHash('sha256').update(input.content).digest('hex')
   const live = isNull(memories.archivedAt)
 

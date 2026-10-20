@@ -126,7 +126,7 @@ export async function startFakeBlueBubbles(opts: {
 
       if (method === 'POST' && path === '/api/v1/message/attachment') {
         if (failSends > 0) { failSends--; return reply(res, 503, null, 'Service Unavailable') }
-        const form = await new Response(body, { headers: { 'content-type': req.headers['content-type'] ?? '' } }).formData()
+        const form = await new Response(new Uint8Array(body), { headers: { 'content-type': req.headers['content-type'] ?? '' } }).formData()
         const file = form.get('attachment')
         const chatGuid = String(form.get('chatGuid'))
         const guid = `fake-msg-${++seq}`

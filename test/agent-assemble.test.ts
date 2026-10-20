@@ -11,7 +11,7 @@ const mem = (id: string, content: string, over: Partial<MemoryDTO> = {}): Memory
   applicability: 'global', resident: false, sessionId: null, enrichedAt: null,
   reviewedAt: '2026-09-01T00:00:00.000Z', sourceDate: null,
   createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z', relevance: 0.9, ...over
-})
+} as MemoryDTO)
 
 const deps = (over: Partial<Parameters<typeof assembleContext>[0]['deps']> = {}) => ({
   listResident: async () => [] as MemoryDTO[],
@@ -34,7 +34,7 @@ describe('assembleContext', () => {
   it('searches with the user text when there is one', async () => {
     const search = vi.fn(async () => [mem('m1', 'a retrieved fact')])
     await assembleContext({ userText: 'how long will this take', budget: 4000, deps: deps({ search }) })
-    expect(search.mock.calls[0]![0]).toBe('how long will this take')
+    expect((search.mock.calls[0] as any[])[0]).toBe('how long will this take')
   })
 
   it('synthesises a query from state on a proactive turn', async () => {
@@ -48,7 +48,7 @@ describe('assembleContext', () => {
       deps: deps({ search, summary: async () => 'Tony is debugging the deploy', liveContext: async () => 'Active projects: mymind.' })
     })
     expect(search).toHaveBeenCalled()
-    expect(search.mock.calls[0]![0]).toContain('Tony is debugging the deploy')
+    expect((search.mock.calls[0] as any[])[0]).toContain('Tony is debugging the deploy')
   })
 
   it('does not search at all when there is neither user text nor state', async () => {
@@ -64,7 +64,7 @@ describe('assembleContext', () => {
       deps: deps({ search: async () => [mem('m1', 'kept one'), mem('m2', 'kept two')], recordRetrievals })
     })
     expect(recordRetrievals).toHaveBeenCalledTimes(1)
-    expect(recordRetrievals.mock.calls[0]![0].sort()).toEqual(['m1', 'm2'])
+    expect((recordRetrievals.mock.calls[0] as any[])[0].sort()).toEqual(['m1', 'm2'])
     expect(r.usedMemoryIds.sort()).toEqual(['m1', 'm2'])
   })
 
@@ -132,7 +132,7 @@ describe('assembleContext', () => {
     expect(r.context).not.toContain('a barely-relevant hit')
     expect(r.context).toContain('a genuinely relevant hit')
     expect(r.usedMemoryIds).toEqual(['above'])
-    expect(recordRetrievals.mock.calls[0]![0]).toEqual(['above'])
+    expect((recordRetrievals.mock.calls[0] as any[])[0]).toEqual(['above'])
   })
 
   // FIX 5a: `safe()` only catches a THROW — a dependency that never resolves used to hang the

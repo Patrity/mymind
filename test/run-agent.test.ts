@@ -33,7 +33,7 @@ describe('runAgent', () => {
     )) { /* drain */ }
     // prepareStep is async now (it awaits ctx.drainSteer when present) — the final-step
     // toolChoice guarantee is unchanged, just delivered via a resolved promise.
-    const args = streamText.mock.calls[0]![0] as unknown as { prepareStep: (o: { stepNumber: number; messages: unknown[] }) => Promise<unknown> }
+    const args = (streamText.mock.calls[0] as any[])[0] as unknown as { prepareStep: (o: { stepNumber: number; messages: unknown[] }) => Promise<unknown> }
     await expect(args.prepareStep({ stepNumber: 0, messages: [] })).resolves.toBeUndefined()
     await expect(args.prepareStep({ stepNumber: 2, messages: [] })).resolves.toBeUndefined()
     await expect(args.prepareStep({ stepNumber: 3, messages: [] })).resolves.toEqual({ toolChoice: 'none' }) // last of 4 (0-indexed)

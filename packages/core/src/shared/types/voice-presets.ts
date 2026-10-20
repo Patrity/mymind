@@ -114,13 +114,19 @@ export const MIN_SEGMENT_CHARS = 120
  * and was measured against that exact budget, so extending it would hand the rig a prompt
  * nobody proved it can take. A reference-free preset has no calibration, so its ceiling comes
  * from the budget minus the instruction it carries — the two share one prompt.
+ *
+ * `designBudget` is PER PROVIDER: the 950 default is where the Python Breeze server's model
+ * breaks; audio.cpp has its own (see lib/voice/tts-provider.ts designPromptBudgetFor). The
+ * server passes the live provider's figure; the client, which does not know the provider,
+ * uses the default for its pre-flight wording and learns the real ceiling from the route's
+ * `x-segment-ceiling` header.
  */
 export function maxCallChars(preset: {
   instruction: string | null
   refStorageKey: string | null
   maxSegmentChars: number
-}): number {
+}, designBudget: number = DESIGN_PROMPT_BUDGET): number {
   if (preset.refStorageKey) return preset.maxSegmentChars
   const instructionCost = preset.instruction?.trim().length ?? 0
-  return Math.max(MIN_SEGMENT_CHARS, DESIGN_PROMPT_BUDGET - instructionCost)
+  return Math.max(MIN_SEGMENT_CHARS, designBudget - instructionCost)
 }

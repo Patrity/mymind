@@ -6,6 +6,8 @@ import { resolvePreset, loadReferenceBytes } from '@mymind/core/services/voice-p
 import { BreezeError, validateBreezeRequest } from '@mymind/core/lib/voice/breeze'
 import { planSegments, type SpeakMode } from '../../lib/voice/plan-segments'
 import { VOICE_TUNING } from '@mymind/core/lib/voice/tuning'
+import { designPromptBudgetFor } from '@mymind/core/lib/voice/tts-provider'
+import { coreConfig } from '@mymind/core/config'
 import type { SpeakOverrides } from '@mymind/core/shared/types/voice-presets'
 
 export default defineEventHandler(async (event) => {
@@ -45,7 +47,13 @@ export default defineEventHandler(async (event) => {
   // cap, returning a complete body full of words nobody wrote. The planner keeps the
   // one-call behaviour wherever it is safe — segmenting costs 10.3% more audio and audible
   // seams to buy 22ms, measured — and splits at the ceiling only when it has to.
-  const plan = planSegments(text, preset, mode, VOICE_TUNING.tts.sentenceMaxChars)
+  //
+  // The design budget is the LIVE provider's: Breeze-Python's measured 950, or audio.cpp's
+  // (conservative default, env-overridable). Reference-backed presets keep their calibrated cap.
+  const cfg = coreConfig()
+  const plan = planSegments(text, preset, mode, VOICE_TUNING.tts.sentenceMaxChars, {
+    designBudget: designPromptBudgetFor(cfg.ttsProvider, cfg.ttsAudiocppMaxCallChars)
+  })
   if (!plan.segments.length) throw createError({ statusCode: 400, statusMessage: 'text is required' })
   setHeader(event, 'x-segments', String(plan.segments.length))
   setHeader(event, 'x-segment-reason', plan.reason)

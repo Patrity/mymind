@@ -120,8 +120,8 @@ describe('branchParent picks the right parent per operation', () => {
     expect(await branchParent(convId, root.id, 'regenerate')).toBeNull()
   })
 
-  it('returns null for an unknown message rather than throwing', async () => {
-    expect(await branchParent(convId, '00000000-0000-4000-8000-000000000000', 'fork')).toBeNull()
+  it('returns undefined (NOT null, which means root) for an unknown message rather than throwing', async () => {
+    expect(await branchParent(convId, '00000000-0000-4000-8000-000000000000', 'fork')).toBeUndefined()
   })
 
   // The only negative case above is an id that exists nowhere, which resolves to null whether or
@@ -142,9 +142,9 @@ describe('branchParent picks the right parent per operation', () => {
     expect(await branchParent(other, target.id, 'fork')).toBe(target.id)          // control:
     expect(await branchParent(other, target.id, 'edit')).toBe(target.parentId)    // the id is fine
     // ...but not from convId, which does not own it. Unscoped, all three leak a foreign id.
-    expect(await branchParent(convId, target.id, 'fork')).toBeNull()
-    expect(await branchParent(convId, target.id, 'edit')).toBeNull()
-    expect(await branchParent(convId, target.id, 'regenerate')).toBeNull()
+    expect(await branchParent(convId, target.id, 'fork')).toBeUndefined()
+    expect(await branchParent(convId, target.id, 'edit')).toBeUndefined()
+    expect(await branchParent(convId, target.id, 'regenerate')).toBeUndefined()
   })
 })
 

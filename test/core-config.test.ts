@@ -51,7 +51,7 @@ describe('fromRuntimeConfig', () => {
   })
 
   it('env-backed fields come from the RUNTIME env, never from runtimeConfig; dev from the host', () => {
-    const rc = { ...sentinelRuntimeConfig(), busNs: 'baked-ns' }
+    const rc = { ...sentinelRuntimeConfig(), busNs: 'baked-ns' } as Parameters<typeof fromRuntimeConfig>[0]
     const cfg = fromRuntimeConfig(rc, { env: { MYMIND_BUS_NS: 'live-ns' }, dev: true })
     expect(cfg.busNs).toBe('live-ns')
     expect(cfg.dev).toBe(true)
@@ -94,7 +94,7 @@ const BASE = {
 
 // [case, env, spot-checks on the resulting CoreConfig — so equality can't pass vacuously]
 const ENV_ROWS: Array<[string, Record<string, string>, Partial<Record<string, unknown>>]> = [
-  ['empty env (all defaults)', {}, { storageDriver: 'local', storageLocalDir: './.data/uploads', memoryAutoReviewThreshold: 0.75, databaseUrl: undefined, busNs: undefined }],
+  ['empty env (all defaults)', {}, { storageDriver: 'local', storageLocalDir: './.data/uploads', memoryAutoReviewThreshold: 0.75, databaseUrl: undefined, busNs: undefined, ttsProvider: 'breeze', ttsAudiocppBaseUrl: undefined, ttsAudiocppMaxCallChars: undefined, ttsAudiocppBusyTimeoutMs: undefined }],
   ['plain dev .env', BASE, { databaseUrl: BASE.DATABASE_URL, betterAuthSecret: 's3cret' }],
   ['prod native: NUXT_DATABASE_URL / NUXT_STORAGE_LOCAL_DIR win over the plain vars',
     { ...BASE, NUXT_DATABASE_URL: 'postgres://u:p@127.0.0.1:5432/mymind', NUXT_STORAGE_LOCAL_DIR: '/opt/mymind/.data/uploads' },
@@ -108,7 +108,18 @@ const ENV_ROWS: Array<[string, Record<string, string>, Partial<Record<string, un
   ['S3: plain at build, NUXT_STORAGE_S3_* leaf overrides',
     { ...BASE, STORAGE_DRIVER: 's3', STORAGE_S3_REGION: 'us-east-1', STORAGE_S3_BUCKET: 'plain', NUXT_STORAGE_S3_BUCKET: 'over', NUXT_STORAGE_S3_ACCESS_KEY_ID: 'AK' },
     { storageDriver: 's3', storageS3: { endpoint: undefined, region: 'us-east-1', bucket: 'over', accessKeyId: 'AK', secretAccessKey: undefined } }],
-  ['env-backed: MYMIND_BUS_NS', { ...BASE, MYMIND_BUS_NS: 'w2' }, { busNs: 'w2' }]
+  ['env-backed: MYMIND_BUS_NS', { ...BASE, MYMIND_BUS_NS: 'w2' }, { busNs: 'w2' }],
+  // The TTS engine switch (stack-review/audiocpp-tts-provider). Absent ⇒ breeze, so the branch
+  // changes nothing until an operator flips it; an unknown value also ⇒ breeze (never a throw).
+  ['env-backed: AI_TTS_PROVIDER=audiocpp + its base URL + ceiling',
+    { ...BASE, AI_TTS_PROVIDER: 'audiocpp', AI_TTS_AUDIOCPP_BASE_URL: 'http://192.168.2.25:8885', AI_TTS_AUDIOCPP_MAX_CALL_CHARS: '900' },
+    { ttsProvider: 'audiocpp', ttsAudiocppBaseUrl: 'http://192.168.2.25:8885', ttsAudiocppMaxCallChars: 900 }],
+  ['env-backed: an unknown AI_TTS_PROVIDER falls back to breeze', { ...BASE, AI_TTS_PROVIDER: 'kokoro' }, { ttsProvider: 'breeze' }],
+  ['env-backed: a non-numeric AI_TTS_AUDIOCPP_MAX_CALL_CHARS reads as unset', { ...BASE, AI_TTS_AUDIOCPP_MAX_CALL_CHARS: 'lots' }, { ttsAudiocppMaxCallChars: undefined }],
+  ['env-backed: an empty AI_TTS_AUDIOCPP_BASE_URL reads as unset', { ...BASE, AI_TTS_AUDIOCPP_BASE_URL: '' }, { ttsAudiocppBaseUrl: undefined }],
+  // D3 B1: how long audio.cpp may hold a colliding request before answering busy (adapter default 2 s).
+  ['env-backed: AI_TTS_AUDIOCPP_BUSY_TIMEOUT_MS', { ...BASE, AI_TTS_AUDIOCPP_BUSY_TIMEOUT_MS: '5000' }, { ttsAudiocppBusyTimeoutMs: 5000 }],
+  ['env-backed: a non-positive AI_TTS_AUDIOCPP_BUSY_TIMEOUT_MS reads as unset', { ...BASE, AI_TTS_AUDIOCPP_BUSY_TIMEOUT_MS: '0' }, { ttsAudiocppBusyTimeoutMs: undefined }]
 ]
 
 describe('fromEnv (worker) ≡ fromRuntimeConfig over Nitro runtimeConfig (web)', () => {

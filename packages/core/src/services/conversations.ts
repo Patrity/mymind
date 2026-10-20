@@ -1,6 +1,6 @@
 import { and, eq, isNotNull, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
-import { conversations, conversationMessages, channelDeliveries } from '../db/schema'
+import { conversations, conversationMessages, channelDeliveries, agentRuns } from '../db/schema'
 import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, AttachmentRef, ToolCallRecordDTO, MessageUsage, MessageDeliveryDTO } from '../shared/types/conversation'
 import type { AgentMessage, AgentContentPart } from '../lib/agent/run'
 import type { AgentToolRecord } from '../lib/agent/tool-history'
@@ -113,16 +113,71 @@ export async function createConversation(
  * change that column while the turn is still running. Call this once, up front, and pass the
  * result straight through as `appendMessages`' `parentId`.
  *
+ * Returns `null` only while `branch_at_root` is set — an edit/regenerate of the FIRST message is
+ * pending and this turn must start a new root (cycle 88). Only the web turn that edit belongs to
+ * consumes it: a non-UI turn (wake, channel, job, workstream) passes `ignorePendingRoot` and chains
+ * from the leaf the thread was on — see PENDING ROOT below.
+ *
  * Returns `undefined`, NOT `null`, when the column is null (a conversation the leaf backfill
  * never reached, or a brand-new thread with no messages yet) — `appendMessages(id, msgs, null)`
  * means "start a NEW root", which would orphan every message the conversation already has.
  * `undefined` instead tells `appendMessages` to fall back to its own default (chain from
  * whatever leaf is active at persist time).
  */
-export async function captureTurnLeaf(conversationId: string): Promise<string | undefined> {
-  const [conv] = await useDb().select({ leaf: conversations.activeLeafId }).from(conversations)
+export async function captureTurnLeaf(conversationId: string, opts: { ignorePendingRoot?: boolean } = {}): Promise<string | null | undefined> {
+  const [conv] = await useDb().select({ leaf: conversations.activeLeafId, atRoot: conversations.branchAtRoot }).from(conversations)
     .where(eq(conversations.id, conversationId)).limit(1)
+  // The one case where `null` IS the answer: an edit/regenerate of the first message is pending
+  // (setBranchLeaf), so this turn must start a new root — a sibling of the old first message.
+  if (conv?.atRoot && !opts.ignorePendingRoot) return null
   return conv?.leaf ?? undefined
+}
+
+// ---------------------------------------------------------------------------
+// PENDING ROOT (cycle 88, review I4)
+//
+// `branch_at_root` = "an edit/regenerate of the FIRST message was PATCHed; the next WEB turn starts
+// a second root". `active_leaf_id` is never moved by setting it, so clearing the flag is always an
+// exact undo. The rules that keep it from sticking or hijacking a turn:
+//   1. Only an append that STARTS a root clears it (appendMessages below). An append chained from
+//      a real row — an event, a wake/channel turn, a turn rescued with its pre-edit leaf — lands on
+//      the old branch and leaves the edit pending, so it cannot steal or cancel it.
+//   2. Non-UI turns ignore it (captureTurnLeaf / getAgentHistory `ignorePendingRoot`): they read
+//      and extend the branch the thread was on instead of running with zero history.
+//   3. The web client cancels it (`cancelPendingRoot`, PATCH /leaf op:'restore') when the edit's
+//      send fails.
+//   4. A flag nobody consumed expires on the next conversation read (`expireStalePendingRoot`):
+//      pending for longer than PENDING_ROOT_GRACE_MS with no queued/running run on the thread. A
+//      live edit is PATCH → re-read → send within milliseconds, and once its run is queued the
+//      run-exists guard protects it for however long it waits; the grace only covers the gap
+//      before the run row exists. `updated_at` is the clock: setBranchLeaf writes it with the
+//      flag, and any later write to the thread only makes the flag look younger (safe direction).
+// ---------------------------------------------------------------------------
+
+/** How long a first-message edit may sit unsent before a conversation read cancels it. */
+export const PENDING_ROOT_GRACE_MS = 60_000
+
+/** Cancel a pending first-message edit: the thread shows the branch it was on again. Returns
+ *  whether a pending root was cleared. */
+export async function cancelPendingRoot(conversationId: string): Promise<boolean> {
+  const rows = await useDb().update(conversations).set({ branchAtRoot: false, updatedAt: new Date() })
+    .where(and(eq(conversations.id, conversationId), eq(conversations.branchAtRoot, true)))
+    .returning({ id: conversations.id })
+  return rows.length > 0
+}
+
+/** Rule 4 above. One conditional UPDATE, so it cannot race a send into clearing a live edit
+ *  once that edit's run row exists. Returns whether it cleared anything (the caller publishes). */
+export async function expireStalePendingRoot(conversationId: string, graceMs = PENDING_ROOT_GRACE_MS): Promise<boolean> {
+  const rows = await useDb().update(conversations).set({ branchAtRoot: false })
+    .where(and(
+      eq(conversations.id, conversationId),
+      eq(conversations.branchAtRoot, true),
+      sql`${conversations.updatedAt} < now() - make_interval(secs => ${graceMs / 1000})`,
+      sql`not exists (select 1 from ${agentRuns} where ${agentRuns.conversationId} = ${conversations.id} and ${agentRuns.status} in ('queued', 'running'))`
+    ))
+    .returning({ id: conversations.id })
+  return rows.length > 0
 }
 
 /**
@@ -161,10 +216,16 @@ export async function appendMessages(
   if (parentId !== undefined) {
     prevId = parentId
   } else {
-    const [conv] = await db.select({ leaf: conversations.activeLeafId }).from(conversations)
+    const [conv] = await db.select({ leaf: conversations.activeLeafId, atRoot: conversations.branchAtRoot }).from(conversations)
       .where(eq(conversations.id, conversationId)).limit(1)
+    // NOT the pending-root flag: a default-parent append is an event row (a channel send, a job
+    // outcome, a workstream note) — it extends the branch the thread is on and leaves a pending
+    // first-message edit pending (PENDING ROOT rule 1). Only the web turn starts the new root,
+    // and it passes `null` explicitly via captureTurnLeaf.
     prevId = conv?.leaf ?? null
   }
+  // This append starts a root iff its first row has no parent — only then is a pending root made.
+  const startsRoot = prevId === null
 
   // The inserts and the leaf move are ONE unit of work. Rows written without the matching
   // active_leaf_id are invisible to BOTH read paths — `loadActivePath` walks from the leaf and
@@ -204,7 +265,10 @@ export async function appendMessages(
         messageCount: sql`${conversations.messageCount} + ${msgs.length}`,
         lastMessageAt: now,
         updatedAt: now,
-        activeLeafId: prevId
+        activeLeafId: prevId,
+        // A new root was just written, so a pending new-root branch (if any) has been made. An
+        // append chained from a real row leaves the flag as it is (PENDING ROOT rule 1).
+        ...(startsRoot ? { branchAtRoot: false } : {})
       })
       .where(eq(conversations.id, conversationId))
 
@@ -230,19 +294,20 @@ export async function appendEvent(conversationId: string, content: string, origi
  *             original question and everything it produced stay reachable.
  * regenerate→ the reply's parent: same reasoning, applied to an assistant message.
  *
- * Returns null for a message that isn't in this conversation — the caller treats that as "no
- * branch to make" rather than a crash. Note null is also the legitimate answer for an edit or
- * regenerate of a ROOT message, which correctly makes the new version a second root.
+ * Returns `undefined` for a message that isn't in this conversation — the caller treats that as
+ * "no branch to make" rather than a crash — and `null` for an edit or regenerate of a ROOT
+ * message, whose new version is a second root. Two different answers, never one (cycle 88: the
+ * single null this used to return for both is what kept first-message edits unsupported).
  */
 export async function branchParent(
   conversationId: string, messageId: string, op: 'fork' | 'edit' | 'regenerate'
-): Promise<string | null> {
+): Promise<string | null | undefined> {
   const [row] = await useDb()
     .select({ id: conversationMessages.id, parentId: conversationMessages.parentId })
     .from(conversationMessages)
     .where(and(eq(conversationMessages.conversationId, conversationId), eq(conversationMessages.id, messageId)))
     .limit(1)
-  if (!row) return null
+  if (!row) return undefined
   return op === 'fork' ? row.id : row.parentId
 }
 
@@ -273,26 +338,29 @@ export async function setActiveLeaf(conversationId: string, leafId: string): Pro
   const resolved = branchTip(rows, leafId)
   if (!resolved) return null
 
-  await db.update(conversations).set({ activeLeafId: resolved, updatedAt: new Date() })
+  // Clearing branch_at_root is what makes the pager (and restoreLeaf) a way BACK out of a
+  // pending first-message edit: switching to any row ends the empty-path state.
+  await db.update(conversations).set({ activeLeafId: resolved, branchAtRoot: false, updatedAt: new Date() })
     .where(eq(conversations.id, conversationId))
   return resolved
 }
 
 /**
- * Is this message in this conversation?
- *
- * Exists only to tell two different `null`s apart on the branch error path (see
- * leaf.patch.ts): `branchParent` answers null both for "not in this conversation" and for
- * "this IS the conversation's root", and the second must not be reported as the first.
+ * Undo a non-root branch move whose turn never went out, when the client cannot name the old
+ * leaf: descend from the current leaf (the branch parent) to its newest tip, the same descent the
+ * pager uses. Usually that is exactly the branch Tony was on (the unsent edit never wrote a
+ * sibling); at worst it is a newer sibling branch — either way nothing is left hidden behind a
+ * truncated path. Returns 'newest-branch', or null when the thread has no leaf at all.
  */
-export async function conversationHasMessage(conversationId: string, messageId: string): Promise<boolean> {
-  const [row] = await useDb()
-    .select({ id: conversationMessages.id })
-    .from(conversationMessages)
-    .where(and(eq(conversationMessages.conversationId, conversationId), eq(conversationMessages.id, messageId)))
-    .limit(1)
-  return !!row
+export async function restoreAfterUnsentBranch(conversationId: string): Promise<'newest-branch' | null> {
+  const [conv] = await useDb().select({ leaf: conversations.activeLeafId }).from(conversations)
+    .where(eq(conversations.id, conversationId)).limit(1)
+  if (!conv?.leaf) return null
+  return await setActiveLeaf(conversationId, conv.leaf) ? 'newest-branch' : null
 }
+
+/** setBranchLeaf's answer for an edit/regenerate of a root: no leaf, the next append is a new root. */
+export const NEW_ROOT = 'new-root' as const
 
 /**
  * Point the thread where a NEW branch should hang from — `branchParent`'s answer, set EXACTLY,
@@ -304,19 +372,30 @@ export async function conversationHasMessage(conversationId: string, messageId: 
  * chains onto the end of the thread — "carry on as normal", which is the exact opposite of a
  * fork. Edit and regenerate would descend off their target's parent in the same way.
  *
- * Returns the id actually written, or null when `messageId` is not in this conversation — or
- * when `branchParent` answers null because the target is a ROOT (an edit/regenerate of the very
- * first message would have to hang off "no parent", and `conversations.active_leaf_id` has no
- * way to say "start a second root"; the caller 404s). Scoping is `branchParent`'s: it selects
- * the row under `conversationId`, and a parent of a row in this conversation is in it too.
+ * Returns the id actually written, `NEW_ROOT` for an edit/regenerate of a ROOT message (cycle 88:
+ * the thread's `branch_at_root` flag is set — the active path is empty and the next append
+ * starts a second root, which `active_leaf_id` alone cannot say because null there means "flat
+ * read"), or null when `messageId` is not in this conversation (the caller 404s). Scoping is
+ * `branchParent`'s: it selects the row under `conversationId`, and a parent of a row in this
+ * conversation is in it too.
  */
 export async function setBranchLeaf(
   conversationId: string, messageId: string, op: 'fork' | 'edit' | 'regenerate'
-): Promise<string | null> {
+): Promise<string | typeof NEW_ROOT | null> {
+  const db = useDb()
   const parent = await branchParent(conversationId, messageId, op)
-  if (!parent) return null
+  if (parent === undefined) return null
 
-  await useDb().update(conversations).set({ activeLeafId: parent, updatedAt: new Date() })
+  if (parent === null) {
+    // Edit/regenerate of a ROOT: the new version has no parent. The leaf stays where it is (a
+    // real row, so restoreLeaf / the pager can always get back) and the flag empties the path.
+    // updated_at on the POSTGRES clock: expireStalePendingRoot compares it against now().
+    await db.update(conversations).set({ branchAtRoot: true, updatedAt: sql`now()` })
+      .where(eq(conversations.id, conversationId))
+    return NEW_ROOT
+  }
+
+  await db.update(conversations).set({ activeLeafId: parent, branchAtRoot: false, updatedAt: new Date() })
     .where(eq(conversations.id, conversationId))
   return parent
 }
@@ -333,6 +412,12 @@ export async function getConversation(
     .limit(1)
 
   if (!conv) return null
+
+  // PENDING ROOT rule 4: a first-message edit that was never sent must not blank the thread.
+  if (conv.branchAtRoot && await expireStalePendingRoot(id)) {
+    conv.branchAtRoot = false
+    publishChange({ resource: 'conversation', action: 'updated', id })
+  }
 
   // The active branch only — the same walk `getAgentHistory` uses, so the transcript the user
   // reads and the context the model gets can never be two different conversations.
@@ -432,7 +517,13 @@ export async function hydrateAttachments(
   }))
 }
 
-export async function getAgentHistory(id: string): Promise<AgentMessage[]> {
+export async function getAgentHistory(id: string, opts: { ignorePendingRoot?: boolean } = {}): Promise<AgentMessage[]> {
+  return (await loadAgentHistory(id, opts)).messages
+}
+
+/** getAgentHistory plus the path's `summaryApplies`, so a turn's context assembly can decide the
+ *  summary tier without walking the whole thread a second time (review M1). */
+export async function loadAgentHistory(id: string, opts: { ignorePendingRoot?: boolean } = {}): Promise<{ messages: AgentMessage[], summaryApplies: boolean }> {
   // Same active-path walk as `getConversation` — see test/conversation-path.db.test.ts — but
   // WITH `sinceEpoch: true`. This is the one deliberate divergence between the two read paths:
   // `/clear` (server/services/conversation-clear.ts) sets `conversations.context_epoch_at`, and
@@ -442,20 +533,25 @@ export async function getAgentHistory(id: string): Promise<AgentMessage[]> {
   //
   // Also WITH `sinceSummary: true` — rows the summary covers reach the model as the summary
   // tier (assembleContext), not verbatim.
-  const { rows } = await loadActivePath(id, { sinceEpoch: true, sinceSummary: true })
+  //
+  // `ignorePendingRoot`: a non-UI turn reads the branch the thread was on (PENDING ROOT rule 2).
+  const { rows, summaryApplies } = await loadActivePath(id, { sinceEpoch: true, sinceSummary: true, ignorePendingRoot: opts.ignorePendingRoot })
 
   const msgs = rows.map(rowToAgentMessage)
 
   // A missing blob, an unreadable file, or any other thrown error must never break resume —
   // fall back to the un-hydrated (plain-text) messages rather than propagating.
   try {
-    return await hydrateAttachments(
-      msgs,
-      rows,
-      (a: AttachmentRef) => (a.kind === 'image' ? getImageBytes(a.id) : getFileBytes(a.id))
-    )
+    return {
+      messages: await hydrateAttachments(
+        msgs,
+        rows,
+        (a: AttachmentRef) => (a.kind === 'image' ? getImageBytes(a.id) : getFileBytes(a.id))
+      ),
+      summaryApplies
+    }
   } catch {
-    return msgs
+    return { messages: msgs, summaryApplies }
   }
 }
 

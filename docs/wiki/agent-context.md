@@ -134,6 +134,10 @@ The `memory:assemble` activity row now carries a real `droppedTurns`, plus `runI
   `summarized_through` to the last folded row's Postgres `created_at`, re-embeds
   `summary_embedding`. Called after every persisted run (fire-and-forget) and by the `*/10`
   `summarize-threads` task for side threads idle ≥ 30 min.
+- **Branch-aware (cycle 88):** the fold records `summary_leaf_id` (its last folded row). The
+  `summary` tier (`loadSummary` in assemble.ts) is injected only when that row is on the active
+  path; otherwise the summary belongs to another branch and is skipped, and the next fold on this
+  branch starts fresh (no previous summary) from the start of the path, overwriting it.
 - **`recent-threads`** (when `conversationKind === 'main'`): `Recent side threads (summaries):` then
   `- <title>: <summary>` for up to 8 side threads with a summary and `last_message_at` in the last
   48 h, newest first, capped to 600 tokens (`capToTokens`).
