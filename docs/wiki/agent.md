@@ -227,12 +227,27 @@ shorter than what is on screen.
 
 ### Known limits, stated rather than discovered later
 
-- **The first turn of a thread cannot be edited or regenerated.** `branchParent` returns `null` for a
-  root, and `active_leaf_id = null` already means "fall back to a flat read", so there is no way to
-  express "start a second root" without changing what null means to both read paths. The endpoint
-  says so honestly — *"The first message of a thread cannot be branched yet"* — instead of claiming
-  the message is not in the conversation. Rephrasing an opening question needs a new thread, which is
-  what it needed before this cycle too.
+- **The first turn of a thread CAN be edited or regenerated (cycle 88).** Its new version is a second
+  root. `active_leaf_id` cannot say "start a new root" (null there means flat read), so
+  `conversations.branch_at_root` (migration 0090) does: `setBranchLeaf` on a root answers `NEW_ROOT` and
+  sets the flag, leaving the leaf where it was; `loadActivePath` then returns an EMPTY path for both
+  readers, `captureTurnLeaf` returns `null` (new root), and every leaf write (`appendMessages`,
+  `setActiveLeaf`, `setBranchLeaf`) clears it — so the next turn, `restoreLeaf` or the pager all end
+  the pending state. `branchParent` answers `undefined` for "not in this conversation" and `null` for
+  a root. Root siblings get the same ‹ n/N › pager as any other branch.
+  **Pending-root rules (review I4; the "PENDING ROOT" block in `services/conversations.ts`)**:
+  - Only an append that *starts* a root clears the flag. Events, wake/channel turns and rescued
+    turns chain from a real row, land on the old branch and leave the edit pending.
+  - Non-UI turns (wake, iMessage/email, jobs, workstreams) ignore the flag and keep their history.
+  - A failed send calls `PATCH /leaf` `op: 'restore'` (`cancelPendingRoot`).
+  - A flag still pending after `PENDING_ROOT_GRACE_MS` (60 s), with no queued or running run on the
+    thread, is cleared on the next conversation read (`expireStalePendingRoot`).
+- **The thread summary is branch-aware (cycle 88).** `conversations.summary_leaf_id` records the last
+  active-path message the summary folded. The summary tier is injected (and already-summarised rows
+  trimmed) only when that message is on the current path, or when the column is null (older
+  summaries keep being trusted). Otherwise the summary is left out, and the next fold on that branch
+  starts fresh. `loadAgentHistory` returns `summaryApplies`, so the assembler doesn't walk the path
+  twice.
 - **`message_count` counts every row in the tree**, inactive branches included, so a branched thread's
   rail count legitimately exceeds what is on screen (10 rows, 4 displayed, is normal). Spec-stated and
   accepted rather than re-derived per branch.

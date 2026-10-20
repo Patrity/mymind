@@ -11,8 +11,8 @@ describe('whisperStt', () => {
     const stt = whisperStt({ baseURL: 'http://rig:8881/v1', model: 'deepdml/faster-whisper-large-v3-turbo-ct2', apiKey: '' })
     const text = await stt.transcribe(new Uint8Array([1, 2, 3]), { language: 'en' })
     expect(text).toBe('hello there')
-    expect(String(fetchMock.mock.calls[0][0])).toBe('http://rig:8881/v1/audio/transcriptions')
-    expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+    expect(String((fetchMock.mock.calls[0] as any[])[0])).toBe('http://rig:8881/v1/audio/transcriptions')
+    expect((fetchMock.mock.calls[0] as any[])[1].method).toBe('POST')
   })
 })
 
@@ -21,7 +21,7 @@ describe('whisperStt — upload labelling', () => {
     const fetchMock = vi.fn(async (_u: unknown, _init: RequestInit) => new Response(JSON.stringify({ text: 'x' }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
     await whisperStt({ baseURL: 'http://rig/v1', model: 'm' }).transcribe(new Uint8Array([1]), opts)
-    return (fetchMock.mock.calls[0]![1].body as FormData).get('file') as File
+    return ((fetchMock.mock.calls[0] as any[])[1].body as FormData).get('file') as File
   }
 
   it('labels the upload with the caller MIME type and filename (e.g. an iMessage .caf voice memo)', async () => {

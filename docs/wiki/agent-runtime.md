@@ -119,6 +119,11 @@ The web's `server/plugins/agent-runtime.ts` starts none of this.
 - `conversations.active_toolsets` (cycle 78, migration 0066): `text[]`, the on-demand toolsets loaded in this conversation. Seeds each turn's visible tools; written by a set-union from `runAgent`'s `onChange`; reset by `/clear`. See [agent.md → Toolsets](agent.md#toolsets-cycle-78).
 - `conversations.summarized_through`: the summary covers rows with `created_at` ≤ this.
   It is written from the last folded row's Postgres `created_at`, never the app clock.
+- `conversations.summary_leaf_id` (cycle 88, migration 0090): the last ACTIVE-PATH row the summary
+  folded. The summary and its `summarized_through` cut apply to a turn only when this row is on the
+  active path (`loadActivePath`'s `summaryApplies`); after a branch switch or a first-message edit
+  the summary is skipped and the branch's history is not cut. Null = pre-cycle-88 (trusted; 0090
+  backfills it where the active path reaches the folded span).
 - `conversation_messages.role` gains `'event'`. The new `origin` column holds values like
   `wake:<reason>`, `review:approved`, `review:failed` or `runtime:restart`.
 - `agent_runs` columns: `id`, `conversation_id`, `session_key`, `trigger` (`user|wake`),

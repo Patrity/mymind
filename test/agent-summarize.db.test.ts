@@ -12,7 +12,8 @@ import { useDb } from '@mymind/core/db'
 import { conversations, conversationMessages } from '@mymind/core/db/schema'
 import { maybeSummarize, idleThreadCandidates, SUMMARY_KEEP_TURNS } from '@mymind/core/lib/agent/runtime/summarize'
 import { appendEvent } from '@mymind/core/services/conversations'
-import { appendMessages, getAgentHistory, getConversation, createConversation } from '@mymind/core/services/conversations'
+import { appendMessages, getAgentHistory, getConversation, createConversation, setBranchLeaf, setActiveLeaf, captureTurnLeaf } from '@mymind/core/services/conversations'
+import { loadSummary } from '@mymind/core/lib/agent/assemble'
 import { messageText } from '@mymind/core/lib/agent/run'
 import { eq, inArray, sql } from 'drizzle-orm'
 
@@ -190,6 +191,78 @@ describe('maybeSummarize', () => {
       const rows = await useDb().select().from(conversationMessages).where(eq(conversationMessages.conversationId, caughtUp)).orderBy(conversationMessages.createdAt)
       await useDb().update(conversations).set({ summarizedThrough: rows[rows.length - 13]!.createdAt }).where(eq(conversations.id, caughtUp))
       expect(await idleThreadCandidates({ onlyIds: [older, newer, short, caughtUp] })).toEqual([newer, older])
+    })
+  })
+
+  // Cycle 88: one summary per thread, many branches. The summary (and its summarized_through cut)
+  // applies only to the branch it was folded from — after a first-message edit or any branch
+  // switch it describes ANOTHER conversation and must not reach the model.
+  describe('branch-aware summary', () => {
+    const marks = async (id: string) => (await getAgentHistory(id)).map(m => messageText(m.content).split(' ', 1)[0])
+    async function rowOf(id: string, mark: string) {
+      const rows = await useDb().select().from(conversationMessages).where(eq(conversationMessages.conversationId, id))
+      return rows.find(r => r.content.startsWith(mark + ' '))!
+    }
+
+    it('records the last folded row as summary_leaf_id', async () => {
+      const id = await threadWith(10, 2500)
+      await maybeSummarize(id, { summarizer: fakeSummarizer, embed: async () => null })
+      const [c] = await useDb().select().from(conversations).where(eq(conversations.id, id))
+      expect(c!.summaryLeafId).toBe((await rowOf(id, 'a3')).id)
+      expect(await loadSummary(id)).toBe('summary of q0,q1,q2,q3')
+    })
+
+    it('after a FIRST-message edit: no summary, and the new branch history is just the new first turn', async () => {
+      const id = await threadWith(10, 2500)
+      await maybeSummarize(id, { summarizer: fakeSummarizer, embed: async () => null })
+      await setBranchLeaf(id, (await rowOf(id, 'q0')).id, 'edit')
+      expect(await loadSummary(id)).toBeNull()                                  // pending: empty path
+      await appendMessages(id, [{ role: 'user', content: 'fresh start', modality: 'text' }, { role: 'assistant', content: 'hi', modality: 'text' }], null)
+      expect(await loadSummary(id)).toBeNull()
+      expect(await marks(id)).toEqual(['fresh', 'hi'])
+      // Paging back to the original branch: the summary is its own again, and so is the cut.
+      await setActiveLeaf(id, (await rowOf(id, 'q0')).id)
+      expect(await loadSummary(id)).toBe('summary of q0,q1,q2,q3')
+      expect((await marks(id))[0]).toBe('q4')
+    })
+
+    it('after a branch switch BELOW the folded span: no summary, and the summarized_through cut is not applied', async () => {
+      const id = await threadWith(10, 2500)
+      await maybeSummarize(id, { summarizer: fakeSummarizer, embed: async () => null })
+      // Edit q2 (inside the folded span): the new branch is q0 a0 q1 a1 + the edit.
+      await setBranchLeaf(id, (await rowOf(id, 'q2')).id, 'edit')
+      await appendMessages(id, [{ role: 'user', content: 'q2b other', modality: 'text' }, { role: 'assistant', content: 'a2b ok', modality: 'text' }])
+      expect(await loadSummary(id)).toBeNull()
+      // Without the fix, sinceSummary cut q0..a1 (folded) AND the summary was skipped/foreign.
+      expect(await marks(id)).toEqual(['q0', 'a0', 'q1', 'a1', 'q2b', 'a2b'])
+    })
+
+    it('a fold on a branch the summary does not apply to starts fresh (prev = null) from the start of the path', async () => {
+      const id = await threadWith(10, 2500)
+      await maybeSummarize(id, { summarizer: fakeSummarizer, embed: async () => null })
+      await setBranchLeaf(id, (await rowOf(id, 'q0')).id, 'edit')
+      for (let i = 0; i < 10; i++) {
+        await appendMessages(id, [
+          { role: 'user', content: `n${i} ` + 'w '.repeat(2500), modality: 'text' },
+          { role: 'assistant', content: `m${i} ` + 'w '.repeat(2500), modality: 'text' }
+        // The first turn is the web turn the edit belongs to: the runner passes captureTurnLeaf's
+        // null (a default-parent append extends the OLD branch — PENDING ROOT rule 1).
+        ], i === 0 ? await captureTurnLeaf(id) : undefined)
+      }
+      let prevSeen: string | null = 'unset', transcript = ''
+      await maybeSummarize(id, { summarizer: async (p, t) => { prevSeen = p; transcript = t; return 'new branch summary' }, embed: async () => null })
+      expect(prevSeen).toBeNull()
+      expect(transcript.startsWith('Tony: n0 ')).toBe(true)
+      expect(transcript).not.toMatch(/\bq\d+ /)
+      expect(await loadSummary(id)).toBe('new branch summary')
+    })
+
+    it('a pre-cycle-88 summary (summary_leaf_id null) is trusted as before', async () => {
+      const id = await threadWith(10, 2500)
+      await maybeSummarize(id, { summarizer: fakeSummarizer, embed: async () => null })
+      await useDb().update(conversations).set({ summaryLeafId: null }).where(eq(conversations.id, id))
+      expect(await loadSummary(id)).toBe('summary of q0,q1,q2,q3')
+      expect((await marks(id))[0]).toBe('q4')
     })
   })
 })

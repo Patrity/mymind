@@ -345,26 +345,30 @@ async function restoreLeaf(leafId: string | undefined, what: string) {
   const id = voice.conversationId.value
   if (!id) return
   // `restorableLeafId` returns undefined when the tail of the transcript is still the live
-  // stream's message, whose id is a stream uuid rather than a row id. There is no safe PATCH to
-  // make then — the id 404s, and the last id we DO recognise belongs to the turn before the leaf,
-  // so "restoring" to it would truncate the thread rather than repair it. Say so instead.
-  if (!leafId) {
-    toast.add({ color: 'error', title: `${what} not sent, and the thread could not be restored`, description: 'Reload the page to get the full thread back.' })
-    return
-  }
+  // stream's message, whose id is a stream uuid rather than a row id. PATCHing that id 404s, and
+  // the last id we DO recognise belongs to the turn before the leaf, so "restoring" to it would
+  // truncate the thread. The server restores instead (op 'restore'): a pending first-message edit
+  // is cancelled exactly (the leaf never moved), any other move descends to the newest branch tip.
+  // Reloading would NOT fix either — the leaf / branch_at_root are persisted (review I4).
   try {
-    await conversations.setLeaf(id, leafId)   // no op: descend, a no-op for a message that IS the leaf
+    let exact = true
+    if (leafId) await conversations.setLeaf(id, leafId)   // no op: descend, a no-op for a message that IS the leaf
+    else exact = (await conversations.restoreUnsentBranch(id)).restored === 'exact'
     // The leaf is back either way; whether the screen could be refreshed is a separate fact, and
     // the description says which of the two happened rather than promising both.
     const shown = await resume(id, { quiet: true })
+    const where = exact ? 'The thread is back where it was' : 'The thread is back on its newest branch'
     toast.add({
       color: 'warning',
       title: `${what} not sent`,
-      description: shown ? 'The thread is back where it was.' : 'The thread is back where it was — reload to see it.'
+      description: shown ? `${where}.` : `${where} — reload to see it.`
     })
   } catch (e) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: `${what} not sent, and the thread could not be restored`, description: err?.data?.statusMessage ?? err?.message })
+    // Truthful about recovery (review I4): nothing is deleted. A pending first-message edit
+    // expires on the next read after PENDING_ROOT_GRACE_MS; any branch move is undone by sending a
+    // message (it lands as a sibling) and switching back with its pager.
+    toast.add({ color: 'error', title: `${what} not sent, and the thread could not be restored`, description: `${err?.data?.statusMessage ?? err?.message ?? 'Request failed'}. Nothing was deleted: reload in a minute, or send a message and switch back with its ‹ › pager.` })
   }
 }
 

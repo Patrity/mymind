@@ -30,13 +30,13 @@ const getSessionMessages = vi.fn()
 vi.mock('../server/services/sessions', () => ({ getSessionMessagesPage, getSessionMessages }))
 
 // Define Nitro globals for testing
-globalThis.defineEventHandler = (fn: any) => fn
-globalThis.createError = (opts: any) => {
+;(globalThis as any).defineEventHandler = (fn: any) => fn
+;(globalThis as any).createError = (opts: any) => {
   const error = new Error(opts.statusMessage)
   ;(error as any).statusCode = opts.statusCode
   return error
 }
-globalThis.getQuery = (event: any) => {
+;(globalThis as any).getQuery = (event: any) => {
   // Parse query from the event.node.req.url
   const url = new URL(event.node.req.url || '/?', 'http://localhost')
   const query: Record<string, string> = {}
@@ -45,7 +45,7 @@ globalThis.getQuery = (event: any) => {
   })
   return query
 }
-globalThis.getRouterParam = (event: any, key: string) => {
+;(globalThis as any).getRouterParam = (event: any, key: string) => {
   return event.context?.params?.[key]
 }
 

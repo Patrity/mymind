@@ -66,6 +66,18 @@ describe('siblingTarget — which branch ‹ / › switches to', () => {
     expect(siblingTarget(m!.metadata?.siblingIds, m!.metadata?.branch?.index, -1)).toBe('aaa')
     expect(siblingTarget(m!.metadata?.siblingIds, m!.metadata?.branch?.index, 1)).toBe('ccc')
   })
+
+  // Cycle 88: an edited FIRST message is a second root. The server groups roots like any other
+  // siblings, so the pager on the first message must page between them the same way.
+  it('pages between ROOT siblings (an edited first message) like any other branch', () => {
+    const rows: ResumeMessage[] = [
+      { id: 'root-2', role: 'user', content: 'first, edited', branch: { index: 2, total: 2 }, siblingIds: ['root-1', 'root-2'] }
+    ]
+    const [m] = toUIMessages(rows)
+    expect(m!.metadata?.branch).toEqual({ index: 2, total: 2 })
+    expect(siblingTarget(m!.metadata?.siblingIds, m!.metadata?.branch?.index, -1)).toBe('root-1')
+    expect(siblingTarget(m!.metadata?.siblingIds, m!.metadata?.branch?.index, 1)).toBeUndefined()
+  })
 })
 
 const ui = (id: string, role: 'user' | 'assistant', extra?: AgentUIMessage['metadata']): AgentUIMessage => ({

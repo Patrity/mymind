@@ -427,7 +427,7 @@ describe('decide_review behind a denied confirmation', () => {
     const i = await improvement('denied')
     const requestApproval = vi.fn().mockResolvedValue({ approved: false })
     const set = buildAiTools([decideReviewTool], { signal: new AbortController().signal, onEvent: () => {}, requestApproval })
-    const res = await (set.decide_review as { execute: (a: unknown) => Promise<unknown> }).execute({ id: i.row.id, choice: 'approve' })
+    const res = await (set.decide_review as unknown as { execute: (a: unknown) => Promise<unknown> }).execute({ id: i.row.id, choice: 'approve' })
     expect(res).toEqual({ denied: true })
     expect(await status(i.row.id)).toBe('pending')
     expect(await improvementStatus(i.improvementId)).toBe('pending_review')

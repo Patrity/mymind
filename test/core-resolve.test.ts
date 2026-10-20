@@ -7,7 +7,7 @@ describe('@mymind/core/config resolution', () => {
   it('resolves and exposes initCore/coreConfig from the package subpath export', () => {
     _resetCoreForTests()
     expect(() => coreConfig()).toThrow()
-    initCore({})
+    initCore({} as never)
     expect(coreConfig()).toEqual({})
     _resetCoreForTests()
   })

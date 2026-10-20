@@ -17,7 +17,7 @@ import { sql } from 'drizzle-orm'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 const { useDb } = await import('@mymind/core/db')
-const { appendMessages, setActiveLeaf, setBranchLeaf, getConversation, captureTurnLeaf, conversationHasMessage } = await import('@mymind/core/services/conversations')
+const { appendMessages, appendEvent, setActiveLeaf, setBranchLeaf, getConversation, getAgentHistory, captureTurnLeaf, cancelPendingRoot, expireStalePendingRoot, restoreAfterUnsentBranch, NEW_ROOT } = await import('@mymind/core/services/conversations')
 
 // drizzle-orm/node-postgres's db.execute() returns a pg `Result`, not a plain array — unwrap
 // `.rows` (same correction as test/conversation-path.db.test.ts).
@@ -200,17 +200,8 @@ describe('setBranchLeaf sets branchParent\'s answer exactly, with no descent', (
     expect(await activeLeafOf(conv)).toBe(byContent('Q2').id)
   })
 
-  it('returns null and writes NOTHING for a root (no parent a leaf column can express) and for a foreign id', async () => {
+  it('returns null and writes NOTHING for a foreign id; a FORK of a root hangs off the root itself', async () => {
     const { conv, byContent } = await trunk()
-    await setBranchLeaf(conv, byContent('A1').id, 'fork')
-    const before = await activeLeafOf(conv)
-
-    // Q1 is the root: an edit of it would have to become a SECOND root, which active_leaf_id
-    // cannot say. null, and the route turns that into a 404.
-    expect(await setBranchLeaf(conv, byContent('Q1').id, 'edit')).toBeNull()
-    expect(await activeLeafOf(conv)).toBe(before)
-
-    // ...but a FORK of that same root is fine — it hangs off the root itself.
     expect(await setBranchLeaf(conv, byContent('Q1').id, 'fork')).toBe(byContent('Q1').id)
 
     // Scoping: a real message id from another conversation must be refused, writing nothing.
@@ -224,27 +215,156 @@ describe('setBranchLeaf sets branchParent\'s answer exactly, with no descent', (
 })
 
 /**
- * The route uses this to tell apart the two cases `setBranchLeaf` collapses into null, so the
- * error can say "the first message of a thread cannot be branched yet" instead of falsely
- * claiming the message is not in the thread. It is only worth anything if it really is scoped.
+ * Cycle 88: editing or regenerating the FIRST message. Its new version has no parent, which
+ * `active_leaf_id` cannot express (null there means "flat read"), so setBranchLeaf sets
+ * `branch_at_root` instead: the path is empty until the next append writes a second root.
  */
-describe('conversationHasMessage distinguishes a root from a foreign id', () => {
-  it('is true for a root (which setBranchLeaf still refuses to edit) and false across conversations', async () => {
-    const conv = await newConversation('-has-message')
+describe('first-message branching (branch_at_root)', () => {
+  async function flagOf(id: string): Promise<boolean> {
+    const [c] = rows<{ branch_at_root: boolean }>(await useDb().execute(
+      sql`select branch_at_root from conversations where id = ${id}::uuid`))
+    return c!.branch_at_root
+  }
+  async function thread() {
+    const conv = await newConversation('-root-' + Math.random().toString(16).slice(2, 8))
     await appendMessages(conv, [msg('user', 'Q1'), msg('assistant', 'A1')])
-    const root = (await getConversation(conv))!.messages.find(m => m.content === 'Q1')!
+    await appendMessages(conv, [msg('user', 'Q2'), msg('assistant', 'A2')])
+    const all = (await getConversation(conv))!.messages
+    return { conv, byContent: (c: string) => all.find(m => m.content === c)!, tip: await activeLeafOf(conv) }
+  }
 
-    // The root IS in the conversation — and editing it still resolves to null, which is exactly
-    // the pair of facts the route needs to word the error honestly.
-    expect(await conversationHasMessage(conv, root.id)).toBe(true)
-    expect(await setBranchLeaf(conv, root.id, 'edit')).toBeNull()
+  it.each(['edit', 'regenerate'] as const)('%s of a root empties BOTH read paths and the next turn becomes a second root, alone in the model history', async (op) => {
+    const { conv, byContent, tip } = await thread()
+    // Both ops read the target's parentId; the UI reaches regenerate via an edit of the question,
+    // but the server op is kept honest on its own.
+    const target = byContent('Q1')
+    expect(target.parentId).toBeNull()                                  // guard: really a root
 
-    const other = await newConversation('-has-message-other')
-    await appendMessages(other, [msg('user', 'elsewhere')])
-    const theirs = (await getConversation(other))!.messages[0]!
-    expect(await conversationHasMessage(other, theirs.id)).toBe(true)
-    expect(await conversationHasMessage(conv, theirs.id)).toBe(false)
-    expect(await conversationHasMessage(conv, '00000000-0000-4000-8000-000000000000')).toBe(false)
+    expect(await setBranchLeaf(conv, target.id, op)).toBe(NEW_ROOT)
+    expect(await flagOf(conv)).toBe(true)
+    expect(await activeLeafOf(conv)).toBe(tip)                          // leaf untouched: restorable
+    expect((await getConversation(conv))!.messages).toEqual([])         // not the flat read of everything
+    expect(await getAgentHistory(conv)).toEqual([])
+
+    const captured = await captureTurnLeaf(conv)
+    expect(captured).toBeNull()                                         // null = "start a new root"
+    const [q1b, a1b] = await appendMessages(conv, [msg('user', 'Q1-edited'), msg('assistant', 'A1-new')], captured)
+    expect(await flagOf(conv)).toBe(false)
+    expect(await activeLeafOf(conv)).toBe(a1b)
+
+    const after = (await getConversation(conv))!.messages
+    expect(after.map(m => m.content)).toEqual(['Q1-edited', 'A1-new'])
+    expect(after[0]!.parentId).toBeNull()
+    expect(after[0]!.branch).toEqual({ index: 2, total: 2 })            // ‹ 2/2 › on the first message
+    expect(after[0]!.siblingIds).toEqual([byContent('Q1').id, q1b])
+    // The model sees ONLY the new branch.
+    expect((await getAgentHistory(conv)).map(m => m.content)).toEqual(['Q1-edited', 'A1-new'])
+
+    // Paging back to the original root resumes it at its tip, with the whole original thread.
+    expect(await setActiveLeaf(conv, byContent('Q1').id)).toBe(tip)
+    const back = (await getConversation(conv))!.messages
+    expect(back.map(m => m.content)).toEqual(['Q1', 'A1', 'Q2', 'A2'])
+    expect(back[0]!.branch).toEqual({ index: 1, total: 2 })
+    expect((await getAgentHistory(conv)).map(m => m.content)).toEqual(['Q1', 'A1', 'Q2', 'A2'])
+  })
+
+  it('a turn that never goes out is undone by putting the leaf back (restoreLeaf): the flag clears and nothing is lost', async () => {
+    const { conv, byContent, tip } = await thread()
+    expect(await setBranchLeaf(conv, byContent('Q1').id, 'edit')).toBe(NEW_ROOT)
+    expect(await setActiveLeaf(conv, tip!)).toBe(tip)
+    expect(await flagOf(conv)).toBe(false)
+    expect((await getConversation(conv))!.messages.map(m => m.content)).toEqual(['Q1', 'A1', 'Q2', 'A2'])
+  })
+
+  it('a non-root branch op clears a pending root branch', async () => {
+    const { conv, byContent } = await thread()
+    await setBranchLeaf(conv, byContent('Q1').id, 'edit')
+    expect(await setBranchLeaf(conv, byContent('Q2').id, 'edit')).toBe(byContent('A1').id)
+    expect(await flagOf(conv)).toBe(false)
+    expect((await getConversation(conv))!.messages.map(m => m.content)).toEqual(['Q1', 'A1'])
+  })
+
+  // Review I4 / PENDING ROOT rule 1 (reverses the pre-review ruling, where an event row consumed
+  // the pending edit as the new root): an event extends the branch the thread was on and the edit
+  // stays pending, so a channel send / job note can neither steal nor cancel it.
+  it('an append with NO explicit parent (appendEvent) lands on the OLD branch and leaves the edit pending', async () => {
+    const { conv, byContent, tip } = await thread()
+    await setBranchLeaf(conv, byContent('Q1').id, 'edit')
+    await appendEvent(conv, 'woke', 'wake:test')
+    expect(await flagOf(conv)).toBe(true)
+    expect((await getConversation(conv))!.messages).toEqual([])           // the edit is still pending
+    const [ev] = rows<{ id: string, parent_id: string }>(await useDb().execute(
+      sql`select id, parent_id from conversation_messages where conversation_id = ${conv}::uuid and content = 'woke'`))
+    expect(ev!.parent_id).toBe(tip)                                       // grafted onto the old tip
+    // …and the web turn still starts the new root.
+    expect(await captureTurnLeaf(conv)).toBeNull()
+    await appendMessages(conv, [msg('user', 'Q1-edited'), msg('assistant', 'A')], null)
+    expect((await getConversation(conv))!.messages.map(m => m.content)).toEqual(['Q1-edited', 'A'])
+    expect(await setActiveLeaf(conv, byContent('Q1').id)).toBe(ev!.id)  // the event is on the old branch
+  })
+
+  it('a non-UI turn (ignorePendingRoot) reads the old branch, extends it, and leaves the edit pending', async () => {
+    const { conv, byContent, tip } = await thread()
+    await setBranchLeaf(conv, byContent('Q1').id, 'edit')
+    expect(await getAgentHistory(conv)).toEqual([])                       // the web turn's view
+    const captured = await captureTurnLeaf(conv, { ignorePendingRoot: true })
+    expect(captured).toBe(tip)
+    expect((await getAgentHistory(conv, { ignorePendingRoot: true })).map(m => m.content)).toEqual(['Q1', 'A1', 'Q2', 'A2'])
+    const [, reply] = await appendMessages(conv, [msg('user', 'imessage'), msg('assistant', 'answer')], captured)
+    expect(await flagOf(conv)).toBe(true)
+    expect(await activeLeafOf(conv)).toBe(reply)
+    expect(await captureTurnLeaf(conv)).toBeNull()                        // the edit still starts a root
+  })
+
+  it('cancelPendingRoot undoes a pending first-message edit exactly (the leaf never moved)', async () => {
+    const { conv, byContent, tip } = await thread()
+    await setBranchLeaf(conv, byContent('Q1').id, 'edit')
+    expect(await cancelPendingRoot(conv)).toBe(true)
+    expect(await flagOf(conv)).toBe(false)
+    expect(await activeLeafOf(conv)).toBe(tip)
+    expect((await getConversation(conv))!.messages.map(m => m.content)).toEqual(['Q1', 'A1', 'Q2', 'A2'])
+    expect(await cancelPendingRoot(conv)).toBe(false)                     // nothing pending any more
+  })
+
+  it('restoreAfterUnsentBranch puts a truncated non-root edit back on the branch tip', async () => {
+    const { conv, byContent, tip } = await thread()
+    await setBranchLeaf(conv, byContent('Q2').id, 'edit')                 // leaf → A1, path truncated
+    expect((await getConversation(conv))!.messages.map(m => m.content)).toEqual(['Q1', 'A1'])
+    expect(await restoreAfterUnsentBranch(conv)).toBe('newest-branch')
+    expect(await activeLeafOf(conv)).toBe(tip)
+    expect((await getConversation(conv))!.messages.map(m => m.content)).toEqual(['Q1', 'A1', 'Q2', 'A2'])
+  })
+
+  describe('expireStalePendingRoot (rule 4: a conversation read cancels an abandoned edit)', () => {
+    const backdate = (conv: string, secs: number) => useDb().execute(
+      sql`update conversations set updated_at = now() - make_interval(secs => ${secs}) where id = ${conv}::uuid`)
+
+    it('keeps a FRESH pending edit — the client re-reads the thread straight after its PATCH', async () => {
+      const { conv, byContent } = await thread()
+      await setBranchLeaf(conv, byContent('Q1').id, 'edit')
+      expect((await getConversation(conv))!.messages).toEqual([])
+      expect(await flagOf(conv)).toBe(true)
+    })
+
+    it('cancels a pending edit older than the grace on the next read — the thread is not blank after a reload', async () => {
+      const { conv, byContent } = await thread()
+      await setBranchLeaf(conv, byContent('Q1').id, 'edit')
+      await backdate(conv, 120)
+      expect((await getConversation(conv))!.messages.map(m => m.content)).toEqual(['Q1', 'A1', 'Q2', 'A2'])
+      expect(await flagOf(conv)).toBe(false)
+    })
+
+    it('keeps a stale-looking pending edit while a run is queued or running on the thread', async () => {
+      const { conv, byContent } = await thread()
+      await setBranchLeaf(conv, byContent('Q1').id, 'edit')
+      await useDb().execute(sql`insert into agent_runs (conversation_id, session_key, trigger, profile, input, status)
+        values (${conv}::uuid, ${'zz-leaf-' + TAG}, 'user', 'interactive', '{}'::jsonb, 'queued')`)
+      await backdate(conv, 120)
+      expect(await expireStalePendingRoot(conv)).toBe(false)
+      expect((await getConversation(conv))!.messages).toEqual([])
+      await useDb().execute(sql`update agent_runs set status = 'done' where conversation_id = ${conv}::uuid`)
+      expect(await expireStalePendingRoot(conv)).toBe(true)
+    })
   })
 })
 

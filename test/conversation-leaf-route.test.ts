@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const setActiveLeaf = vi.fn()
 const setBranchLeaf = vi.fn()
-const conversationHasMessage = vi.fn()
-vi.mock('@mymind/core/services/conversations', () => ({ setActiveLeaf, setBranchLeaf, conversationHasMessage }))
+const cancelPendingRoot = vi.fn()
+const restoreAfterUnsentBranch = vi.fn()
+vi.mock('@mymind/core/services/conversations', () => ({ setActiveLeaf, setBranchLeaf, cancelPendingRoot, restoreAfterUnsentBranch, NEW_ROOT: 'new-root' }))
 vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
 vi.stubGlobal('createError', (o: { statusCode: number, statusMessage?: string }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
 vi.stubGlobal('getRouterParam', (e: { ctx: Record<string, string> }, k: string) => e.ctx[k])
@@ -16,7 +17,7 @@ const CONV_ID = '6f1e7b4a-0000-4000-8000-0000000000c1'
 const evt = (body: unknown, convId: string = CONV_ID) => ({ ctx: { id: convId }, body })
 const MSG_ID = '6f1e7b4a-0000-4000-8000-000000000001'
 
-beforeEach(() => { setActiveLeaf.mockReset(); setBranchLeaf.mockReset(); conversationHasMessage.mockReset() })
+beforeEach(() => { setActiveLeaf.mockReset(); setBranchLeaf.mockReset(); cancelPendingRoot.mockReset(); restoreAfterUnsentBranch.mockReset() })
 
 describe('PATCH /api/conversations/:id/leaf', () => {
   it('moves the leaf to the RESOLVED descendant, not necessarily the requested id', async () => {
@@ -73,40 +74,28 @@ describe('PATCH /api/conversations/:id/leaf — branch ops', () => {
     expect(setBranchLeaf).not.toHaveBeenCalled()
   })
 
-  it('404s when the op resolves to null (foreign id, or a root with no parent to hang off)', async () => {
+  it('404s "not in this conversation" when the op resolves to null (a foreign id)', async () => {
     setBranchLeaf.mockResolvedValue(null)
-    conversationHasMessage.mockResolvedValue(false)
-    await expect(handler(evt({ leafId: MSG_ID, op: 'edit' }))).rejects.toMatchObject({ statusCode: 404 })
-  })
-
-  // `branchParent` returns null for two unrelated reasons and the message must not conflate
-  // them: telling someone their own thread's first message "is not in this conversation" sent a
-  // previous round of this work chasing an id bug that wasn't there.
-  it('says the FIRST MESSAGE cannot be branched when the target is a root, not that it is missing', async () => {
-    setBranchLeaf.mockResolvedValue(null)
-    conversationHasMessage.mockResolvedValue(true)   // it IS in the thread — so it's the root
     await expect(handler(evt({ leafId: MSG_ID, op: 'edit' }))).rejects.toMatchObject({
       statusCode: 404,
-      statusMessage: 'The first message of a thread cannot be branched yet'
-    })
-  })
-
-  it('still says "not in this conversation" for an id that really is foreign', async () => {
-    setBranchLeaf.mockResolvedValue(null)
-    conversationHasMessage.mockResolvedValue(false)
-    await expect(handler(evt({ leafId: MSG_ID, op: 'edit' }))).rejects.toMatchObject({
       statusMessage: 'That message is not in this conversation'
     })
   })
 
-  // The no-op path has no branchParent to be ambiguous about — null there means exactly one
-  // thing, so it must not pay for an extra query or borrow the root wording.
-  it('does not consult conversationHasMessage on the no-op path', async () => {
+  // Cycle 88: an edit/regenerate of the FIRST message is a real branch now, not a 404. There is
+  // no leaf to report yet (the new root is written by the next turn), so the response says null
+  // rather than echoing the sentinel or claiming the requested id.
+  it.each(['edit', 'regenerate'] as const)('answers 200 with leafId null when op=%s targets a root (NEW_ROOT)', async (op) => {
+    setBranchLeaf.mockResolvedValue('new-root')
+    const out = await handler(evt({ leafId: MSG_ID, op }))
+    expect(out).toEqual({ ok: true, leafId: null })
+  })
+
+  it('still 404s on the no-op path for an unknown id', async () => {
     setActiveLeaf.mockResolvedValue(null)
     await expect(handler(evt({ leafId: MSG_ID }))).rejects.toMatchObject({
       statusMessage: 'That message is not in this conversation'
     })
-    expect(conversationHasMessage).not.toHaveBeenCalled()
   })
 
   // A bad op must not degrade to the no-op path: that would silently turn a typo'd fork into
@@ -129,3 +118,32 @@ describe('PATCH /api/conversations/:id/leaf — branch ops', () => {
     expect(setActiveLeaf).toHaveBeenCalledWith(CONV_ID, MSG_ID)
   })
 })
+
+// Review I4: the client restores a branch move whose turn never went out WITHOUT naming a leaf
+// (its transcript tail was a live stream). A pending first-message edit is cancelled exactly;
+// anything else descends from the branch parent.
+describe('PATCH /api/conversations/:id/leaf — op restore', () => {
+  it('cancels a pending first-message edit exactly, touching no leaf', async () => {
+    cancelPendingRoot.mockResolvedValue(true)
+    expect(await handler(evt({ op: 'restore' }))).toEqual({ ok: true, restored: 'exact' })
+    expect(cancelPendingRoot).toHaveBeenCalledWith(CONV_ID)
+    expect(restoreAfterUnsentBranch).not.toHaveBeenCalled()
+    expect(setActiveLeaf).not.toHaveBeenCalled()
+  })
+  it('otherwise descends to the newest branch tip', async () => {
+    cancelPendingRoot.mockResolvedValue(false)
+    restoreAfterUnsentBranch.mockResolvedValue('newest-branch')
+    expect(await handler(evt({ op: 'restore' }))).toEqual({ ok: true, restored: 'newest-branch' })
+    expect(restoreAfterUnsentBranch).toHaveBeenCalledWith(CONV_ID)
+  })
+  it('404s when there is nothing to restore', async () => {
+    cancelPendingRoot.mockResolvedValue(false)
+    restoreAfterUnsentBranch.mockResolvedValue(null)
+    await expect(handler(evt({ op: 'restore' }))).rejects.toMatchObject({ statusCode: 404 })
+  })
+  it('rejects a leafId with op restore', async () => {
+    await expect(handler(evt({ op: 'restore', leafId: MSG_ID }))).rejects.toMatchObject({ statusCode: 400 })
+    expect(cancelPendingRoot).not.toHaveBeenCalled()
+  })
+})
+

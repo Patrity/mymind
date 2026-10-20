@@ -18,7 +18,7 @@ vi.mock('@mymind/core/lib/agent/runtime/wake', () => ({ wake }))
 // (server/utils/auth-guard.ts) with no I/O, so exercising the real thing is what actually
 // proves the endpoint is wired to it.
 const handler = (await import('../server/api/admin/agent/wake.post')).default as (e: unknown) => Promise<unknown>
-const evt = (client: { type?: string } | undefined, body: unknown = {}) => ({ context: { client }, body })
+const evt = (client: { type?: string, [k: string]: unknown } | undefined, body: unknown = {}) => ({ context: { client }, body })
 
 beforeEach(() => { wake.mockReset() })
 

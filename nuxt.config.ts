@@ -42,6 +42,16 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
+  // Cycle 88 (I1): icons resolve ONLY from the locally installed @iconify-json collections
+  // (lucide, simple-icons). With the default `fallbackToApi: true`, any other name — e.g. the
+  // `i-vscode-icons-file-type-<ext>` Nuxt UI's ProseCodeIcon builds from a stored code fence's
+  // filename — is fetched from api.iconify.design at render time, putting attacker-chosen text on
+  // the wire with zero clicks. An unknown icon now renders as nothing. Guarded by
+  // app/lib/markdown/icon-config.test.ts.
+  icon: {
+    fallbackToApi: false
+  },
+
   // shadcn-vue primitives and AI Elements are vendored with barrel index.ts files and are
   // imported EXPLICITLY (`@/components/ai-elements/...`). Auto-registering them would put a
   // second `Button`/`Collapsible` family into the global component namespace beside Nuxt UI's.

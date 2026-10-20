@@ -124,7 +124,7 @@ describe('abortForCommand (the worker\'s abort command)', () => {
   })
 
   it('settled:false for a running row this process is not executing (another boot\'s orphan)', async () => {
-    const run = await runningRun('some-other-boot')
+    const run = await runningRun(crypto.randomUUID())
     try {
       expect(await abortForCommand({ conversationId: run.conversationId }, 200)).toEqual({ settled: false })
     } finally {
