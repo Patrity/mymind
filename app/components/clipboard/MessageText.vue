@@ -6,11 +6,13 @@
 //
 // Adapted from copipasta: uses MyMind's MdView component for plain-text
 // rendering (MDC-based) instead of copipasta's marked+sanitize pipeline.
-// For bodyHtml we still sanitize client-side via isomorphic-dompurify.
+// bodyHtml is sanitized client-side through hardenStoredHtml (DOMPurify + the cycle-88 stored-
+// content policy: no remote images, no style/srcset/ping, no iframes/embeds), not bare DOMPurify —
+// DOMPurify's defaults keep <img src=remote> and style="url(…)", which load on render.
 //
 // CopyButtons live in an absolutely-positioned overlay that only appears on
 // hover, keeping the message body uncluttered while the user is reading.
-import DOMPurify from 'isomorphic-dompurify'
+import { hardenStoredHtml } from '~/lib/markdown/stored-harden'
 
 interface MessageLike {
   id: string
@@ -21,10 +23,7 @@ const props = defineProps<{ message: MessageLike }>()
 
 const sanitizedHtml = computed(() => {
   if (!props.message.bodyHtml) return null
-  return DOMPurify.sanitize(props.message.bodyHtml, {
-    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed'],
-    FORBID_ATTR: ['onerror', 'onload', 'onclick']
-  })
+  return hardenStoredHtml(props.message.bodyHtml, { origin: useRequestURL().origin })
 })
 </script>
 
