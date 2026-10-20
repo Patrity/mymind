@@ -239,7 +239,7 @@ describe('job store — enabled-jobs guard race (review fix round 1, item 3)', (
       const results = await Promise.allSettled(raceSlugs.map(slug => createJob({
         slug, content: md('trigger: every 5h\nenabled: true', 'race'), actor: 'human'
       })))
-      const succeeded = results.filter((r): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
+      const succeeded = results.filter((r: PromiseSettledResult<unknown>): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
       const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
 
       expect(succeeded).toHaveLength(1)
@@ -264,7 +264,7 @@ describe('job store — create/create race on one slug (review fix round 1, item
       const results = await Promise.allSettled(Array.from({ length: 5 }, (_, i) => createJob({
         slug, content: md('trigger: every 10m\nenabled: false', `attempt ${i}`), actor: 'human'
       })))
-      const succeeded = results.filter((r): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
+      const succeeded = results.filter((r: PromiseSettledResult<unknown>): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
       const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
 
       expect(succeeded).toHaveLength(1)

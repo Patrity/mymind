@@ -478,7 +478,7 @@ describe('deploy.yml', () => {
   it('lxc: the first runtime step refuses once the variables say the cutover is done', () => {
     const lxc = steps.filter(s => s.name.startsWith('[lxc]'))
     expect(lxc[0]!.name).toBe('[lxc] Refuse after cutover')
-    const guard = lxc[0] as { env: Record<string, string>; run: string }
+    const guard = lxc[0] as unknown as { env: Record<string, string>; run: string }
     expect(guard.env).toEqual({ VAR_TARGET: '${{ vars.DEPLOY_TARGET }}', CUTOVER_DONE: '${{ vars.MYMIND_CUTOVER_DONE }}' })
     const sh = (env: Record<string, string>) => spawnSync('bash', ['-c', guard.run], { env: { ...process.env, ...env }, encoding: 'utf8' }).status
     expect(sh({ VAR_TARGET: 'macmini', CUTOVER_DONE: '' })).toBe(1)

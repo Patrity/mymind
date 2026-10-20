@@ -1,4 +1,4 @@
-import { setActiveLeaf, setBranchLeaf, conversationHasMessage } from '@mymind/core/services/conversations'
+import { cancelPendingRoot, restoreAfterUnsentBranch, setActiveLeaf, setBranchLeaf, NEW_ROOT } from '@mymind/core/services/conversations'
 import { publishChange } from '@mymind/core/utils/live-bus'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -11,6 +11,19 @@ export default defineEventHandler(async (event) => {
   // Postgres type error surfacing as a 500.
   if (!UUID.test(id)) throw createError({ statusCode: 400, statusMessage: 'id must be a uuid' })
   const body = await readBody(event) as { leafId?: unknown, op?: unknown }
+
+  // op 'restore' with no leafId: "the branch I just made never got its turn — put the thread
+  // back" when the client cannot name the old leaf (its transcript tail was still a live stream).
+  // A pending FIRST-message edit is undone exactly (cancelPendingRoot: the leaf never moved); any
+  // other branch move descends from the current leaf to its newest tip, so nothing stays hidden.
+  if (body?.op === 'restore') {
+    if (body.leafId !== undefined && body.leafId !== null) throw createError({ statusCode: 400, statusMessage: 'op restore takes no leafId' })
+    const restored = await cancelPendingRoot(id) ? 'exact' as const : await restoreAfterUnsentBranch(id)
+    if (!restored) throw createError({ statusCode: 404, statusMessage: 'Nothing to restore in this conversation' })
+    publishChange({ resource: 'conversation', action: 'updated', id })
+    return { ok: true, restored }
+  }
+
   const leafId = typeof body?.leafId === 'string' ? body.leafId : ''
   if (!UUID.test(leafId)) throw createError({ statusCode: 400, statusMessage: 'leafId must be a uuid' })
   // `op` is optional, but an op the server doesn't know is a client bug, not "no op" — silently
@@ -31,28 +44,16 @@ export default defineEventHandler(async (event) => {
   // message; edit/regenerate → its parent) and the result is written EXACTLY, because the
   // descent above would walk a fork straight back to the end of the thread and undo it.
   //
-  // null from either means there is nothing to point at: not a message in this conversation,
-  // or (with an op) a root whose parent a leaf column cannot express.
+  // null from either means the message is not in this conversation. An edit/regenerate of the
+  // FIRST message answers NEW_ROOT (cycle 88): the thread's path is now empty and the next turn
+  // starts a second root, a sibling of the original first message.
   const resolved = op
     ? await setBranchLeaf(id, leafId, op as BranchOp)
     : await setActiveLeaf(id, leafId)
-  if (!resolved) {
-    // `branchParent` answers null for two different reasons, and the UI must not conflate them.
-    // Either the message is not in this conversation, or it IS but it is the thread's ROOT —
-    // whose parent `active_leaf_id` cannot express, since null there already means "fall back to
-    // a flat read". Reporting a root as "not in this conversation" is a lie about the user's own
-    // thread, and it already sent one round of this work chasing the wrong bug.
-    const isRoot = !!op && await conversationHasMessage(id, leafId)
-    throw createError({
-      statusCode: 404,
-      statusMessage: isRoot
-        ? 'The first message of a thread cannot be branched yet'
-        : 'That message is not in this conversation'
-    })
-  }
+  if (!resolved) throw createError({ statusCode: 404, statusMessage: 'That message is not in this conversation' })
 
   publishChange({ resource: 'conversation', action: 'updated', id })
   // Return the RESOLVED leaf, never the requested one — the response must not claim a leaf it
-  // did not actually set.
-  return { ok: true, leafId: resolved }
+  // did not actually set. A new-root branch has no leaf yet: null.
+  return { ok: true, leafId: resolved === NEW_ROOT ? null : resolved }
 })

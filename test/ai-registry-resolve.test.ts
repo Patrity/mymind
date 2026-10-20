@@ -15,10 +15,10 @@ function build(): AiConfigDoc {
       { id: 'p2', name: 'B', kind: 'openai-compatible', baseURL: 'http://gateway/v1', apiKeyEnc: encryptSecret('k2') }
     ],
     models: [
-      { id: 'm1', providerId: 'p1', modelId: 'qwen', label: 'Qwen', dim: null, contextWindow: null },
-      { id: 'm2', providerId: 'p2', modelId: 'claude', label: 'Claude', dim: null, contextWindow: null },
-      { id: 'e1', providerId: 'p1', modelId: 'embed', label: 'Embed', dim: EMBEDDING_DIM, contextWindow: null },
-      { id: 'e2', providerId: 'p1', modelId: 'embed-bad', label: 'EmbedBad', dim: 1024, contextWindow: null }
+      { id: 'm1', providerId: 'p1', modelId: 'qwen', label: 'Qwen', dim: null, contextWindow: null, description: null, maxInFlight: null },
+      { id: 'm2', providerId: 'p2', modelId: 'claude', label: 'Claude', dim: null, contextWindow: null, description: null, maxInFlight: null },
+      { id: 'e1', providerId: 'p1', modelId: 'embed', label: 'Embed', dim: EMBEDDING_DIM, contextWindow: null, description: null, maxInFlight: null },
+      { id: 'e2', providerId: 'p1', modelId: 'embed-bad', label: 'EmbedBad', dim: 1024, contextWindow: null, description: null, maxInFlight: null }
     ],
     assignments: { ...emptyDoc().assignments, reasoning: ['m1', 'm2'], embeddings: ['e2', 'e1'] }
   }
@@ -118,7 +118,7 @@ describe('withFailoverOver', () => {
 describe('eval model override', () => {
   const withSubs = (): AiConfigDoc => {
     const d = build()
-    d.models.push({ id: 's1', providerId: 'p2', modelId: 'haiku', label: 'Haiku', dim: null, contextWindow: null })
+    d.models.push({ id: 's1', providerId: 'p2', modelId: 'haiku', label: 'Haiku', dim: null, contextWindow: null, description: null, maxInFlight: null })
     d.assignments = { ...d.assignments, subagents: ['s1', 'm2'] }
     return d
   }

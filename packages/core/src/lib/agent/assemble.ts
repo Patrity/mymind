@@ -5,6 +5,7 @@ import { listResidentMemories, recordRetrievals as realRecordRetrievals, searchM
 import { getSkill } from '../../services/skills'
 import { useDb } from '../../db'
 import { conversations } from '../../db/schema'
+import { loadActivePath } from '../../services/conversation-path'
 import { eq, sql } from 'drizzle-orm'
 import type { MemoryDTO } from '../../shared/types/memory'
 import { capToTokens, RECENT_THREADS_MAX_TOKENS, MAIN_STATE_MAX_TOKENS } from './runtime/history'
@@ -67,7 +68,7 @@ export interface AssembleDeps {
   listResident?: () => Promise<MemoryDTO[]>
   search?: (q: string) => Promise<MemoryDTO[]>
   liveContext?: (now: Date) => Promise<string>
-  summary?: (conversationId: string) => Promise<string | null>
+  summary?: (conversationId: string, summaryApplies?: boolean) => Promise<string | null>
   recordRetrievals?: (ids: string[]) => Promise<void>
   /** Test-only seam so skill resolution needs no database — defaults to the body of
    *  `getSkill(name, { activeOnly: true })`, so a deactivated skill the `/` menu hides
@@ -85,6 +86,10 @@ export interface AssembleInput {
   /** The user's message. EMPTY on a proactive turn — see synthesiseQuery. */
   userText: string
   conversationId?: string
+  /** Whether the thread summary was folded from the path this turn reads (loadActivePath's
+   *  `summaryApplies`), when the caller already loaded that path — the runner does, for history.
+   *  Omitted → loadSummary walks the thread itself (a second full-thread read; review M1). */
+  summaryApplies?: boolean
   /** 'main' gets a recent-threads tier (what Tony's been doing elsewhere); 'thread' gets a
    *  main-state tier (what main's been up to). Undefined (most callers/tests) gets neither. */
   conversationKind?: 'main' | 'thread'
@@ -122,10 +127,16 @@ export function synthesiseQuery(summary: string | null, liveState: string): stri
   return [summary?.trim(), liveState.trim()].filter(Boolean).join('\n').trim()
 }
 
-async function loadSummary(conversationId: string): Promise<string | null> {
+/** The thread's summary — only when it was folded from the ACTIVE path (cycle 88). After a
+ *  branch switch or a first-message edit it describes another branch; injecting it would tell the
+ *  model about a conversation Tony just started over from. */
+export async function loadSummary(conversationId: string, summaryApplies?: boolean): Promise<string | null> {
+  if (summaryApplies === false) return null
   const [row] = await useDb().select({ summary: conversations.summary })
     .from(conversations).where(eq(conversations.id, conversationId)).limit(1)
-  return row?.summary ?? null
+  if (!row?.summary) return null
+  if (summaryApplies === true) return row.summary
+  return (await loadActivePath(conversationId)).summaryApplies ? row.summary : null
 }
 
 /** Main's view of what Tony has been doing elsewhere: summaries of side threads touched in the
@@ -239,7 +250,7 @@ async function assembleContextInner(input: AssembleInput, skillBody: string | nu
     safe(() => listResident(), [] as MemoryDTO[], 'resident'),
     safe(() => liveContext(now), '', 'liveState'),
     input.conversationId
-      ? safe(() => summaryOf(input.conversationId!), null as string | null, 'summary')
+      ? safe(() => summaryOf(input.conversationId!, input.summaryApplies), null as string | null, 'summary')
       : Promise.resolve(null),
     kind === 'main' && input.conversationId
       ? safe(() => (d.recentThreads ?? loadRecentThreads)(input.conversationId!), '', 'recentThreads')

@@ -7,7 +7,7 @@ import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
 const preset: VoicePresetDTO = {
   id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
   topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
-  maxSegmentChars: 200, isDefault: true
+  maxSegmentChars: 200, starredSeeds: [], refSource: 'upload', calibratedRefKey: null, isDefault: true
 }
 
 const stt = { transcribe: vi.fn(async () => 'what are my tasks') }

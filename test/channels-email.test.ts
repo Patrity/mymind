@@ -97,7 +97,7 @@ describe('emailChannel.send — app origin (M4)', () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: 'x' }), { status: 200 }))
     vi.stubGlobal('$fetch', fetchMock)
     await emailChannel.send({ id: 'd1', target: 'tony@example.com', payload: { text: '![c](/api/images/abc/raw)' }, attempts: 0, firstClaimedAt: null })
-    const [, init] = fetchMock.mock.calls[0] as [string, { body: Record<string, unknown> }]
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: Record<string, unknown> }]
     expect(init.body.html).toContain('href="https://brain.example.test/api/images/abc/raw"')
   })
 })
@@ -160,7 +160,7 @@ describe('sendResendEmail', () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: 'x' }), { status: 200 }))
     vi.stubGlobal('$fetch', fetchMock)
     await sendResendEmail({ apiKey: 'k', from: 'a@b.io', to: 'c@d.io', subject: 's', text: 't', html: '<p>t</p>' })
-    const [url, init] = fetchMock.mock.calls[0] as [string, { body: { html?: string } }]
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { body: { html?: string } }]
     expect(url).toBe('https://api.resend.com/emails')
     expect(init.body.html).toBe('<p>t</p>')
   })
@@ -169,7 +169,7 @@ describe('sendResendEmail', () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: 'x' }), { status: 200 }))
     vi.stubGlobal('$fetch', fetchMock)
     await sendResendEmail({ apiKey: 'k', from: 'a@b.io', to: 'c@d.io', subject: 's', text: 't' })
-    const [, init] = fetchMock.mock.calls[0] as [string, { body: { html?: string } }]
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: { html?: string } }]
     expect('html' in init.body).toBe(false)
   })
 })
@@ -199,7 +199,7 @@ describe('emailChannel.send', () => {
     const r = await emailChannel.send(delivery())
 
     expect(r.ok).toBe(true)
-    const [url, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string>, body: Record<string, unknown> }]
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { headers: Record<string, string>, body: Record<string, unknown> }]
     expect(url).toBe('https://api.resend.com/emails')
     expect(init.headers.authorization).toBe('Bearer resend-key')
     expect(init.body.from).toBe('bridget@mymind.dev')
@@ -214,7 +214,7 @@ describe('emailChannel.send', () => {
 
     await emailChannel.send(delivery({ payload: { text: 'hi', subject: 'custom subject' } }))
 
-    const [, init] = fetchMock.mock.calls[0] as [string, { body: Record<string, unknown> }]
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: Record<string, unknown> }]
     expect(init.body.subject).toBe('custom subject')
   })
 

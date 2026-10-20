@@ -35,6 +35,22 @@ function onSelectFolder(path: string) {
   treeRef.value?.revealFolder(path)
 }
 
+// Phone layout: below `lg` the tree and the editor can't sit side by side, so one shows at a
+// time (the tree was simply `hidden`, leaving no way to pick a document). Picking a document
+// flips to the editor; the editor header's "Files" button flips back. `lg`+ ignores this.
+// The flip happens in `openDocument` (the pick itself), not only in a watch on `selectedId`:
+// tapping the document that is ALREADY open doesn't change the id, so a watch never fires and
+// the phone stayed on the tree (review M2). The watch still covers deep-links / cookie restore,
+// and sends the phone back to the tree when the open document goes away (deleted → null).
+const mobilePane = ref<'tree' | 'editor'>('tree')
+watch(selectedId, (id) => {
+  mobilePane.value = id ? 'editor' : 'tree'
+}, { immediate: true })
+function openDocument(id: string) {
+  selectedId.value = id
+  mobilePane.value = 'editor'
+}
+
 // Last-open cookie — persists selected doc across sessions
 const lastDoc = useCookie<string | null>('mm.lastDoc', { default: () => null })
 
@@ -87,7 +103,7 @@ function onSearchInput(val: string) {
 }
 
 function selectSearchResult(id: string) {
-  selectedId.value = id
+  openDocument(id)
   // Clear search
   searchQuery.value = ''
   searchResults.value = []
@@ -165,11 +181,15 @@ onUnmounted(() => {
       :default-size="18"
       :min-size="12"
       :max-size="35"
-      class="hidden lg:flex"
+      class="lg:flex"
+      :class="mobilePane === 'tree' ? 'flex' : 'hidden'"
       :ui="{ body: '!p-0' }"
     >
       <template #header>
         <UDashboardNavbar>
+          <template #leading>
+            <UDashboardSidebarCollapse class="lg:hidden" />
+          </template>
           <template #title>
             <span class="text-sm font-medium">Documents</span>
           </template>
@@ -250,7 +270,7 @@ onUnmounted(() => {
           ref="treeRef"
           :tree="treeData"
           :selected-id="selectedId"
-          @select="selectedId = $event"
+          @select="openDocument($event)"
           @refresh="refetchTree"
           @new-document="openNewDocumentAt"
         />
@@ -261,12 +281,22 @@ onUnmounted(() => {
     <UDashboardPanel
       id="documents-editor"
       grow
+      :class="mobilePane === 'editor' ? '' : 'max-lg:hidden'"
       :ui="{ body: '!p-0' }"
     >
       <template #header>
         <UDashboardNavbar title="Documents">
           <template #leading>
             <UDashboardSidebarCollapse />
+            <UButton
+              icon="i-lucide-folder-tree"
+              size="xs"
+              variant="soft"
+              color="neutral"
+              label="Files"
+              class="lg:hidden"
+              @click="mobilePane = 'tree'"
+            />
           </template>
           <template #right>
             <UButton

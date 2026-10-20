@@ -144,6 +144,16 @@ const sessionTitle = computed(() => {
 
 // ── Reassignment ──────────────────────────────────────────────────────────────
 const reassignOpen = ref(false)
+
+// ── Phone layout ──────────────────────────────────────────────────────────────
+// Below `lg` the resizable split-pane can't fit two columns (the transcript collapsed to
+// 0px), so one pane shows at a time behind a switch. At `lg`+ both panes always show and the
+// switch is hidden. Transcript first: it's what you open a session to read.
+const mobilePane = ref<'transcript' | 'details'>('transcript')
+const mobilePaneItems = [
+  { label: 'Transcript', value: 'transcript', icon: 'i-lucide-messages-square' },
+  { label: 'Details', value: 'details', icon: 'i-lucide-info' }
+]
 </script>
 
 <template>
@@ -214,8 +224,15 @@ const reassignOpen = ref(false)
       <!-- Content: resizable split-pane (LEFT metadata / RIGHT transcript) -->
       <div
         v-else-if="meta"
-        class="flex flex-1 min-w-0 h-full"
+        class="flex flex-col lg:flex-row flex-1 min-w-0 h-full"
       >
+        <UTabs
+          v-model="mobilePane"
+          :items="mobilePaneItems"
+          :content="false"
+          size="sm"
+          class="lg:hidden shrink-0 px-4 pt-3"
+        />
         <UDashboardPanel
           id="session-meta"
           resizable
@@ -223,6 +240,7 @@ const reassignOpen = ref(false)
           :min-size="22"
           :max-size="55"
           class="border-r border-default"
+          :class="mobilePane === 'details' ? '' : 'max-lg:hidden'"
         >
           <template #body>
             <div class="p-4 overflow-y-auto h-full">
@@ -333,7 +351,11 @@ const reassignOpen = ref(false)
           </template>
         </UDashboardPanel>
 
-        <div class="flex-1 min-w-0 h-full p-4 flex flex-col min-h-0">
+        <div
+          data-testid="session-transcript-pane"
+          class="flex-1 min-w-0 h-full p-4 flex flex-col min-h-0"
+          :class="mobilePane === 'transcript' ? '' : 'max-lg:hidden'"
+        >
           <SessionsTranscriptFilters
             v-model="filters"
             :tool-names="meta.toolNames ?? []"

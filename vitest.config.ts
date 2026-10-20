@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url'
+import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vitest/config'
 
 // Minimal config: keep vitest's default test discovery but also exclude
@@ -6,6 +7,9 @@ import { defineConfig } from 'vitest/config'
 // (which carry their own duplicate `test/` dirs) don't get double-discovered
 // and inflate/confuse the suite. Mirrors vitest's default exclude list + that path.
 export default defineConfig({
+  // Cycle 88: compiles .vue files so the stored-markdown hardening tests can mount the REAL MdView
+  // → @nuxtjs/mdc MDC/MDCRenderer chain (both ship as SFCs) instead of a mock.
+  plugins: [vue()],
   resolve: {
     // Nuxt configures these aliases (`~~`/`@@` -> rootDir, `~`/`@` -> srcDir='app') for its
     // own Vite build, but plain `vitest run` never boots Nuxt, so a unit test that imports a
@@ -29,8 +33,8 @@ export default defineConfig({
       '**/.{idea,git,cache,output,temp}/**',
       '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*',
       '**/.claude/**',
-      // DB-backed tests (*.db.test.ts) need a real Postgres. CI has no database service and
-      // `deploy` needs `test`, so they run via `pnpm test:db` locally, never in the CI gate.
+      // DB-backed tests (*.db.test.ts) need a real Postgres. They run in their own CI step (`pnpm test:db`, see deploy.yml) and
+      // locally via `pnpm test:db`, never in this config.
       '**/*.db.test.ts'
     ]
   }

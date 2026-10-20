@@ -24,13 +24,13 @@ vi.mock('h3', async () => {
   }
 })
 
-globalThis.defineEventHandler = (fn: unknown) => fn as never
-globalThis.createError = ((opts: { statusCode: number, statusMessage: string }) => {
+;(globalThis as any).defineEventHandler = (fn: unknown) => fn as never
+;(globalThis as any).createError = ((opts: { statusCode: number, statusMessage: string }) => {
   const error = new Error(opts.statusMessage)
   ;(error as never as { statusCode: number }).statusCode = opts.statusCode
   return error
 }) as never
-globalThis.getQuery = ((event: { node: { req: { url?: string } } }) => {
+;(globalThis as any).getQuery = ((event: { node: { req: { url?: string } } }) => {
   const url = new URL(event.node.req.url || '/?', 'http://localhost')
   const query: Record<string, string> = {}
   url.searchParams.forEach((value, key) => { query[key] = value })

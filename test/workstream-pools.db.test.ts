@@ -166,7 +166,7 @@ describe('per-model in-flight pools', () => {
     const limits = { [X]: 1, [Y]: 1 }
     const run = await claim([x], limits)
     expect(run?.id).toBe(x.id)
-    let yClaimed: AgentRun | null = null
+    let yClaimed = null as AgentRun | null
     // The segment "fails over" to Y and answers from it; while it runs, Y's pool is still empty.
     await _executeClaimedForTests(run!, async () => {
       yClaimed = await claim([y], limits)

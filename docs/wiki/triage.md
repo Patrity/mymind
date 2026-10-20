@@ -2,7 +2,7 @@
 title: Capture Triage
 status: shipped
 cycle: 77
-updated: 2026-10-02
+updated: 2026-10-20
 mymind_id: 323bbf97-f177-429b-beea-675ff0388799
 mymind_hash: d85d13daf7a1e340d3671ef82ff4cd2b103dcb8ba4741a1222a693d869cd25fa
 ---
@@ -272,8 +272,10 @@ error rather than silently duplicating the other action's output as a second, st
 `/review` (`app/pages/review.vue`) renders `kind: 'triage'` as a fourth card type alongside
 `enrichment`, `memory-supersede`, `memory-contradict`, and the synthetic `memory-unreviewed`
 items (see [memory.md](memory.md) and [enrichment.md](enrichment.md)). A triage card (reworked
-2026-10-02) shows **the captured text** (rendered markdown, provenance footer stripped into a
-"from memory extraction" badge), then **"If you approve"** — each queued action as a plain sentence
+2026-10-02) shows **the captured text** (rendered markdown through the hardened `MdView`, so inbound-email
+content cannot load remote images, styles, iframes or icons. See [document-spine § Markdown rendering
+safety](document-spine.md#markdown-rendering-safety-cycle-88). The provenance footer is stripped
+into a "from memory extraction" badge), then **"If you approve"** — each queued action as a plain sentence
 (`app/components/review/TriageAction.vue`): *Create document* title → path; *Append to* the named
 target with the exact block it adds; *Create task* with project/priority/due; *Save memory* with its
 text — plus what is removed (the `/input` capture, except for a note). Then the reasoning ("Why"),

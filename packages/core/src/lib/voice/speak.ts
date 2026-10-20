@@ -1,9 +1,13 @@
-// Composes: queue slot -> Breeze call -> preset field mapping. The ONLY place that may
-// call breezeSpeak, because the queue slot must wrap the whole stream lifetime.
+// Composes: queue slot -> TTS call -> preset field mapping. The ONLY place that may call
+// breezeSpeak / audiocppSpeak, because the queue slot must wrap the whole stream lifetime.
 import { Buffer } from 'node:buffer'
-import { breezeSpeak, BreezeError, busyBackoffMs, BUSY_RETRY_ATTEMPTS, type BreezeRequest, type BreezeStream } from './breeze'
+import { breezeSpeak, BreezeError, busyBackoffMs, BUSY_RETRY_ATTEMPTS, type BreezeRequest, type BreezeStream, type SpeakFn } from './breeze'
 import { breezeQueue, type BreezeQueue, type QueuePriority } from './breeze-queue'
+import { speakFnFor } from './tts-provider'
+import { audiocppSpeak } from './audiocpp'
 import { resolveChain } from '../ai/registry/resolve'
+import type { ResolvedModel } from '../ai/registry/types'
+import { coreConfig, type CoreConfig } from '../../config'
 import type { VoicePresetDTO, SpeakOverrides } from '../../shared/types/voice-presets'
 
 export type SpeakChunk =
@@ -13,7 +17,7 @@ export type SpeakChunk =
 export interface SpeakDeps {
   baseURL: () => Promise<string>
   queue?: BreezeQueue
-  speakFn?: typeof breezeSpeak
+  speakFn?: SpeakFn
   /** Injected so the busy-retry backoff is testable without real timers. */
   sleep?: (ms: number) => Promise<void>
   /** Fired before each busy wait, so a surface can say "the rig is busy" instead of failing. */
@@ -96,7 +100,7 @@ export function presetToRequest(text: string, p: VoicePresetDTO, refAudio: Uint8
 async function dialWithBusyRetry(
   base: string,
   req: BreezeRequest,
-  speakFn: typeof breezeSpeak,
+  speakFn: SpeakFn,
   deps: SpeakDeps,
   signal?: AbortSignal
 ): Promise<BreezeStream> {
@@ -105,7 +109,9 @@ async function dialWithBusyRetry(
   for (let attempt = 0; attempt < BUSY_RETRY_ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
     try {
-      return await speakFn(base, req)
+      // The signal rides along so an adapter that can safely abort its dial (audio.cpp, which
+      // may be HELD by the server for busy_timeout_ms) does so; Breeze ignores it (D3 B1).
+      return await speakFn(base, req, { signal })
     } catch (err) {
       if (!(err instanceof BreezeError) || err.code !== 'busy') throw err
       lastBusy = err
@@ -156,16 +162,44 @@ export function createSpeaker(deps: SpeakDeps) {
   }
 }
 
-/** App-wired speaker: base URL from the registry's tts assignment (first entry wins). */
-export const speakWithPreset = createSpeaker({
-  baseURL: async () => {
-    const chain = await resolveChain('tts')
-    const head = chain[0]
-    if (!head?.baseURL) throw new Error('No TTS model configured — set one in Settings → Models')
-    // The registry stores OpenAI-style base URLs ending in /v1; Breeze's own path already
-    // includes /v1, so strip it to get the service root.
-    return head.baseURL.replace(/\/$/, '').replace(/\/v1$/, '')
+/**
+ * The app-wired speaker's deps, as a function of the TTS switch (`AI_TTS_PROVIDER`) and the
+ * registry's `tts` assignment. Pure so the switch is testable without booting core:
+ *  - `breeze` (the default): breezeSpeak at the registry's tts base URL — byte-for-byte what
+ *    production did before the audio.cpp adapter existed;
+ *  - `audiocpp`: audiocppSpeak at `AI_TTS_AUDIOCPP_BASE_URL` when set, else the registry URL,
+ *    so a cutover can be a single env edit and Settings → Models stays the URL's home otherwise.
+ * The registry stores OpenAI-style base URLs ending in /v1; both adapters add their own
+ * `/v1/audio/speech`, so `/v1` is stripped to get the service root either way.
+ */
+export function appSpeakDeps(
+  readConfig: () => Pick<CoreConfig, 'ttsProvider' | 'ttsAudiocppBaseUrl'> & Partial<Pick<CoreConfig, 'ttsAudiocppBusyTimeoutMs'>>,
+  ttsChain: () => Promise<ResolvedModel[]> = () => resolveChain('tts')
+): Required<Pick<SpeakDeps, 'baseURL' | 'speakFn'>> {
+  const serviceRoot = (url: string) => url.replace(/\/$/, '').replace(/\/v1$/, '')
+  const cfg = readConfig()
+  // `AI_TTS_AUDIOCPP_BUSY_TIMEOUT_MS` (D3 B1) rides on every audio.cpp dial; unset ⇒ the adapter as-is.
+  const busyTimeoutMs = cfg.ttsAudiocppBusyTimeoutMs
+  const speakFn: SpeakFn = cfg.ttsProvider === 'audiocpp' && busyTimeoutMs
+    ? (base, req, opts) => audiocppSpeak(base, req, { ...opts, busyTimeoutMs })
+    : speakFnFor(cfg.ttsProvider)
+  return {
+    speakFn,
+    baseURL: async () => {
+      if (cfg.ttsProvider === 'audiocpp' && cfg.ttsAudiocppBaseUrl) return serviceRoot(cfg.ttsAudiocppBaseUrl)
+      const head = (await ttsChain())[0]
+      if (!head?.baseURL) throw new Error('No TTS model configured — set one in Settings → Models')
+      return serviceRoot(head.baseURL)
+    }
   }
+}
+
+/** App-wired speaker: engine from the TTS switch, base URL from the registry (or the override). */
+export const speakWithPreset = createSpeaker({
+  // Each dep reads the config when it is CALLED, not when this module loads — core is
+  // initialised after imports (initCore), and the test bridge resolves fields lazily.
+  baseURL: () => appSpeakDeps(coreConfig).baseURL(),
+  speakFn: (base, req, opts) => appSpeakDeps(coreConfig).speakFn(base, req, opts)
 })
 
 /**

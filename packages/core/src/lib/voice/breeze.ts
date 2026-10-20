@@ -44,7 +44,24 @@ export interface BreezeRequest {
   topK: number
   refAudio: { bytes: Uint8Array; filename: string } | null
   refText: string | null
+  /**
+   * A voice already in the engine's own library (audio.cpp `--voice-dir`), addressed by name.
+   * Only the audio.cpp adapter reads it; the Python Breeze server has no library, so it is
+   * ignored here. Nothing sets it from a preset today — it exists so a future library-voice
+   * preset can be expressed without changing the request shape again.
+   */
+  voice?: string | null
 }
+
+/**
+ * Options every adapter accepts on the dial. `signal` aborts the DIAL (up to first audio) on
+ * engines where that is safe; breezeSpeak deliberately ignores it (the Python server leaks its
+ * request lock on a torn-down response — see the 2026-09-16 wedge), audiocppSpeak honours it.
+ */
+export interface SpeakOptions { signal?: AbortSignal }
+
+/** The shape both adapters share; createSpeaker only ever calls this. */
+export type SpeakFn = (baseURL: string, req: BreezeRequest, opts?: SpeakOptions) => Promise<BreezeStream>
 
 /** Returns a human-readable reason the request would fail at the rig, or null. */
 export function validateBreezeRequest(req: BreezeRequest): string | null {

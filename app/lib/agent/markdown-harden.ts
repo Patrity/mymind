@@ -18,10 +18,12 @@
 // Code-block previewers are OFF (```html would render in an iframe). Link favicons are OFF (fetched without a click). Links stay clickable — a click is Tony's
 // choice and the library confirms external links.
 //
-// Not done here (follow-up): an app-wide CSP `img-src`/`style-src` backstop, and the same
-// hardening for MdView/MDC (documents, triage, shared docs) — see the 79b handover residuals.
+// Not done here (follow-up): an app-wide CSP `img-src`/`style-src` backstop. The stored-content
+// renderers (MdView/MDC, clipboard HTML) got the equivalent policy in cycle 88:
+// app/lib/markdown/stored-harden.ts.
 
 import type { ComarkPlugin, LinkOptions } from 'vue-stream-markdown'
+import { prefixFragmentHref, prefixId, safeClassValue } from '../markdown/safe-classes'
 
 type Attrs = Record<string, unknown>
 type MdNode = string | [string | null, Attrs, ...MdNode[]]
@@ -31,11 +33,10 @@ export const AGENT_IMAGE_PREFIX = '/api/images/'
 
 /** A same-origin `/api/images/…` path with no traversal or scheme tricks. */
 export function isAllowedAgentImage(src: unknown): boolean {
-  return typeof src === 'string'
-    && src.startsWith(AGENT_IMAGE_PREFIX)
-    && !src.includes('..')
-    && !src.includes('\\')
-    && !src.includes('//')
+  if (typeof src !== 'string') return false
+  const ok = (p: string) => p.startsWith(AGENT_IMAGE_PREFIX) && !p.includes('..') && !p.includes('\\') && !p.includes('//')
+  // Decoded too (cycle 88 M4): the browser normalizes `%2e%2e` to `..` before requesting.
+  try { return ok(src) && ok(decodeURIComponent(src)) } catch { return false }
 }
 
 const TEXT_ALIGN = /^text-align:\s*(?:left|right|center);?$/
@@ -44,7 +45,8 @@ const ALERTS = new Set(['note', 'tip', 'important', 'warning', 'caution'])
 /** tag → attribute → validator. Anything not listed is removed. */
 const ALLOWED: Record<string, Record<string, (v: unknown) => boolean>> = (() => {
   const any = () => true
-  const cls = (v: unknown) => typeof v === 'string' && /^[\w -]*$/.test(v)
+  // Filtered token-by-token in sanitizeAgentNodes (cycle 88 I2: no fixed/inset/z-index overlays).
+  const cls = (v: unknown) => safeClassValue(v) !== undefined
   const id = (v: unknown) => typeof v === 'string' && /^[\w-]*$/.test(v)
   const base = { class: cls, id, $: any }
   const t: Record<string, Record<string, (v: unknown) => boolean>> = {}
@@ -76,7 +78,7 @@ export function sanitizeAgentNodes(nodes: MdNode[]): MdNode[] {
     if (tag === null) continue // comment node
     const name = String(tag).toLowerCase()
     if (DROP.has(name)) continue
-    const rules = ALLOWED[name]
+    const rules = Object.hasOwn(ALLOWED, name) ? ALLOWED[name] : undefined // not ALLOWED['constructor']
     if (!rules) { out.push(...sanitizeAgentNodes(kids)); continue } // div/span/MDC component → its content
     if (name === 'img' && !isAllowedAgentImage(attrs?.src)) {
       const alt = typeof attrs?.alt === 'string' ? attrs.alt : ''
@@ -85,7 +87,13 @@ export function sanitizeAgentNodes(nodes: MdNode[]): MdNode[] {
     }
     if (name === 'input' && attrs?.type !== 'checkbox') continue
     const clean: Attrs = {}
-    for (const [k, v] of Object.entries(attrs ?? {})) if (rules[k]?.(v)) clean[k] = v
+    for (const [k, v] of Object.entries(attrs ?? {})) {
+      if (!Object.hasOwn(rules, k)) continue // not rules['prototype'] / ['toString']
+      if (k === 'class') { const c = safeClassValue(v); if (c !== undefined) clean[k] = c }
+      else if (k === 'id') { if (typeof v === 'string' && v && rules.id!(v)) clean[k] = prefixId(v) } // M5
+      else if (k === 'href' && typeof v === 'string' && rules.href!(v)) clean[k] = prefixFragmentHref(v)
+      else if (rules[k]!(v)) clean[k] = v
+    }
     out.push([name, clean, ...sanitizeAgentNodes(kids)])
   }
   return out
