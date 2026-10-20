@@ -5,6 +5,7 @@ import { listResidentMemories, recordRetrievals as realRecordRetrievals, searchM
 import { getSkill } from '../../services/skills'
 import { useDb } from '../../db'
 import { conversations } from '../../db/schema'
+import { loadActivePath } from '../../services/conversation-path'
 import { eq, sql } from 'drizzle-orm'
 import type { MemoryDTO } from '../../shared/types/memory'
 import { capToTokens, RECENT_THREADS_MAX_TOKENS, MAIN_STATE_MAX_TOKENS } from './runtime/history'
@@ -122,10 +123,15 @@ export function synthesiseQuery(summary: string | null, liveState: string): stri
   return [summary?.trim(), liveState.trim()].filter(Boolean).join('\n').trim()
 }
 
-async function loadSummary(conversationId: string): Promise<string | null> {
+/** The thread's summary — only when it was folded from the ACTIVE path (cycle 88). After a
+ *  branch switch or a first-message edit it describes another branch; injecting it would tell the
+ *  model about a conversation Tony just started over from. */
+export async function loadSummary(conversationId: string): Promise<string | null> {
   const [row] = await useDb().select({ summary: conversations.summary })
     .from(conversations).where(eq(conversations.id, conversationId)).limit(1)
-  return row?.summary ?? null
+  if (!row?.summary) return null
+  const { summaryApplies } = await loadActivePath(conversationId)
+  return summaryApplies ? row.summary : null
 }
 
 /** Main's view of what Tony has been doing elsewhere: summaries of side threads touched in the
