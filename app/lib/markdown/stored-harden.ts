@@ -9,10 +9,17 @@
 //   - an image loads only from same-origin `/api/images/…` / `/api/i/…` (relative, or absolute on
 //     the app's own origin), `data:image/…` or `blob:`. Any other image becomes a plain link
 //     ("Remote image: <alt>") — a click is Tony's choice, a render is not;
-//   - only plain-markdown tags survive. Raw-HTML / MDC-component tags are dropped with their
-//     content (style, link, iframe, object, embed, svg, video, …) or unwrapped to their text
-//     (div, span-less components, `::card`, `:icon`, …) — Nuxt UI prose components such as
-//     ProseIcon/ProseCard take props that fetch;
+//   - only plain-markdown tags and an explicit allowlist of the app's own MDC components survive
+//     (Nuxt UI prose: callout/note/tip/warning/caution, card, card-group, tabs, tabs-item, steps,
+//     accordion, accordion-item, badge, kbd, icon, collapsible, code-group, code-collapse,
+//     code-preview, field, field-group; the app's own app/components/content: Note, Collapsible,
+//     McCallout — each with a vetted prop list). Other raw-HTML / MDC tags
+//     are dropped with their content (style, link, iframe, object, embed, svg, video, …) or
+//     unwrapped to their text (div, `::u-button`, any other registered component — MDC resolves
+//     ANY global component by tag name);
+//   - icons (`icon`/`name` props) must name the locally bundled collections (lucide, simple-icons):
+//     @nuxt/icon falls back to api.iconify.design for any other collection (fallbackToApi), which
+//     would put an attacker-chosen icon name on the wire at render time;
 //   - each surviving tag keeps only attributes plain markdown produces: no on*, no style (except
 //     table text-align and shiki's colour variables), no ping/poster/srcset, no `:bound` props;
 //   - links stay clickable, get rel="noopener noreferrer", and only http(s)/mailto/tel/relative/
@@ -77,6 +84,49 @@ const cls: Rule = v => (typeof v === 'string' && /^[\w -]*$/.test(v))
   || (Array.isArray(v) && v.every(c => typeof c === 'string' && /^[\w-]+$/.test(c)))
 const ident: Rule = v => typeof v === 'string' && /^[\w-]*$/.test(v)
 const bool: Rule = v => typeof v === 'boolean' || v === '' || v === 'true' || v === 'false'
+const plain: Rule = v => typeof v === 'string' && v.length <= 200
+const safeTo: Rule = v => isSafeHref(v)
+const blankTarget: Rule = v => v === '_blank' || v === '_self'
+const uiColor: Rule = v => typeof v === 'string' && /^(?:primary|secondary|success|info|warning|error|neutral)$/.test(v)
+
+/** Icon collections installed locally (`@iconify-json/*` in package.json) — served by the app's
+ *  own /api/_nuxt_icon endpoint. Any other collection makes @nuxt/icon fetch api.iconify.design. */
+export const LOCAL_ICON_COLLECTIONS = ['lucide', 'simple-icons']
+const ICON_RE = new RegExp(`^(?:i-(?:${LOCAL_ICON_COLLECTIONS.join('|')})-|(?:${LOCAL_ICON_COLLECTIONS.join('|')}):)[a-z0-9]+(?:-[a-z0-9]+)*$`)
+/** Whether an icon name resolves from a locally bundled collection (never the Iconify API). */
+export const isLocalIcon: Rule = v => typeof v === 'string' && ICON_RE.test(v)
+
+/** MDC components the app registers (Nuxt UI prose) that load nothing remote, with their
+ *  vetted props (camelCase; kebab-case attributes are matched too). `to` is a click-only link. */
+const COMPONENTS: Record<string, Record<string, Rule>> = {
+  'callout': { to: safeTo, target: blankTarget, icon: isLocalIcon, color: uiColor },
+  'note': { to: safeTo, target: blankTarget },
+  'tip': { to: safeTo, target: blankTarget },
+  'warning': { to: safeTo, target: blankTarget },
+  'caution': { to: safeTo, target: blankTarget },
+  'card': { to: safeTo, target: blankTarget, icon: isLocalIcon, title: plain, description: plain, color: uiColor },
+  'card-group': {},
+  'tabs': { defaultValue: ident },
+  'tabs-item': { label: plain, description: plain, icon: isLocalIcon },
+  'steps': { level: v => /^[1-6]$/.test(String(v)) },
+  'accordion': { type: v => v === 'single' || v === 'multiple' },
+  'accordion-item': { label: plain, description: plain, icon: isLocalIcon },
+  'badge': {},
+  'icon': { name: isLocalIcon },
+  // `collapsible` is ambiguous on purpose: app/components/content/Collapsible.vue (title) and Nuxt
+  // UI ProseCollapsible (icon/name/openText/closeText) — the union is all plain text / local icon.
+  'collapsible': { title: plain, icon: isLocalIcon, name: plain, openText: plain, closeText: plain },
+  // app/components/content/McCallout.vue — fixed local icons per type.
+  'mc-callout': { type: v => v === 'info' || v === 'warning' || v === 'success' || v === 'error' },
+  'code-collapse': { icon: isLocalIcon, name: plain, openText: plain, closeText: plain },
+  'code-group': { defaultValue: ident },
+  'code-preview': {},
+  'field': { name: plain, type: plain, description: plain, required: bool },
+  'field-group': {}
+}
+const camel = (k: string) => k.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())
+/** A component slot: `#name` compiles to <template v-slot:name>. */
+const isSlotProp = (k: string, v: unknown) => /^(?:v-slot:|#)[\w-]+$/.test(k) && (v === '' || v === true)
 /** data-* / aria-* (camelCased by hast) never fetch; keep them for footnotes / a11y. */
 const isDataOrAria = (k: string) => /^(?:data|aria)[A-Z][\w]*$/.test(k) || /^(?:data|aria)-[\w-]+$/.test(k)
 
@@ -86,9 +136,10 @@ const ALLOWED: Record<string, Record<string, Rule>> = (() => {
   const t: Record<string, Record<string, Rule>> = {}
   for (const tag of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'strong', 'em', 'del', 's', 'b', 'i', 'u', 'mark',
     'code', 'ul', 'li', 'thead', 'tbody', 'tfoot', 'tr', 'table', 'caption', 'hr', 'br', 'sup', 'sub', 'section',
-    'kbd', 'details', 'summary', 'dl', 'dt', 'dd', 'blockquote', 'abbr',
-    // Nuxt UI alert-style prose components: rendered with fixed local icons, no props kept.
-    'note', 'tip', 'warning', 'caution', 'callout']) t[tag] = { ...base }
+    'details', 'summary', 'dl', 'dt', 'dd', 'blockquote', 'abbr']) t[tag] = { ...base }
+  for (const [tag, rules] of Object.entries(COMPONENTS)) t[tag] = { ...base, ...rules }
+  t.kbd = { ...base, value: plain }
+  t.template = {} // slot props only (isSlotProp)
   t.ol = { ...base, start: v => /^\d+$/.test(String(v)) }
   t.a = { ...base, href: isSafeHref, title: str }
   t.img = { alt: str, title: str, width: v => /^\d+$/.test(String(v)), height: v => /^\d+$/.test(String(v)) } // src handled below
@@ -103,7 +154,7 @@ const ALLOWED: Record<string, Record<string, Rule>> = (() => {
 })()
 
 /** Dropped WITH their content: they render nothing useful as text and can all fetch or run.
- *  (`template` is NOT here: MDC compiles component slots `#name` to <template>, unwrapped.) */
+ *  (`template` is NOT here: MDC compiles component slots `#name` to <template v-slot:name>.) */
 const DROP = new Set(['style', 'script', 'link', 'meta', 'base', 'iframe', 'frame', 'frameset', 'object', 'embed',
   'applet', 'svg', 'math', 'video', 'audio', 'source', 'track', 'picture', 'image', 'noscript', 'form',
   'textarea', 'select', 'button', 'canvas', 'portal', 'fencedframe', 'head', 'title', 'param'])
@@ -130,14 +181,17 @@ function hardenNodes(nodes: MdcNode[] | undefined, opts: HardenOptions): MdcNode
     if (n.type !== 'element' || typeof n.tag !== 'string') continue // comments, raw, bindings
     const name = n.tag.toLowerCase()
     if (DROP.has(name)) continue
-    const rules = ALLOWED[name]
+    const rules = Object.hasOwn(ALLOWED, name) ? ALLOWED[name] : undefined // not ALLOWED['constructor']
     if (!rules) { out.push(...hardenNodes(n.children, opts)); continue } // div / MDC component → its content
     const props = n.props ?? {}
     if (name === 'img' && !isAllowedStoredImage(props.src, opts)) { out.push(blockedImageNode(props.src, props.alt)); continue }
     if (name === 'input' && props.type !== 'checkbox') continue
+    if (name === 'icon' && !isLocalIcon(props.name)) continue // ProseIcon needs a name; a remote one is a fetch
     const clean: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(props)) {
-      if (rules[k]?.(v)) clean[k] = v
+      const rule = Object.hasOwn(rules, k) ? rules[k] : Object.hasOwn(rules, camel(k)) ? rules[camel(k)] : undefined
+      if (rule?.(v)) clean[k] = v
+      else if (name === 'template' && isSlotProp(k, v)) clean[k] = v
       else if (isDataOrAria(k) && (typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number')) clean[k] = v
     }
     if (name === 'img') clean.src = String(props.src).trim()
