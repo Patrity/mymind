@@ -1,7 +1,7 @@
 <!-- app/components/agent/EmptyState.vue -->
 <script setup lang="ts">
 import type { VoiceState } from '~/composables/useVoice'
-import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion'
+import { Suggestion } from '@/components/ai-elements/suggestion'
 
 defineProps<{
   state: VoiceState
@@ -25,7 +25,7 @@ const starters = [
 </script>
 
 <template>
-  <div class="flex flex-col items-center justify-center gap-5 px-6 py-16 text-center">
+  <div class="flex flex-col items-center justify-center-safe gap-5 px-6 py-16 text-center">
     <AgentPersona
       v-if="hero"
       size="hero"
@@ -45,16 +45,20 @@ const starters = [
         generate images, and run commands on the box — and she'll ask before anything destructive.
       </p>
     </div>
-    <Suggestions class="max-w-lg" data-ai-elements>
+    <!-- A wrapping row, NOT <Suggestions>: that is a single non-wrapping horizontal scroller with
+         the scrollbar hidden, so at phone width three of the four starters sat off-screen with
+         nothing to say they were there. -->
+    <div class="flex max-w-lg flex-wrap items-center justify-center gap-2" data-ai-elements>
       <Suggestion
         v-for="s in starters"
         :key="s.label"
         :suggestion="s.label"
+        class="h-auto min-h-8 max-w-full whitespace-normal py-1.5 text-left"
         @click="(v: string) => emit('pick', v)"
       >
         <UIcon :name="s.icon" class="size-3.5" />
         {{ s.label }}
       </Suggestion>
-    </Suggestions>
+    </div>
   </div>
 </template>
