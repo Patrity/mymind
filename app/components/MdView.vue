@@ -139,8 +139,9 @@ const harden = (body: MDCRoot) => hardenMdcBody(body as MdcNode, { origin }) as 
   color: var(--ui-text-muted);
 }
 /* Shiki token colours: the highlighter's own <style> block is dropped with every other <style>
-   (hardenMdcBody), so its fixed theme rules live here; the per-token colours are inline
-   --shiki-* variables, which hardenMdcBody keeps. */
+   (hardenMdcBody), so its fixed theme rules live here (same rules it emits: default, then
+   html.light / html.dark win by specificity); the per-token colours are inline --shiki-*
+   variables, which hardenMdcBody keeps. */
 .mm-md .shiki span {
   color: var(--shiki-default);
   background: var(--shiki-default-bg);
@@ -148,7 +149,14 @@ const harden = (body: MDCRoot) => hardenMdcBody(body as MdcNode, { origin }) as 
   font-weight: var(--shiki-default-font-weight);
   text-decoration: var(--shiki-default-text-decoration);
 }
-.dark .mm-md .shiki span {
+html.light .mm-md .shiki span {
+  color: var(--shiki-light);
+  background: var(--shiki-light-bg);
+  font-style: var(--shiki-light-font-style);
+  font-weight: var(--shiki-light-font-weight);
+  text-decoration: var(--shiki-light-text-decoration);
+}
+html.dark .mm-md .shiki span {
   color: var(--shiki-dark);
   background: var(--shiki-dark-bg);
   font-style: var(--shiki-dark-font-style);
