@@ -23,6 +23,7 @@
 // app/lib/markdown/stored-harden.ts.
 
 import type { ComarkPlugin, LinkOptions } from 'vue-stream-markdown'
+import { safeClassValue } from '../markdown/safe-classes'
 
 type Attrs = Record<string, unknown>
 type MdNode = string | [string | null, Attrs, ...MdNode[]]
@@ -45,7 +46,8 @@ const ALERTS = new Set(['note', 'tip', 'important', 'warning', 'caution'])
 /** tag → attribute → validator. Anything not listed is removed. */
 const ALLOWED: Record<string, Record<string, (v: unknown) => boolean>> = (() => {
   const any = () => true
-  const cls = (v: unknown) => typeof v === 'string' && /^[\w -]*$/.test(v)
+  // Filtered token-by-token in sanitizeAgentNodes (cycle 88 I2: no fixed/inset/z-index overlays).
+  const cls = (v: unknown) => safeClassValue(v) !== undefined
   const id = (v: unknown) => typeof v === 'string' && /^[\w-]*$/.test(v)
   const base = { class: cls, id, $: any }
   const t: Record<string, Record<string, (v: unknown) => boolean>> = {}
@@ -86,7 +88,10 @@ export function sanitizeAgentNodes(nodes: MdNode[]): MdNode[] {
     }
     if (name === 'input' && attrs?.type !== 'checkbox') continue
     const clean: Attrs = {}
-    for (const [k, v] of Object.entries(attrs ?? {})) if (rules[k]?.(v)) clean[k] = v
+    for (const [k, v] of Object.entries(attrs ?? {})) {
+      if (k === 'class') { const c = safeClassValue(v); if (c !== undefined && rules.class) clean[k] = c }
+      else if (rules[k]?.(v)) clean[k] = v
+    }
     out.push([name, clean, ...sanitizeAgentNodes(kids)])
   }
   return out

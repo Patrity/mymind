@@ -61,3 +61,19 @@ export const STORED_VECTORS: Record<string, string> = {
   '```ts [filename] fence (vscode-icons fetch)': '```ts [notes.SECRETVALUE]\nconst x = 1\n```',
   '::code-group fence filenames': '::code-group\n```ts [a.SECRET]\nx\n```\n```js [b.zz]\ny\n```\n::'
 }
+
+/** UI-redress vectors (I2): utility classes that would position/overlay content over the app
+ *  (the app's Tailwind build ships every one of these). A click is only Tony's choice if he can
+ *  see what he is clicking. */
+export const OVERLAY_VECTORS: Record<string, string> = {
+  'MDC class overlay link': `[.](${E}/?d=x){.fixed .inset-0 .z-50 .opacity-0}`,
+  'raw <a class> overlay': `<a href="${E}/?d=x" class="fixed inset-0 z-50 opacity-0">x</a>`,
+  'raw <p class> phishing panel': `<p class="absolute top-0 left-0 w-screen h-screen z-[999] bg-default pointer-events-auto">Sign in again</p>`,
+  'MDC class on a strong': `**Sign in again**{.fixed .inset-0 .z-50 .bg-default .-mt-96 .translate-x-0}`,
+  'mixed safe + unsafe classes': `<span class="font-bold fixed inset-0">x</span>`
+}
+/** Class tokens any of OVERLAY_VECTORS uses to move/layer/hide/size an element. */
+export const OVERLAY_CLASS = /^(?:fixed|absolute|sticky|relative|inset-.*|top-.*|left-.*|z-.*|opacity-.*|w-.*|h-.*|bg-.*|-?m[trblxy]?-.*|translate-.*|pointer-events-.*)$/
+/** The exact class tokens OVERLAY_VECTORS inject (for renderers whose own chrome uses utilities). */
+export const OVERLAY_INJECTED = new Set(['fixed', 'inset-0', 'z-50', 'opacity-0', 'absolute', 'top-0', 'left-0', 'w-screen',
+  'h-screen', 'z-[999]', 'bg-default', 'pointer-events-auto', '-mt-96', 'translate-x-0'])

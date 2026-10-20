@@ -6,7 +6,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick } from 'vue'
 import { Markdown } from 'vue-stream-markdown'
-import { AGENT_VECTORS, EVIL } from '../markdown/exfil-vectors.fixture'
+import { AGENT_VECTORS, EVIL, OVERLAY_INJECTED, OVERLAY_VECTORS } from '../markdown/exfil-vectors.fixture'
 import { agentMarkdownProps, isAllowedAgentImage, sanitizeAgentNodes } from './markdown-harden'
 
 vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -82,6 +82,20 @@ describe('agent markdown hardening — real renderer (C1)', () => {
   })
 })
 
+describe('agent markdown class allowlist (cycle 88 I2)', () => {
+  const overlays = (el: HTMLElement) => [...el.querySelectorAll('*')].flatMap(n => [...n.classList].filter(c => OVERLAY_INJECTED.has(c)).map(c => `${n.tagName.toLowerCase()}.${c}`))
+  it.each(Object.entries(OVERLAY_VECTORS))('%s: no positioning/overlay class from the content survives', async (_name, md) => {
+    // The library's own chrome uses its own classes; only count elements inside the rendered text.
+    const el = await render(md)
+    expect(overlays(el)).toEqual([])
+  })
+  it('NOT vacuous: without the sanitizer plugin, the overlay classes reach the DOM', async () => {
+    const { parserOptions: _p, ...noSanitizer } = agentMarkdownProps
+    const el = await render(OVERLAY_VECTORS['raw <a class> overlay']!, noSanitizer)
+    expect(overlays(el)).not.toEqual([])
+  })
+})
+
 describe('isAllowedAgentImage / sanitizeAgentNodes', () => {
   it.each(['/api/images/x/raw', '/api/images/abc'])('allows %s', s => expect(isAllowedAgentImage(s)).toBe(true))
   it.each(['https://evil.example/x', '//evil.example/x', '/api/images/../../api/health', '/api/images//evil.example', '/x', 'data:image/png;base64,x', undefined])
@@ -90,9 +104,9 @@ describe('isAllowedAgentImage / sanitizeAgentNodes', () => {
     expect(sanitizeAgentNodes([
       ['style', {}, 'p{}'],
       ['div', { style: 'x' }, 'kept'],
-      ['strong', { style: 'background:url(x)', ping: 'y', class: 'ok' }, 'b'],
+      ['strong', { style: 'background:url(x)', ping: 'y', class: 'italic fixed inset-0' }, 'b'],
       ['th', { style: 'text-align:left' }, 'h'],
       ['th', { style: 'text-align:left;background:url(x)' }, 'h2']
-    ])).toEqual(['kept', ['strong', { class: 'ok' }, 'b'], ['th', { style: 'text-align:left' }, 'h'], ['th', {}, 'h2']])
+    ])).toEqual(['kept', ['strong', { class: 'italic' }, 'b'], ['th', { style: 'text-align:left' }, 'h'], ['th', {}, 'h2']])
   })
 })

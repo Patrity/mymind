@@ -12,7 +12,7 @@ import { createApp, h, nextTick, ref, Suspense } from 'vue'
 import MDC from '@nuxtjs/mdc/runtime/components/MDC.vue'
 import MDCRenderer from '@nuxtjs/mdc/runtime/components/MDCRenderer.vue'
 import MdView from '~/components/MdView.vue'
-import { EVIL, STORED_VECTORS } from './exfil-vectors.fixture'
+import { EVIL, OVERLAY_CLASS, OVERLAY_VECTORS, STORED_VECTORS } from './exfil-vectors.fixture'
 import { hardenMdcBody, hardenStoredHtml, isAllowedStoredImage, isLocalIcon, isSafeHref, type MdcNode } from './stored-harden'
 
 vi.mock('nuxt/app', () => ({
@@ -84,6 +84,45 @@ function leaks(el: HTMLElement): string[] {
   }
   return out
 }
+
+/** Class tokens that could position / layer / hide an element over the app UI (I2). */
+function overlays(el: HTMLElement): string[] {
+  return [...el.querySelectorAll('*')].flatMap(n => [...n.classList].filter(c => OVERLAY_CLASS.test(c)).map(c => `${n.tagName.toLowerCase()}.${c}`))
+}
+
+describe('class allowlist (I2: no overlay / UI-redress utilities)', () => {
+  it.each(Object.entries(OVERLAY_VECTORS))('MdView %s: no positioning/overlay class survives', async (_name, md) => {
+    const el = await renderMd(md)
+    expect(el.textContent?.trim()).not.toBe('') // content still renders
+    expect(overlays(el)).toEqual([])
+  })
+  it.each(Object.entries(OVERLAY_VECTORS))('clipboard HTML %s: no positioning/overlay class survives', (_name, html) => {
+    expect(overlays(renderHtml(html))).toEqual([])
+  })
+  it('NOT vacuous: the unhardened MDC chain keeps the overlay classes', async () => {
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    const app = createApp({ render: () => h(Suspense, null, { default: () => h(MDC, { value: OVERLAY_VECTORS['MDC class overlay link']! }) }) })
+    app.component('MDCRenderer', MDCRenderer)
+    app.mount(el)
+    await flush()
+    expect(overlays(el)).toEqual(expect.arrayContaining(['a.fixed', 'a.inset-0']))
+  })
+  it('keeps pipeline + typography classes, filtering a mixed list token by token', () => {
+    const out = hardenMdcBody<MdcNode>({ type: 'root', children: [
+      { type: 'element', tag: 'pre', props: { className: ['shiki', 'shiki-themes', 'material-theme-lighter', 'material-theme', 'material-theme-palenight', 'fixed'] }, children: [] },
+      { type: 'element', tag: 'code', props: { className: ' language-ts' }, children: [] },
+      { type: 'element', tag: 'ul', props: { className: ['contains-task-list'] }, children: [] },
+      { type: 'element', tag: 'span', props: { class: 'font-bold text-error z-50' }, children: [] },
+      { type: 'element', tag: 'a', props: { href: '/x', class: 'fixed inset-0' }, children: [] }
+    ] })
+    expect(out.children!.map(c => c.props?.className ?? c.props?.class)).toEqual([
+      ['shiki', 'shiki-themes', 'material-theme-lighter', 'material-theme', 'material-theme-palenight'],
+      'language-ts', ['contains-task-list'], 'font-bold text-error', undefined
+    ])
+    expect(renderHtml('<p class="italic fixed">x</p>').querySelector('p')?.getAttribute('class')).toBe('italic')
+  })
+})
 
 describe('MdView (stored markdown) — real MDC renderer', () => {
   it.each(Object.entries(STORED_VECTORS))('%s: nothing in the DOM loads from the network', async (_name, md) => {

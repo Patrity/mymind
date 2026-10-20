@@ -29,6 +29,7 @@
 // for raw HTML going through DOMPurify (clipboard rich pastes).
 
 import DOMPurify from 'isomorphic-dompurify'
+import { safeClassValue } from './safe-classes'
 
 export interface MdcNode {
   type: string
@@ -80,8 +81,8 @@ function isShikiStyle(v: unknown): boolean {
 
 type Rule = (v: unknown) => boolean
 const str: Rule = v => typeof v === 'string'
-const cls: Rule = v => (typeof v === 'string' && /^[\w -]*$/.test(v))
-  || (Array.isArray(v) && v.every(c => typeof c === 'string' && /^[\w-]+$/.test(c)))
+// `class`/`className` are filtered token-by-token through safe-classes.ts (I2: no overlay utilities).
+const cls: Rule = v => safeClassValue(v) !== undefined
 const ident: Rule = v => typeof v === 'string' && /^[\w-]*$/.test(v)
 const bool: Rule = v => typeof v === 'boolean' || v === '' || v === 'true' || v === 'false'
 const plain: Rule = v => typeof v === 'string' && v.length <= 200
@@ -192,7 +193,8 @@ function hardenNodes(nodes: MdcNode[] | undefined, opts: HardenOptions): MdcNode
     const clean: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(props)) {
       const rule = Object.hasOwn(rules, k) ? rules[k] : Object.hasOwn(rules, camel(k)) ? rules[camel(k)] : undefined
-      if (rule?.(v)) clean[k] = v
+      if (rule === cls) { const c = safeClassValue(v); if (c !== undefined) clean[k] = c }
+      else if (rule?.(v)) clean[k] = v
       else if (name === 'template' && isSlotProp(k, v)) clean[k] = v
       else if (isDataOrAria(k) && (typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number')) clean[k] = v
     }
@@ -222,6 +224,14 @@ const PURIFY_FORBID_TAGS = [...DROP, 'template']
 const PURIFY_FORBID_ATTR = ['style', 'srcset', 'ping', 'poster', 'background', 'action', 'formaction', 'xlink:href',
   'lowsrc', 'dynsrc', 'longdesc', 'usemap', 'manifest', 'codebase', 'data', 'srcdoc', 'imagesrcset', 'href:image', 'cite']
 
+/** Keep only the safe class tokens on a DOM element (I2: no fixed/inset/z-index overlays). */
+function filterClassAttr(node: Element) {
+  if (!node.hasAttribute('class')) return
+  const c = safeClassValue(node.getAttribute('class'))
+  if (c === undefined) node.removeAttribute('class')
+  else node.setAttribute('class', c as string)
+}
+
 /** Sanitize stored rich HTML (clipboard bodyHtml) under the same policy as hardenMdcBody. */
 export function hardenStoredHtml(html: string, opts: HardenOptions = {}): string {
   const hook = (node: Element) => {
@@ -238,7 +248,9 @@ export function hardenStoredHtml(html: string, opts: HardenOptions = {}): string
         repl.setAttribute('class', 'mm-md-blocked-img')
         if (href) { repl.setAttribute('href', href); repl.setAttribute('rel', 'noopener noreferrer nofollow'); repl.setAttribute('target', '_blank') }
         node.replaceWith(repl)
+        return
       }
+      filterClassAttr(node)
       return
     }
     if (tag === 'a') {
@@ -246,9 +258,11 @@ export function hardenStoredHtml(html: string, opts: HardenOptions = {}): string
       if (href !== null && !isSafeHref(href)) node.removeAttribute('href')
       node.setAttribute('rel', 'noopener noreferrer')
       if (href && /^(?:https?:)?\/\//i.test(href.trim())) node.setAttribute('target', '_blank')
+      filterClassAttr(node)
       return
     }
     if (tag === 'input' && node.getAttribute('type') !== 'checkbox') { node.remove(); return }
+    filterClassAttr(node)
     // Any other element: drop attributes that can name a URL to fetch.
     for (const a of ['src', 'href']) if (node.hasAttribute(a)) node.removeAttribute(a)
   }
