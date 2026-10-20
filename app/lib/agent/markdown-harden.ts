@@ -23,7 +23,7 @@
 // app/lib/markdown/stored-harden.ts.
 
 import type { ComarkPlugin, LinkOptions } from 'vue-stream-markdown'
-import { safeClassValue } from '../markdown/safe-classes'
+import { prefixFragmentHref, prefixId, safeClassValue } from '../markdown/safe-classes'
 
 type Attrs = Record<string, unknown>
 type MdNode = string | [string | null, Attrs, ...MdNode[]]
@@ -90,6 +90,8 @@ export function sanitizeAgentNodes(nodes: MdNode[]): MdNode[] {
     for (const [k, v] of Object.entries(attrs ?? {})) {
       if (!Object.hasOwn(rules, k)) continue // not rules['prototype'] / ['toString']
       if (k === 'class') { const c = safeClassValue(v); if (c !== undefined) clean[k] = c }
+      else if (k === 'id') { if (typeof v === 'string' && v && rules.id!(v)) clean[k] = prefixId(v) } // M5
+      else if (k === 'href' && typeof v === 'string' && rules.href!(v)) clean[k] = prefixFragmentHref(v)
       else if (rules[k]!(v)) clean[k] = v
     }
     out.push([name, clean, ...sanitizeAgentNodes(kids)])

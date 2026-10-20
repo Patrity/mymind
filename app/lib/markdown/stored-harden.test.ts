@@ -269,6 +269,20 @@ describe('isAllowedStoredImage / isSafeHref / hardenMdcBody', () => {
       { language: 'ts' }
     ])
   })
+  it('namespaces element ids under user-content- and re-points #fragment links (M5)', async () => {
+    const el = await renderMd('<p id="documents-editor">x</p>\n\n[jump](#documents-editor) [ext](https://x.example/#a)\n\nNote[^1]\n\n[^1]: foot')
+    expect(el.querySelector('#documents-editor')).toBeNull()
+    expect(el.querySelector('p#user-content-documents-editor')).not.toBeNull()
+    expect(el.querySelector('a[href="#user-content-documents-editor"]')).not.toBeNull()
+    expect(el.querySelector('a[href="https://x.example/#a"]')).not.toBeNull()
+    // remark-gfm footnotes are already prefixed: not doubled.
+    for (const n of el.querySelectorAll('[id]')) expect(n.id).toEqual(expect.stringMatching(/^user-content-(?!user-content-)/))
+    for (const a of el.querySelectorAll('a[href^="#"]')) expect(a.getAttribute('href')).toEqual(expect.stringMatching(/^#user-content-(?!user-content-)/))
+    const html = renderHtml('<p id="documents-editor" name="x">y</p><a href="#documents-editor">j</a>')
+    expect(html.querySelector('#documents-editor')).toBeNull()
+    expect(html.querySelector('p')?.id).toBe('user-content-documents-editor')
+    expect(html.querySelector('a')?.getAttribute('href')).toBe('#user-content-documents-editor')
+  })
   it('keeps shiki colour variables, drops any other style', () => {
     const out = hardenMdcBody({ type: 'root', children: [
       { type: 'element', tag: 'span', props: { style: '--shiki-default:#82AAFF;--shiki-dark:#82AAFF' }, children: [] },

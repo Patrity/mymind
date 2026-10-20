@@ -109,6 +109,10 @@ describe('isAllowedAgentImage / sanitizeAgentNodes', () => {
       ['th', { style: 'text-align:left;background:url(x)' }, 'h2']
     ])).toEqual(['kept', ['strong', { class: 'italic' }, 'b'], ['th', { style: 'text-align:left' }, 'h'], ['th', {}, 'h2']])
   })
+  it('namespaces ids under user-content- and re-points #fragment links (cycle 88 M5)', () => {
+    expect(sanitizeAgentNodes([['h2', { id: 'app' }, 't'], ['a', { href: '#app' }, 'j'], ['a', { href: 'https://x.example/#a' }, 'k']]))
+      .toEqual([['h2', { id: 'user-content-app' }, 't'], ['a', { href: '#user-content-app' }, 'j'], ['a', { href: 'https://x.example/#a' }, 'k']])
+  })
   it('prototype-named tags/attributes are not allowlisted and never throw (cycle 88 I3)', () => {
     expect(sanitizeAgentNodes([
       ['constructor', { prototype: 'x' }, 'hi'],

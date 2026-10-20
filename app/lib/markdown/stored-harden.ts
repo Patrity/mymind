@@ -29,7 +29,7 @@
 // for raw HTML going through DOMPurify (clipboard rich pastes).
 
 import DOMPurify from 'isomorphic-dompurify'
-import { safeClassValue } from './safe-classes'
+import { prefixFragmentHref, prefixId, safeClassValue } from './safe-classes'
 
 export interface MdcNode {
   type: string
@@ -94,6 +94,7 @@ const str: Rule = v => typeof v === 'string'
 // `class`/`className` are filtered token-by-token through safe-classes.ts (I2: no overlay utilities).
 const cls: Rule = v => safeClassValue(v) !== undefined
 const ident: Rule = v => typeof v === 'string' && /^[\w-]*$/.test(v)
+
 const bool: Rule = v => typeof v === 'boolean' || v === '' || v === 'true' || v === 'false'
 const plain: Rule = v => typeof v === 'string' && v.length <= 200
 const safeTo: Rule = v => isSafeHref(v)
@@ -204,6 +205,7 @@ function hardenNodes(nodes: MdcNode[] | undefined, opts: HardenOptions): MdcNode
     for (const [k, v] of Object.entries(props)) {
       const rule = Object.hasOwn(rules, k) ? rules[k] : Object.hasOwn(rules, camel(k)) ? rules[camel(k)] : undefined
       if (rule === cls) { const c = safeClassValue(v); if (c !== undefined) clean[k] = c }
+      else if (k === 'id') { if (typeof v === 'string' && v && ident(v)) clean[k] = prefixId(v) }
       else if (rule?.(v)) clean[k] = v
       else if (name === 'template' && isSlotProp(k, v)) clean[k] = v
       else if (isDataOrAria(k) && (typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number')) clean[k] = v
@@ -216,6 +218,7 @@ function hardenNodes(nodes: MdcNode[] | undefined, opts: HardenOptions): MdcNode
     if (name === 'a') {
       if (!('href' in clean)) { out.push(...hardenNodes(n.children, opts)); continue }
       clean.rel = 'noopener noreferrer'
+      clean.href = prefixFragmentHref(String(clean.href))
       if (/^(?:https?:)?\/\//i.test(String(clean.href))) clean.target = '_blank'
     }
     out.push({ type: 'element', tag: name, props: clean, children: hardenNodes(n.children, opts) })
@@ -266,6 +269,7 @@ export function hardenStoredHtml(html: string, opts: HardenOptions = {}): string
     if (tag === 'a') {
       const href = node.getAttribute('href')
       if (href !== null && !isSafeHref(href)) node.removeAttribute('href')
+      else if (href !== null) node.setAttribute('href', prefixFragmentHref(href))
       node.setAttribute('rel', 'noopener noreferrer')
       if (href && /^(?:https?:)?\/\//i.test(href.trim())) node.setAttribute('target', '_blank')
       filterClassAttr(node)
@@ -282,6 +286,8 @@ export function hardenStoredHtml(html: string, opts: HardenOptions = {}): string
       FORBID_TAGS: PURIFY_FORBID_TAGS,
       FORBID_ATTR: PURIFY_FORBID_ATTR,
       ADD_ATTR: ['target'],
+      // id / name → `user-content-*` (review M5): a paste can't clobber the app's ids or globals.
+      SANITIZE_NAMED_PROPS: true,
       USE_PROFILES: { html: true }
     }) as string
   } finally {

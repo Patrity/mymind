@@ -11,6 +11,9 @@
 //     hide or overlay anything.
 // No positioning, inset, z-index, opacity, visibility, pointer-events, transform, sizing, margin
 // (negative margins overlay too) or display utility is ever allowed.
+//
+// Also here (review M5): element ids are namespaced under `user-content-` (prefixId), and same-page
+// `#fragment` links re-pointed to match (prefixFragmentHref).
 
 const EXACT = new Set([
   // shiki (MDC highlighter); theme names are Nuxt UI's mdc.highlight defaults + shiki's github pair
@@ -45,4 +48,17 @@ export function safeClassValue(v: unknown): string | string[] | undefined {
   if (typeof v !== 'string') return undefined
   const kept = v.split(/\s+/).filter(c => c && isSafeClass(c))
   return kept.length ? kept.join(' ') : undefined
+}
+
+/** Attacker-influenced content's element ids live under their own namespace (review M5, GitHub's scheme), so
+ *  they can't clobber the app's own ids (`documents-editor`, …) or `window.<id>` globals.
+ *  remark-gfm footnotes already emit `user-content-*`; those are kept as they are. */
+export const USER_ID_PREFIX = 'user-content-'
+export function prefixId(id: string): string {
+  return id.startsWith(USER_ID_PREFIX) ? id : `${USER_ID_PREFIX}${id}`
+}
+/** A same-page `#fragment` link, re-pointed at the prefixed id so in-document links keep working. */
+export function prefixFragmentHref(href: string): string {
+  const m = /^#(.+)$/.exec(href.trim())
+  return m ? `#${prefixId(m[1]!)}` : href
 }
