@@ -2,7 +2,7 @@
 title: Clipboard
 status: shipped
 cycle: 6
-updated: 2026-06-03
+updated: 2026-10-20
 ---
 
 # Clipboard
@@ -17,7 +17,7 @@ A copipasta-style device-sync clipboard: paste text/HTML/images/files on one dev
 - **`listMessages` paging modes** — `since` → *forward* catch-up (`gt(createdAt, cursor)`, ascending; used by the stream poll, unchanged). Otherwise *history* mode: returns the **newest `limit`** messages older than `before` (when given) via `desc + limit` then reversed to ascending, so the UI renders oldest→newest while the DB only ever pulls one page. `before`/`since` cursors are nudged +1ms (DTO ISO strings are ms-truncated, Postgres stores µs); the client de-dupes the re-included boundary row by `id`. Attachments for a page are fetched in **one** `inArray` query (was N+1 per file message).
 
 ## UI (`app/pages/clipboard.vue`, `app/components/clipboard/*`)
-Ported chat components: Thread (history + live stream + dedup), Composer (paste text+HTML, drag-drop upload, ⌘↵ send), MessageBubble (device left/right split), MessageText (MDC/sanitized HTML), MessageImage/MessageFile, CopyButtons. Composables: `useClipboard` (copy-rich/raw/image with legacy fallback), `useThreadStream` (SSE + polling fallback, seedable poll cursor), `useClipDevice` (cookie-based device register). Sidebar "Clipboard" nav.
+Ported chat components: Thread (history + live stream + dedup), Composer (paste text+HTML, drag-drop upload, ⌘↵ send), MessageBubble (device left/right split), MessageText (`bodyText` through the hardened `MdView`; `bodyHtml` through `hardenStoredHtml`, which adds no-remote-image, no-style and no-iframe rules on top of DOMPurify, cycle 88. See [document-spine § Markdown rendering safety](document-spine.md#markdown-rendering-safety-cycle-88)). The `useClipboard` `execCopyHtml` fallback also hardens before it writes to `innerHTML`., MessageImage/MessageFile, CopyButtons. Composables: `useClipboard` (copy-rich/raw/image with legacy fallback), `useThreadStream` (SSE + polling fallback, seedable poll cursor), `useClipDevice` (cookie-based device register). Sidebar "Clipboard" nav.
 
 ### Thread loading / infinite scroll (2026-06-23)
 `Thread.vue` no longer loads the whole thread. On mount it fetches the **newest `PAGE_SIZE` (10)** messages, snaps to the bottom, and lazy-loads older pages as the user scrolls within `TOP_THRESHOLD_PX` of the top — each shows `USkeleton` placeholders while the page is in flight. A single **ResizeObserver**-driven scroll controller keeps the position correct as MDC markdown renders async (heights grow after mount): mode `bottom` pins to the newest (live arrivals stick only when the user is already at the bottom — no yank while reading history), `anchor` holds the top message fixed while older content prepends (zero scroll jump), `none` leaves the user alone. Programmatic scrolls set a short `suppressScrollUntil` window so the controller's own corrections aren't mistaken for the user scrolling away. Short threads use `mt-auto` to sit at the bottom, and `fillViewport()` keeps pulling older pages until the thread is scrollable (so infinite-scroll-up is always reachable). The stream's poll cursor is seeded from the newest loaded message so the polling fallback can't replay a whole page.
