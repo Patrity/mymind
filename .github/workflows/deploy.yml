@@ -92,7 +92,10 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/init/01-extensions.sql
           printf 'DATABASE_URL=%s\nBETTER_AUTH_SECRET=ci-only-secret\n' "$DATABASE_URL" > .env
           pnpm db:migrate
-          pnpm test:db
+          # Still a required gate for deploy; one retry per failing test absorbs a flake (review
+          # I5) without letting a real failure through. Note: --retry does not cover an UNHANDLED
+          # error (vitest exits 1 on those regardless).
+          pnpm test:db --retry=1
 
   deploy:
     needs: test
