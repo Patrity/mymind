@@ -35,6 +35,14 @@ function onSelectFolder(path: string) {
   treeRef.value?.revealFolder(path)
 }
 
+// Phone layout: below `lg` the tree and the editor can't sit side by side, so one shows at a
+// time (the tree was simply `hidden`, leaving no way to pick a document). Picking a document
+// flips to the editor; the editor header's "Files" button flips back. `lg`+ ignores this.
+const mobilePane = ref<'tree' | 'editor'>('tree')
+watch(selectedId, (id) => {
+  if (id) mobilePane.value = 'editor'
+}, { immediate: true })
+
 // Last-open cookie — persists selected doc across sessions
 const lastDoc = useCookie<string | null>('mm.lastDoc', { default: () => null })
 
@@ -165,11 +173,15 @@ onUnmounted(() => {
       :default-size="18"
       :min-size="12"
       :max-size="35"
-      class="hidden lg:flex"
+      class="lg:flex"
+      :class="mobilePane === 'tree' ? 'flex' : 'hidden'"
       :ui="{ body: '!p-0' }"
     >
       <template #header>
         <UDashboardNavbar>
+          <template #leading>
+            <UDashboardSidebarCollapse class="lg:hidden" />
+          </template>
           <template #title>
             <span class="text-sm font-medium">Documents</span>
           </template>
@@ -261,12 +273,22 @@ onUnmounted(() => {
     <UDashboardPanel
       id="documents-editor"
       grow
+      :class="mobilePane === 'editor' ? '' : 'max-lg:hidden'"
       :ui="{ body: '!p-0' }"
     >
       <template #header>
         <UDashboardNavbar title="Documents">
           <template #leading>
             <UDashboardSidebarCollapse />
+            <UButton
+              icon="i-lucide-folder-tree"
+              size="xs"
+              variant="soft"
+              color="neutral"
+              label="Files"
+              class="lg:hidden"
+              @click="mobilePane = 'tree'"
+            />
           </template>
           <template #right>
             <UButton
