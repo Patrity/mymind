@@ -221,11 +221,25 @@ goes through `hardenStoredHtml`, which applies the same policy on top of DOMPuri
 - **Attributes**: no `on*`, `ping`, `srcset`, `poster`, `as`, or `:bound` props, and no `style`.
   The two exceptions are table `text-align` and shiki's `--shiki-*: #hex` token variables.
   `data-*`/`aria-*` are kept.
+  - `class` is an **allowlist, filtered per token** (`app/lib/markdown/safe-classes.ts`). Only
+    harmless typography, colour and spacing utilities survive. Positioning, z-index, inset,
+    opacity, transform, pointer-events and size-forcing utilities are removed, with or without a
+    variant prefix and including arbitrary values. Without this, a `{.fixed .inset-0 .opacity-0}`
+    link would turn every click on the page into a click on the attacker's URL.
+  - The same class rule applies to clipboard HTML and to agent chat.
+  - Element `id`s get a `user-content-` prefix (MDC, chat and clipboard, via DOMPurify
+    `SANITIZE_NAMED_PROPS`), and in-document `#fragment` links are re-pointed to match. An external
+    deep link to a shared page's heading therefore needs `#user-content-<id>`.
 - **Icons** (`icon`/`name` props) must come from the **locally bundled** collections, `lucide` and
-  `simple-icons` (`LOCAL_ICON_COLLECTIONS`). @nuxt/icon runs with `fallbackToApi` on, so any other
-  collection makes `/api/_nuxt_icon/<collection>.json` fetch `api.iconify.design` with an
-  attacker-chosen name. The old renderer was verified to do this (`[Icon] Collection mdi is not
-  found locally`).
+  `simple-icons` (`LOCAL_ICON_COLLECTIONS`). Before cycle 88, @nuxt/icon ran with `fallbackToApi`
+  on, so any other collection made `/api/_nuxt_icon/<collection>.json` fetch `api.iconify.design`
+  with an attacker-chosen name. That was verified, including a bypass: a code fence with a filename
+  makes Nuxt UI build an `i-vscode-icons-file-type-<ext>` name.
+  - `fallbackToApi` is now **off app-wide** (nuxt.config), so no icon name can reach the network.
+  - Code fences with a filename use the local `i-lucide-file-code`.
+- **Image paths** are checked after decoding and URL normalisation, so `%2e%2e` traversal can't pass
+  the same-origin test. The agent image check gets the same fix.
+- **Clipboard "Copy"** of a rich paste copies remote images as links, a consequence of the policy.
 - **Links** stay clickable and always carry `rel="noopener noreferrer"` (plus `target=_blank` when
   external). Only http(s), mailto, tel, relative and fragment hrefs (and component `to`) survive.
 - **Shiki**: the highlighter's injected `<style>` block is dropped like every other `<style>`, so

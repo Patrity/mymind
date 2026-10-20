@@ -235,6 +235,19 @@ shorter than what is on screen.
   `setActiveLeaf`, `setBranchLeaf`) clears it — so the next turn, `restoreLeaf` or the pager all end
   the pending state. `branchParent` answers `undefined` for "not in this conversation" and `null` for
   a root. Root siblings get the same ‹ n/N › pager as any other branch.
+  **Pending-root rules (review I4; the "PENDING ROOT" block in `services/conversations.ts`)**:
+  - Only an append that *starts* a root clears the flag. Events, wake/channel turns and rescued
+    turns chain from a real row, land on the old branch and leave the edit pending.
+  - Non-UI turns (wake, iMessage/email, jobs, workstreams) ignore the flag and keep their history.
+  - A failed send calls `PATCH /leaf` `op: 'restore'` (`cancelPendingRoot`).
+  - A flag still pending after `PENDING_ROOT_GRACE_MS` (60 s), with no queued or running run on the
+    thread, is cleared on the next conversation read (`expireStalePendingRoot`).
+- **The thread summary is branch-aware (cycle 88).** `conversations.summary_leaf_id` records the last
+  active-path message the summary folded. The summary tier is injected (and already-summarised rows
+  trimmed) only when that message is on the current path, or when the column is null (older
+  summaries keep being trusted). Otherwise the summary is left out, and the next fold on that branch
+  starts fresh. `loadAgentHistory` returns `summaryApplies`, so the assembler doesn't walk the path
+  twice.
 - **`message_count` counts every row in the tree**, inactive branches included, so a branched thread's
   rail count legitimately exceeds what is on screen (10 rows, 4 displayed, is normal). Spec-stated and
   accepted rather than re-derived per branch.
