@@ -117,6 +117,37 @@ describe('planSegments — realtime', () => {
   })
 })
 
+// The 950-char design budget is a measurement of where the PYTHON Breeze server's model
+// breaks. audio.cpp chunks text itself and has a different ceiling, so the budget is a
+// per-provider input rather than a constant baked into the planner.
+describe('planSegments — provider-specific design budget', () => {
+  it('maxCallChars subtracts the instruction from the budget it is given', () => {
+    expect(maxCallChars(design, 600)).toBe(600 - design.instruction.length)
+  })
+
+  it('a reference preset keeps its calibrated cap whatever the budget', () => {
+    expect(maxCallChars(clone, 600)).toBe(100)
+  })
+
+  it('still never plans below the floor with a small budget', () => {
+    expect(maxCallChars({ ...design, instruction: 'x'.repeat(590) }, 600)).toBe(MIN_SEGMENT_CHARS)
+  })
+
+  it('reports the provider ceiling in the plan and splits against it', () => {
+    const text = words(800)
+    const breeze = planSegments(text, design, 'quality', AGENT_CAP)
+    const audiocpp = planSegments(text, design, 'quality', AGENT_CAP, { designBudget: 600 })
+    expect(breeze.segments).toHaveLength(1) // fits the 950 budget
+    expect(audiocpp.ceiling).toBe(600 - design.instruction.length)
+    expect(audiocpp.segments.length).toBeGreaterThan(1) // not the 600 one
+    for (const s of audiocpp.segments) expect(s.length).toBeLessThanOrEqual(audiocpp.ceiling)
+  })
+
+  it('defaults to the Breeze budget when no option is passed', () => {
+    expect(planSegments(words(300), design, 'quality', AGENT_CAP).ceiling).toBe(maxCallChars(design))
+  })
+})
+
 describe('planSegments — packing density', () => {
   // Browser-caught regression: reusing the agent's segment() flushed at EVERY sentence end,
   // turning 1480 chars under an 875 ceiling into 20 calls instead of 2 — 20 rig slots and a
