@@ -30,6 +30,12 @@ export const conversations = pgTable('conversations', {
   /** The summary covers every message with created_at <= this. Written with the POSTGRES
    *  clock (it is compared against created_at). Null = no summary yet. */
   summarizedThrough: timestamp('summarized_through', { withTimezone: true }),
+  /** Cycle 88: the last ACTIVE-PATH row the summary folded. A thread is a tree but has one
+   *  summary, so the summary (and the summarized_through cut) applies to a turn only when this row
+   *  is on the active path — after a branch switch or a first-message edit it describes another
+   *  branch and is skipped (loadActivePath's `summaryApplies`). Null = written before cycle 88 and
+   *  not backfilled: trusted, as before. */
+  summaryLeafId: uuid('summary_leaf_id'),
   /** Cycle 76: the reflector's per-thread pass covers every message with created_at <= this.
    *  Same shape as summarizedThrough. Null = never reflected. */
   reflectedThrough: timestamp('reflected_through', { withTimezone: true }),

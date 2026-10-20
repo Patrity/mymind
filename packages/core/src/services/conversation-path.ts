@@ -36,7 +36,11 @@ export interface BranchInfo {
  * next append starts a new root. Both read paths honour it together.
  *
  * `opts.sinceSummary` (cycle 73) drops rows the thread summary already covers. Model-only, like
- * `sinceEpoch`.
+ * `sinceEpoch`. Cycle 88: only when the summary was folded from THIS path (`summaryApplies`: its
+ * `summary_leaf_id` is on the active path, or null = pre-cycle-88 and trusted). A thread has one
+ * summary but many branches; after a branch switch or a first-message edit the summary describes
+ * another branch, so it must neither reach the model (assemble.ts's summary tier asks
+ * `summaryApplies`) nor cut rows off this path's history.
  */
 export async function loadActivePath(
   conversationId: string,
@@ -44,14 +48,14 @@ export async function loadActivePath(
 ): Promise<{
   rows: Array<typeof conversationMessages.$inferSelect>
   branches: Map<string, BranchInfo>
+  summaryApplies: boolean
 }> {
   const db = useDb()
 
-  const [conv] = await db.select({ leaf: conversations.activeLeafId, atRoot: conversations.branchAtRoot, epoch: conversations.contextEpochAt, through: conversations.summarizedThrough })
+  const [conv] = await db.select({ leaf: conversations.activeLeafId, atRoot: conversations.branchAtRoot, epoch: conversations.contextEpochAt, through: conversations.summarizedThrough, summaryLeaf: conversations.summaryLeafId })
     .from(conversations).where(sql`${conversations.id} = ${conversationId}`).limit(1)
 
   const epoch = opts.sinceEpoch ? conv?.epoch ?? null : null
-  const through = opts.sinceSummary ? conv?.through ?? null : null
 
   // `id` is the tie-break, not decoration: cycle 68's predecessor measured a 26% created_at
   // collision rate in this corpus, and each read path runs its own copy of this query. On
@@ -69,6 +73,13 @@ export async function loadActivePath(
   // above. `through` is exclusive (the summary covers created_at <= through); `epoch` is
   // inclusive, as before. Both are Postgres-clock values compared against Postgres-clock
   // created_at.
+  // Walked over the UNFILTERED rows: whether the summary's last folded row is an ancestor-or-self
+  // of the leaf is a question about the tree, not about what the epoch/summary cuts return. A
+  // null leaf (flat read) shows every row, so the summary is trusted there as before.
+  const fullPath = activePath(allRows, conv?.leaf ?? null)
+  const summaryApplies = !conv?.atRoot && (!conv?.summaryLeaf || !fullPath.length || fullPath.some(r => r.id === conv.summaryLeaf))
+  const through = opts.sinceSummary && summaryApplies ? conv?.through ?? null : null
+
   const rows = allRows.filter(r =>
     (!epoch || r.createdAt.getTime() >= epoch.getTime())
     && (!through || r.createdAt.getTime() > through.getTime()))
@@ -80,7 +91,7 @@ export async function loadActivePath(
   // yet, so its path is EMPTY, for both readers alike (the model must see only the new first
   // message once it lands). Checked before the flat-read fallback below, which would otherwise
   // read [] as "leaf unset" and surface every branch at once.
-  if (conv?.atRoot) return { rows: [], branches }
+  if (conv?.atRoot) return { rows: [], branches, summaryApplies }
   const path = activePath(rows, conv?.leaf ?? null)
   // The `path.length ? path : rows` fallback conflates two different situations: "leaf was
   // never set" (the null-leaf case this fallback exists for) and "leaf points at a row outside
@@ -91,7 +102,7 @@ export async function loadActivePath(
   // pointing before the epoch. A future writer that breaks that invariant (moves the leaf and
   // the epoch in separate transactions, or adds a second writer) would make this fallback
   // silently surface off-branch content instead of falling back to the flat read.
-  return { rows: path.length ? path : rows, branches }
+  return { rows: path.length ? path : rows, branches, summaryApplies }
 }
 
 /**

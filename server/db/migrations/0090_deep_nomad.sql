@@ -1,1 +1,0 @@
-ALTER TABLE "conversations" ADD COLUMN "branch_at_root" boolean DEFAULT false NOT NULL;

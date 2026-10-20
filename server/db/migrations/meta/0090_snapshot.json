@@ -1,5 +1,5 @@
 {
-  "id": "e907b163-2819-4364-a6df-449603bbf4a2",
+  "id": "dd03af69-b982-4cc9-83b3-2d685fdd8241",
   "prevId": "ad77c423-37c9-411d-aa9e-d28719a800f9",
   "version": "7",
   "dialect": "postgresql",
@@ -3401,6 +3401,12 @@
         "summarized_through": {
           "name": "summarized_through",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "summary_leaf_id": {
+          "name": "summary_leaf_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
