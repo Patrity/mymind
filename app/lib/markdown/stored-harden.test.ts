@@ -13,7 +13,7 @@ import MDC from '@nuxtjs/mdc/runtime/components/MDC.vue'
 import MDCRenderer from '@nuxtjs/mdc/runtime/components/MDCRenderer.vue'
 import MdView from '~/components/MdView.vue'
 import { EVIL, STORED_VECTORS } from './exfil-vectors.fixture'
-import { hardenMdcBody, hardenStoredHtml, isAllowedStoredImage, isLocalIcon, isSafeHref } from './stored-harden'
+import { hardenMdcBody, hardenStoredHtml, isAllowedStoredImage, isLocalIcon, isSafeHref, type MdcNode } from './stored-harden'
 
 vi.mock('nuxt/app', () => ({
   // MDC.vue's only Nuxt dependency: run the parse once and hand back refs, as Nuxt would.
@@ -212,7 +212,7 @@ describe('isAllowedStoredImage / isSafeHref / hardenMdcBody', () => {
   it.each(['i-lucide-house', 'i-simple-icons-github', 'lucide:star'])('local icon %s', n => expect(isLocalIcon(n)).toBe(true))
   it.each(['i-mdi-home', 'mdi:home', 'i-lucide-', 'i-lucide-../x', 'https://evil.example/x.svg', 'i-lucide-a b', undefined])('remote/invalid icon %s', n => expect(isLocalIcon(n)).toBe(false))
   it('prototype keys are not allowlisted (tag "constructor", prop "toString")', () => {
-    const out = hardenMdcBody({ type: 'root', children: [
+    const out = hardenMdcBody<MdcNode>({ type: 'root', children: [
       { type: 'element', tag: 'constructor', props: {}, children: [{ type: 'text', value: 't' }] },
       { type: 'element', tag: 'p', props: { toString: 'x', constructor: 'y' }, children: [] }
     ] })

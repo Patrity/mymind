@@ -138,7 +138,8 @@ const harden = (body: MDCRoot) => hardenMdcBody(body as MdcNode, { origin }) as 
   font-size: 0.85em;
   color: var(--ui-text-muted);
 }
-/* Shiki token colours: the highlighter's own <style> block is dropped with every other <style>
+/* Copied from @nuxtjs/mdc dist/runtime/highlighter/shiki.js (its multi-theme `html .light .shiki span` rules), scoped to .mm-md.
+   Shiki token colours: the highlighter's own <style> block is dropped with every other <style>
    (hardenMdcBody), so its fixed theme rules live here (same rules it emits: default, then
    html.light / html.dark win by specificity); the per-token colours are inline --shiki-*
    variables, which hardenMdcBody keeps. */
