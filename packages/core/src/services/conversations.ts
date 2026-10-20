@@ -113,15 +113,21 @@ export async function createConversation(
  * change that column while the turn is still running. Call this once, up front, and pass the
  * result straight through as `appendMessages`' `parentId`.
  *
+ * Returns `null` only while `branch_at_root` is set — an edit/regenerate of the FIRST message is
+ * pending and this turn must start a new root (cycle 88).
+ *
  * Returns `undefined`, NOT `null`, when the column is null (a conversation the leaf backfill
  * never reached, or a brand-new thread with no messages yet) — `appendMessages(id, msgs, null)`
  * means "start a NEW root", which would orphan every message the conversation already has.
  * `undefined` instead tells `appendMessages` to fall back to its own default (chain from
  * whatever leaf is active at persist time).
  */
-export async function captureTurnLeaf(conversationId: string): Promise<string | undefined> {
-  const [conv] = await useDb().select({ leaf: conversations.activeLeafId }).from(conversations)
+export async function captureTurnLeaf(conversationId: string): Promise<string | null | undefined> {
+  const [conv] = await useDb().select({ leaf: conversations.activeLeafId, atRoot: conversations.branchAtRoot }).from(conversations)
     .where(eq(conversations.id, conversationId)).limit(1)
+  // The one case where `null` IS the answer: an edit/regenerate of the first message is pending
+  // (setBranchLeaf), so this turn must start a new root — a sibling of the old first message.
+  if (conv?.atRoot) return null
   return conv?.leaf ?? undefined
 }
 
@@ -161,9 +167,10 @@ export async function appendMessages(
   if (parentId !== undefined) {
     prevId = parentId
   } else {
-    const [conv] = await db.select({ leaf: conversations.activeLeafId }).from(conversations)
+    const [conv] = await db.select({ leaf: conversations.activeLeafId, atRoot: conversations.branchAtRoot }).from(conversations)
       .where(eq(conversations.id, conversationId)).limit(1)
-    prevId = conv?.leaf ?? null
+    // A pending first-message edit (branch_at_root) means "the next row is a new root".
+    prevId = conv?.atRoot ? null : conv?.leaf ?? null
   }
 
   // The inserts and the leaf move are ONE unit of work. Rows written without the matching
@@ -204,7 +211,9 @@ export async function appendMessages(
         messageCount: sql`${conversations.messageCount} + ${msgs.length}`,
         lastMessageAt: now,
         updatedAt: now,
-        activeLeafId: prevId
+        activeLeafId: prevId,
+        // The leaf now names a real row, so a pending new-root branch (if any) has been made.
+        branchAtRoot: false
       })
       .where(eq(conversations.id, conversationId))
 
@@ -230,19 +239,20 @@ export async function appendEvent(conversationId: string, content: string, origi
  *             original question and everything it produced stay reachable.
  * regenerate→ the reply's parent: same reasoning, applied to an assistant message.
  *
- * Returns null for a message that isn't in this conversation — the caller treats that as "no
- * branch to make" rather than a crash. Note null is also the legitimate answer for an edit or
- * regenerate of a ROOT message, which correctly makes the new version a second root.
+ * Returns `undefined` for a message that isn't in this conversation — the caller treats that as
+ * "no branch to make" rather than a crash — and `null` for an edit or regenerate of a ROOT
+ * message, whose new version is a second root. Two different answers, never one (cycle 88: the
+ * single null this used to return for both is what kept first-message edits unsupported).
  */
 export async function branchParent(
   conversationId: string, messageId: string, op: 'fork' | 'edit' | 'regenerate'
-): Promise<string | null> {
+): Promise<string | null | undefined> {
   const [row] = await useDb()
     .select({ id: conversationMessages.id, parentId: conversationMessages.parentId })
     .from(conversationMessages)
     .where(and(eq(conversationMessages.conversationId, conversationId), eq(conversationMessages.id, messageId)))
     .limit(1)
-  if (!row) return null
+  if (!row) return undefined
   return op === 'fork' ? row.id : row.parentId
 }
 
@@ -273,26 +283,15 @@ export async function setActiveLeaf(conversationId: string, leafId: string): Pro
   const resolved = branchTip(rows, leafId)
   if (!resolved) return null
 
-  await db.update(conversations).set({ activeLeafId: resolved, updatedAt: new Date() })
+  // Clearing branch_at_root is what makes the pager (and restoreLeaf) a way BACK out of a
+  // pending first-message edit: switching to any row ends the empty-path state.
+  await db.update(conversations).set({ activeLeafId: resolved, branchAtRoot: false, updatedAt: new Date() })
     .where(eq(conversations.id, conversationId))
   return resolved
 }
 
-/**
- * Is this message in this conversation?
- *
- * Exists only to tell two different `null`s apart on the branch error path (see
- * leaf.patch.ts): `branchParent` answers null both for "not in this conversation" and for
- * "this IS the conversation's root", and the second must not be reported as the first.
- */
-export async function conversationHasMessage(conversationId: string, messageId: string): Promise<boolean> {
-  const [row] = await useDb()
-    .select({ id: conversationMessages.id })
-    .from(conversationMessages)
-    .where(and(eq(conversationMessages.conversationId, conversationId), eq(conversationMessages.id, messageId)))
-    .limit(1)
-  return !!row
-}
+/** setBranchLeaf's answer for an edit/regenerate of a root: no leaf, the next append is a new root. */
+export const NEW_ROOT = 'new-root' as const
 
 /**
  * Point the thread where a NEW branch should hang from — `branchParent`'s answer, set EXACTLY,
@@ -304,19 +303,29 @@ export async function conversationHasMessage(conversationId: string, messageId: 
  * chains onto the end of the thread — "carry on as normal", which is the exact opposite of a
  * fork. Edit and regenerate would descend off their target's parent in the same way.
  *
- * Returns the id actually written, or null when `messageId` is not in this conversation — or
- * when `branchParent` answers null because the target is a ROOT (an edit/regenerate of the very
- * first message would have to hang off "no parent", and `conversations.active_leaf_id` has no
- * way to say "start a second root"; the caller 404s). Scoping is `branchParent`'s: it selects
- * the row under `conversationId`, and a parent of a row in this conversation is in it too.
+ * Returns the id actually written, `NEW_ROOT` for an edit/regenerate of a ROOT message (cycle 88:
+ * the thread's `branch_at_root` flag is set — the active path is empty and the next append
+ * starts a second root, which `active_leaf_id` alone cannot say because null there means "flat
+ * read"), or null when `messageId` is not in this conversation (the caller 404s). Scoping is
+ * `branchParent`'s: it selects the row under `conversationId`, and a parent of a row in this
+ * conversation is in it too.
  */
 export async function setBranchLeaf(
   conversationId: string, messageId: string, op: 'fork' | 'edit' | 'regenerate'
-): Promise<string | null> {
+): Promise<string | typeof NEW_ROOT | null> {
+  const db = useDb()
   const parent = await branchParent(conversationId, messageId, op)
-  if (!parent) return null
+  if (parent === undefined) return null
 
-  await useDb().update(conversations).set({ activeLeafId: parent, updatedAt: new Date() })
+  if (parent === null) {
+    // Edit/regenerate of a ROOT: the new version has no parent. The leaf stays where it is (a
+    // real row, so restoreLeaf / the pager can always get back) and the flag empties the path.
+    await db.update(conversations).set({ branchAtRoot: true, updatedAt: new Date() })
+      .where(eq(conversations.id, conversationId))
+    return NEW_ROOT
+  }
+
+  await db.update(conversations).set({ activeLeafId: parent, branchAtRoot: false, updatedAt: new Date() })
     .where(eq(conversations.id, conversationId))
   return parent
 }

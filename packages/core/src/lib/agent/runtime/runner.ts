@@ -119,7 +119,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
   // branch the user was reading, not wherever the leaf drifted to by the time this
   // persists. This only fixes CHAINING — the leaf still moves to the new reply
   // afterwards regardless (a ruled UX tradeoff, not a bug: both branches stay reachable).
-  let turnLeafId: string | undefined
+  let turnLeafId: string | null | undefined
   // Built once, called at each of the two persist sites below — a single definition so
   // the rescue path can never again drift from the success path's construction (that was
   // this file's one production bug already, just in a different field). Each call takes

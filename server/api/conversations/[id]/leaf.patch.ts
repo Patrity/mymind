@@ -1,4 +1,4 @@
-import { setActiveLeaf, setBranchLeaf, conversationHasMessage } from '@mymind/core/services/conversations'
+import { setActiveLeaf, setBranchLeaf, NEW_ROOT } from '@mymind/core/services/conversations'
 import { publishChange } from '@mymind/core/utils/live-bus'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -31,28 +31,16 @@ export default defineEventHandler(async (event) => {
   // message; edit/regenerate → its parent) and the result is written EXACTLY, because the
   // descent above would walk a fork straight back to the end of the thread and undo it.
   //
-  // null from either means there is nothing to point at: not a message in this conversation,
-  // or (with an op) a root whose parent a leaf column cannot express.
+  // null from either means the message is not in this conversation. An edit/regenerate of the
+  // FIRST message answers NEW_ROOT (cycle 88): the thread's path is now empty and the next turn
+  // starts a second root, a sibling of the original first message.
   const resolved = op
     ? await setBranchLeaf(id, leafId, op as BranchOp)
     : await setActiveLeaf(id, leafId)
-  if (!resolved) {
-    // `branchParent` answers null for two different reasons, and the UI must not conflate them.
-    // Either the message is not in this conversation, or it IS but it is the thread's ROOT —
-    // whose parent `active_leaf_id` cannot express, since null there already means "fall back to
-    // a flat read". Reporting a root as "not in this conversation" is a lie about the user's own
-    // thread, and it already sent one round of this work chasing the wrong bug.
-    const isRoot = !!op && await conversationHasMessage(id, leafId)
-    throw createError({
-      statusCode: 404,
-      statusMessage: isRoot
-        ? 'The first message of a thread cannot be branched yet'
-        : 'That message is not in this conversation'
-    })
-  }
+  if (!resolved) throw createError({ statusCode: 404, statusMessage: 'That message is not in this conversation' })
 
   publishChange({ resource: 'conversation', action: 'updated', id })
   // Return the RESOLVED leaf, never the requested one — the response must not claim a leaf it
-  // did not actually set.
-  return { ok: true, leafId: resolved }
+  // did not actually set. A new-root branch has no leaf yet: null.
+  return { ok: true, leafId: resolved === NEW_ROOT ? null : resolved }
 })

@@ -631,6 +631,13 @@
       "when": 1792102382462,
       "tag": "0089_sleepy_goblin_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1792495156301,
+      "tag": "0090_deep_nomad",
+      "breakpoints": true
     }
   ]
 }

@@ -32,6 +32,9 @@ export interface BranchInfo {
  * is built from the WHOLE thread regardless, because a message on the active path needs the
  * count of siblings that are off it, including siblings that predate the epoch.
  *
+ * `branch_at_root` (cycle 88) returns an EMPTY path: a first-message edit is pending and the
+ * next append starts a new root. Both read paths honour it together.
+ *
  * `opts.sinceSummary` (cycle 73) drops rows the thread summary already covers. Model-only, like
  * `sinceEpoch`.
  */
@@ -44,7 +47,7 @@ export async function loadActivePath(
 }> {
   const db = useDb()
 
-  const [conv] = await db.select({ leaf: conversations.activeLeafId, epoch: conversations.contextEpochAt, through: conversations.summarizedThrough })
+  const [conv] = await db.select({ leaf: conversations.activeLeafId, atRoot: conversations.branchAtRoot, epoch: conversations.contextEpochAt, through: conversations.summarizedThrough })
     .from(conversations).where(sql`${conversations.id} = ${conversationId}`).limit(1)
 
   const epoch = opts.sinceEpoch ? conv?.epoch ?? null : null
@@ -73,6 +76,11 @@ export async function loadActivePath(
   // Indexes cover the whole THREAD, not just the path: a message on the active path needs the
   // count of siblings that are off it, which is the only thing the pager has to render.
   const branches = withSiblings(allRows, branchIndex(allRows.map(r => ({ id: r.id, parentId: r.parentId }))))
+  // Cycle 88: an edit/regenerate of the FIRST message is pending — the new branch has no rows
+  // yet, so its path is EMPTY, for both readers alike (the model must see only the new first
+  // message once it lands). Checked before the flat-read fallback below, which would otherwise
+  // read [] as "leaf unset" and surface every branch at once.
+  if (conv?.atRoot) return { rows: [], branches }
   const path = activePath(rows, conv?.leaf ?? null)
   // The `path.length ? path : rows` fallback conflates two different situations: "leaf was
   // never set" (the null-leaf case this fallback exists for) and "leaf points at a row outside

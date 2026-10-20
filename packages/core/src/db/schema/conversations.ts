@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { pgTable, uuid, text, integer, jsonb, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, integer, jsonb, timestamp, boolean, index, uniqueIndex } from 'drizzle-orm/pg-core'
 import { halfvec } from '../types/halfvec'
 
 export const conversations = pgTable('conversations', {
@@ -14,6 +14,12 @@ export const conversations = pgTable('conversations', {
   /** Leaf of the branch currently displayed. A thread is a tree (see parent_id); this names
    *  which path through it is active. Nullable only as a fallback: null → flat read. */
   activeLeafId: uuid('active_leaf_id'),
+  /** Cycle 88: an edit/regenerate of the FIRST message is pending. True → the active path is
+   *  EMPTY and the next append starts a new ROOT (a sibling of the existing roots). A leaf column
+   *  alone cannot say this — null there already means "flat read". `active_leaf_id` keeps the old
+   *  leaf meanwhile (so anything unaware of the flag still reads a real branch); every write of
+   *  `active_leaf_id` (appendMessages, setActiveLeaf, setBranchLeaf) clears it. */
+  branchAtRoot: boolean('branch_at_root').notNull().default(false),
   /** `/clear` boundary. The MODEL reads only messages at or after this; the UI still shows
    *  everything and renders a divider here, so the two readers differ VISIBLY rather than
    *  silently (cycle 68's invariant is that they must never disagree unnoticed). */
