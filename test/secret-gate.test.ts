@@ -148,15 +148,15 @@ describe('redactEvidence', () => {
       null
     ])
     expect(out).toHaveLength(3)
-    const e = out[0] as Record<string, unknown>
+    const e = out![0] as Record<string, unknown>
     expect(e.quote).not.toContain('Copenflagen11')
     expect(e.reasoning).not.toContain('Copenflagen11')
     expect(e.quote).toContain(REDACTED)
     expect(e.sessionId).toBe('s1')
     expect(e.msgIds).toEqual(['m1'])
     expect(e.mergedAt).toBe('2026-10-20T01:00:00.000Z')
-    expect(out[1]).toBe('not an object')
-    expect(out[2]).toBeNull()
+    expect(out![1]).toBe('not an object')
+    expect(out![2]).toBeNull()
   })
 
   it('passes undefined through', () => {

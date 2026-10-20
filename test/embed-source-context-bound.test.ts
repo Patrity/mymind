@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { estimateTokens } from '@mymind/core/lib/chunking/chunk-markdown'
 
-const chatMock = vi.fn(async () => 'One situating sentence.')
+const chatMock = vi.fn(async (..._a: unknown[]) => 'One situating sentence.')
 vi.mock('@mymind/core/lib/ai/chat', () => ({ chat: (...a: unknown[]) => chatMock(...a) }))
 
 vi.mock('@mymind/core/lib/ai/embeddings', () => ({
