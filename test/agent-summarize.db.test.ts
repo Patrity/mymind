@@ -12,7 +12,7 @@ import { useDb } from '@mymind/core/db'
 import { conversations, conversationMessages } from '@mymind/core/db/schema'
 import { maybeSummarize, idleThreadCandidates, SUMMARY_KEEP_TURNS } from '@mymind/core/lib/agent/runtime/summarize'
 import { appendEvent } from '@mymind/core/services/conversations'
-import { appendMessages, getAgentHistory, getConversation, createConversation, setBranchLeaf, setActiveLeaf } from '@mymind/core/services/conversations'
+import { appendMessages, getAgentHistory, getConversation, createConversation, setBranchLeaf, setActiveLeaf, captureTurnLeaf } from '@mymind/core/services/conversations'
 import { loadSummary } from '@mymind/core/lib/agent/assemble'
 import { messageText } from '@mymind/core/lib/agent/run'
 import { eq, inArray, sql } from 'drizzle-orm'
@@ -245,7 +245,9 @@ describe('maybeSummarize', () => {
         await appendMessages(id, [
           { role: 'user', content: `n${i} ` + 'w '.repeat(2500), modality: 'text' },
           { role: 'assistant', content: `m${i} ` + 'w '.repeat(2500), modality: 'text' }
-        ])
+        // The first turn is the web turn the edit belongs to: the runner passes captureTurnLeaf's
+        // null (a default-parent append extends the OLD branch — PENDING ROOT rule 1).
+        ], i === 0 ? await captureTurnLeaf(id) : undefined)
       }
       let prevSeen: string | null = 'unset', transcript = ''
       await maybeSummarize(id, { summarizer: async (p, t) => { prevSeen = p; transcript = t; return 'new branch summary' }, embed: async () => null })

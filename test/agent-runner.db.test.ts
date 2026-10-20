@@ -64,7 +64,7 @@ import { runTurn } from '@mymind/core/lib/agent/runtime/runner'
 import { StreamHub } from '@mymind/core/lib/agent/runtime/stream'
 import { abortRun } from '@mymind/core/lib/agent/runtime/aborts'
 import { registerApprovalChannel, hasApprovalChannel, approvalFor } from '@mymind/core/lib/agent/runtime/approvals'
-import { appendMessages } from '@mymind/core/services/conversations'
+import { appendMessages, setBranchLeaf } from '@mymind/core/services/conversations'
 import { pushSteer } from '@mymind/core/lib/agent/runtime/inbox'
 import { jobOutcomeOf } from '@mymind/core/lib/agent/jobs/outcome'
 import { and, eq, inArray, like } from 'drizzle-orm'
@@ -392,6 +392,44 @@ describe('runTurn', () => {
 
   // Cycle 74 D4 (replaces cycle 73's "the event row is kept"): a silent run leaves NOTHING in
   // the thread — only its agent_runs row (outcome suppressed). No rows, no persisted frame.
+  // Review I4 / PENDING ROOT rule 2: a pending first-message edit belongs to the WEB turn. A
+  // headless or channel turn must not run against its empty path (amnesia) nor consume it.
+  describe('a pending first-message edit (branch_at_root)', () => {
+    async function pendingRootThread(extra: Partial<Parameters<typeof createRun>[0]>) {
+      const { run, conversationId } = await queued('the new turn', extra)
+      await appendMessages(conversationId, [
+        { role: 'user', content: 'Q1', modality: 'text' }, { role: 'assistant', content: 'A1', modality: 'text' }
+      ])
+      const q1 = (await rows(conversationId)).find(r => r.content === 'Q1')!
+      const [tip] = await useDb().select({ leaf: conversations.activeLeafId }).from(conversations).where(eq(conversations.id, conversationId))
+      await setBranchLeaf(conversationId, q1.id, 'edit')
+      const seen: string[][] = []
+      const agent = async function* (m: Array<{ content: unknown }>) {
+        seen.push(m.map(x => typeof x.content === 'string' ? x.content : JSON.stringify(x.content)))
+        yield { type: 'text-delta', text: 'ok' } as const
+        yield { type: 'done' } as const
+      }
+      const out = await runTurn(run, { runAgent: agent as never, assemble: noAssemble as never, hub: new StreamHub() })
+      const [conv] = await useDb().select({ atRoot: conversations.branchAtRoot }).from(conversations).where(eq(conversations.id, conversationId))
+      const user = (await rows(conversationId)).find(r => r.id === out.userMessageId)!
+      return { history: seen[0]!, atRoot: conv!.atRoot, userParent: user.parentId, tip: tip!.leaf }
+    }
+
+    it('a channel turn (no originating socket) reads and extends the old branch, leaving the edit pending', async () => {
+      const r = await pendingRootThread({ replyTo: { channel: 'imessage', chatGuid: 'iMessage;-;+15550000091' } as never })
+      expect(r.history.some(c => c.includes('Q1'))).toBe(true)          // not amnesia
+      expect(r.userParent).toBe(r.tip)                                   // chained from the old tip
+      expect(r.atRoot).toBe(true)                                        // the web edit is still pending
+    })
+
+    it('the web turn (originating socket) starts the new root with no prior history', async () => {
+      const r = await pendingRootThread({ originSinkId: 'sink-test' })
+      expect(r.history.some(c => c.includes('Q1'))).toBe(false)
+      expect(r.userParent).toBeNull()
+      expect(r.atRoot).toBe(false)
+    })
+  })
+
   it('a wake run that replies NO_REPLY persists zero rows and publishes no persisted frame', async () => {
     const s = await resolveSession('thread:new', { titleHint: 'RUNNER-TEST wake' })
     convIds.push(s.conversationId)

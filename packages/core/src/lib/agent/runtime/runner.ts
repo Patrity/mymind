@@ -233,13 +233,18 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // turn into a different thread than the one the user was typing in.
     // The branch this turn was sent into, same reasoning — read now, before the turn's
     // own await, not at persist time.
-    turnLeafId = await captureTurnLeaf(conversationId)
+    // A pending first-message edit (branch_at_root) belongs to the WEB turn Tony is about to
+    // send; every other turn — a wake, an iMessage/channel turn, a job, a workstream segment —
+    // reads and extends the branch the thread was on instead of running with an empty history
+    // (services/conversations.ts PENDING ROOT, rule 2).
+    const ignorePendingRoot = !(run.trigger === 'user' && run.originSinkId && run.kind !== 'workstream' && !eventOrigin)
+    turnLeafId = await captureTurnLeaf(conversationId, { ignorePendingRoot })
 
     // Setup that the ws.ts closure did inside `exec` — inside this `try`, so a failure here
     // takes the same rescue path as a failing model (the question still persists).
     const [conv] = await useDb().select({ kind: conversations.kind, title: conversations.title, activeToolsets: conversations.activeToolsets })
       .from(conversations).where(eq(conversations.id, conversationId)).limit(1)
-    const fullHistory = await getAgentHistory(conversationId)
+    const fullHistory = await getAgentHistory(conversationId, { ignorePendingRoot })
     // A light-context run (a job's `context: light`) keeps only the last few turns — sliced here,
     // BEFORE costing, so the budget and droppedTurns below describe what the model really sees.
     const allTurns = groupTurns(fullHistory)

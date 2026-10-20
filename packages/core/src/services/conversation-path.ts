@@ -33,7 +33,10 @@ export interface BranchInfo {
  * count of siblings that are off it, including siblings that predate the epoch.
  *
  * `branch_at_root` (cycle 88) returns an EMPTY path: a first-message edit is pending and the
- * next append starts a new root. Both read paths honour it together.
+ * next append starts a new root. Both read paths honour it together — except
+ * `opts.ignorePendingRoot`, which a NON-UI turn (wake, iMessage/channel, job, workstream) passes:
+ * the pending root belongs to the web turn Tony is about to send, so a headless turn reads (and
+ * appends to) the branch the thread was on instead of running with zero history.
  *
  * `opts.sinceSummary` (cycle 73) drops rows the thread summary already covers. Model-only, like
  * `sinceEpoch`. Cycle 88: only when the summary was folded from THIS path (`summaryApplies`: its
@@ -44,7 +47,7 @@ export interface BranchInfo {
  */
 export async function loadActivePath(
   conversationId: string,
-  opts: { sinceEpoch?: boolean; sinceSummary?: boolean } = {}
+  opts: { sinceEpoch?: boolean; sinceSummary?: boolean; ignorePendingRoot?: boolean } = {}
 ): Promise<{
   rows: Array<typeof conversationMessages.$inferSelect>
   branches: Map<string, BranchInfo>
@@ -56,6 +59,7 @@ export async function loadActivePath(
     .from(conversations).where(sql`${conversations.id} = ${conversationId}`).limit(1)
 
   const epoch = opts.sinceEpoch ? conv?.epoch ?? null : null
+  const atRoot = !!conv?.atRoot && !opts.ignorePendingRoot
 
   // `id` is the tie-break, not decoration: cycle 68's predecessor measured a 26% created_at
   // collision rate in this corpus, and each read path runs its own copy of this query. On
@@ -77,7 +81,7 @@ export async function loadActivePath(
   // of the leaf is a question about the tree, not about what the epoch/summary cuts return. A
   // null leaf (flat read) shows every row, so the summary is trusted there as before.
   const fullPath = activePath(allRows, conv?.leaf ?? null)
-  const summaryApplies = !conv?.atRoot && (!conv?.summaryLeaf || !fullPath.length || fullPath.some(r => r.id === conv.summaryLeaf))
+  const summaryApplies = !atRoot && (!conv?.summaryLeaf || !fullPath.length || fullPath.some(r => r.id === conv.summaryLeaf))
   const through = opts.sinceSummary && summaryApplies ? conv?.through ?? null : null
 
   const rows = allRows.filter(r =>
@@ -91,7 +95,7 @@ export async function loadActivePath(
   // yet, so its path is EMPTY, for both readers alike (the model must see only the new first
   // message once it lands). Checked before the flat-read fallback below, which would otherwise
   // read [] as "leaf unset" and surface every branch at once.
-  if (conv?.atRoot) return { rows: [], branches, summaryApplies }
+  if (atRoot) return { rows: [], branches, summaryApplies }
   const path = activePath(rows, conv?.leaf ?? null)
   // The `path.length ? path : rows` fallback conflates two different situations: "leaf was
   // never set" (the null-leaf case this fallback exists for) and "leaf points at a row outside

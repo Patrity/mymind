@@ -17,8 +17,10 @@ export const conversations = pgTable('conversations', {
   /** Cycle 88: an edit/regenerate of the FIRST message is pending. True → the active path is
    *  EMPTY and the next append starts a new ROOT (a sibling of the existing roots). A leaf column
    *  alone cannot say this — null there already means "flat read". `active_leaf_id` keeps the old
-   *  leaf meanwhile (so anything unaware of the flag still reads a real branch); every write of
-   *  `active_leaf_id` (appendMessages, setActiveLeaf, setBranchLeaf) clears it. */
+   *  leaf meanwhile (so anything unaware of the flag still reads a real branch). Cleared by
+   *  setActiveLeaf / setBranchLeaf, by an append that STARTS a root, by cancelPendingRoot, and by
+   *  expireStalePendingRoot on read — an append chained from a real row (events, non-UI turns)
+   *  leaves it set. Rules: services/conversations.ts "PENDING ROOT". */
   branchAtRoot: boolean('branch_at_root').notNull().default(false),
   /** `/clear` boundary. The MODEL reads only messages at or after this; the UI still shows
    *  everything and renders a divider here, so the two readers differ VISIBLY rather than

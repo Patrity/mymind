@@ -22,6 +22,16 @@ export function useConversations() {
       method: 'PATCH', body: { leafId, ...(op ? { op } : {}) }
     })
 
+  /**
+   * Put the thread back after a branch move whose turn never went out, when the client cannot name
+   * the old leaf. The server undoes a pending first-message edit exactly ('exact') and otherwise
+   * descends from the branch parent to its newest tip ('newest-branch').
+   */
+  const restoreUnsentBranch = (id: string) =>
+    $fetch<{ ok: true, restored: 'exact' | 'newest-branch' }>(`/api/conversations/${id}/leaf`, {
+      method: 'PATCH', body: { op: 'restore' }
+    })
+
   const useConversationList = (params?: MaybeRefOrGetter<{ q?: string } | undefined>) => {
     const key = computed(() => toValue(params))
     return useQuery({
@@ -37,5 +47,5 @@ export function useConversations() {
       enabled: computed(() => !!key.value)
     })
   }
-  return { list, getConversation, remove, setLeaf, useConversationList, useConversation }
+  return { list, getConversation, remove, setLeaf, restoreUnsentBranch, useConversationList, useConversation }
 }

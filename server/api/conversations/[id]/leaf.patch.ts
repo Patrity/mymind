@@ -1,4 +1,4 @@
-import { setActiveLeaf, setBranchLeaf, NEW_ROOT } from '@mymind/core/services/conversations'
+import { cancelPendingRoot, restoreAfterUnsentBranch, setActiveLeaf, setBranchLeaf, NEW_ROOT } from '@mymind/core/services/conversations'
 import { publishChange } from '@mymind/core/utils/live-bus'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -11,6 +11,19 @@ export default defineEventHandler(async (event) => {
   // Postgres type error surfacing as a 500.
   if (!UUID.test(id)) throw createError({ statusCode: 400, statusMessage: 'id must be a uuid' })
   const body = await readBody(event) as { leafId?: unknown, op?: unknown }
+
+  // op 'restore' with no leafId: "the branch I just made never got its turn — put the thread
+  // back" when the client cannot name the old leaf (its transcript tail was still a live stream).
+  // A pending FIRST-message edit is undone exactly (cancelPendingRoot: the leaf never moved); any
+  // other branch move descends from the current leaf to its newest tip, so nothing stays hidden.
+  if (body?.op === 'restore') {
+    if (body.leafId !== undefined && body.leafId !== null) throw createError({ statusCode: 400, statusMessage: 'op restore takes no leafId' })
+    const restored = await cancelPendingRoot(id) ? 'exact' as const : await restoreAfterUnsentBranch(id)
+    if (!restored) throw createError({ statusCode: 404, statusMessage: 'Nothing to restore in this conversation' })
+    publishChange({ resource: 'conversation', action: 'updated', id })
+    return { ok: true, restored }
+  }
+
   const leafId = typeof body?.leafId === 'string' ? body.leafId : ''
   if (!UUID.test(leafId)) throw createError({ statusCode: 400, statusMessage: 'leafId must be a uuid' })
   // `op` is optional, but an op the server doesn't know is a client bug, not "no op" — silently
