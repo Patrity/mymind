@@ -247,14 +247,14 @@ describe('workspace tools (host runtime)', () => {
 
   it('watch timeout; a watch survives a worker restart (re-armed at boot)', async () => {
     delivered.length = 0
-    const short = await rt.watches.create({ workspaceId: current, workstreamId: null, conversationId: null, command: 'false', until: { kind: 'exit0' }, intervalSec: 5, timeoutMin: 0.1 })
+    const short = await rt.watches.create({ workspaceId: current, workstreamId: null, conversationId: null, command: 'false', until: { kind: 'exit0' }, intervalSec: 5, timeoutMin: 0.1 }) as { id: string }
     const t = await until(async () => delivered.find(d => d.id === short.id), 30_000)
     expect(t.state).toBe('timeout')
     expect(t.resultText).toMatch(/timed out/)
 
     // Armed on worker A, which stops (drain) before it fires…
     const rtA = mkRuntime(mkManager())
-    const w = await rtA.watches.create({ workspaceId: current, workstreamId: null, conversationId: null, command: 'test -f later.flag', until: { kind: 'exit0' }, intervalSec: 5, timeoutMin: 5 })
+    const w = await rtA.watches.create({ workspaceId: current, workstreamId: null, conversationId: null, command: 'test -f later.flag', until: { kind: 'exit0' }, intervalSec: 5, timeoutMin: 5 }) as { id: string }
     await sleep(500)
     rtA.watches.stop()
     await call('bash', { command: 'touch later.flag' })

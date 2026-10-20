@@ -41,7 +41,7 @@ const put = (await import('../server/api/settings/channels.put')).default as H
 const regen = (await import('../server/api/settings/channels/regenerate-token.post')).default as H
 const presence = (await import('../server/api/presence.post')).default as H
 
-const evt = (client: { type?: string } | undefined, body: unknown = {}) => ({ context: { client }, body }) as { context: unknown, body: unknown, status?: number }
+const evt = (client: { type?: string, [k: string]: unknown } | undefined, body: unknown = {}) => ({ context: { client }, body }) as { context: unknown, body: unknown, status?: number }
 const session = { type: 'session', userId: 'u1' }
 const goodBody = {
   imessage: { enabled: true, serverUrl: 'http://bb.local:1234', password: { keep: true }, allowedHandles: ['+15551234567'], defaultHandle: '+15551234567' },

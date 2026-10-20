@@ -168,7 +168,7 @@ describe('braveProvider 429 retry', () => {
     const d = deps()
     const fetchFn = vi.fn().mockResolvedValueOnce(resp(429)).mockResolvedValueOnce(resp(429)).mockResolvedValueOnce(ok)
     await braveProvider('k', { fetchFn, ...d }).search('q')
-    expect(d.sleep.mock.calls.map(c => c[0])).toEqual([1000, 2000])
+    expect(d.sleep.mock.calls.map(c => (c as any[])[0])).toEqual([1000, 2000])
   })
 
   it('caps an absurd Retry-After', async () => {

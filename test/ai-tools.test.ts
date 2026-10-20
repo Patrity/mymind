@@ -5,7 +5,7 @@ import { buildAiTools } from '@mymind/core/lib/agent/ai-tools'
 import type { AgentTool } from '@mymind/core/lib/agent/types'
 
 const fake: AgentTool = {
-  name: 'create_task', description: 'x', kind: 'create',
+  name: 'create_task', toolset: 'core', description: 'x', kind: 'create',
   schema: { title: z.string() },
   handler: async () => ({ result: { id: 't1', title: 'milk' }, summary: "added 'milk' to todo", undo: async () => {} })
 }

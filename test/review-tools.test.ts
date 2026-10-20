@@ -80,7 +80,7 @@ describe('decide_review exposure', () => {
     expect(decideReviewTool.allowlistable).not.toBe(true)
     const requestApproval = vi.fn().mockResolvedValue({ approved: false })
     const set = buildAiTools([decideReviewTool], { signal: ctx.signal, onEvent: () => {}, requestApproval })
-    await (set.decide_review as { execute: (i: unknown) => Promise<unknown> }).execute({ id: IMPROVEMENT_ID, choice: 'approve' })
+    await (set.decide_review as unknown as { execute: (i: unknown) => Promise<unknown> }).execute({ id: IMPROVEMENT_ID, choice: 'approve' })
     expect(requestApproval.mock.calls[0]![0]).toMatchObject({ tool: 'decide_review', allowlistable: false })
   })
 
@@ -94,7 +94,7 @@ describe('decide_review exposure', () => {
 
 describe('decide_review approval', () => {
   const run = (set: ReturnType<typeof buildAiTools>, args: unknown) =>
-    (set.decide_review as { execute: (i: unknown) => Promise<unknown> }).execute(args)
+    (set.decide_review as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(args)
 
   it('a denied confirmation never reaches the decision service', async () => {
     const requestApproval = vi.fn().mockResolvedValue({ approved: false })
@@ -112,9 +112,9 @@ describe('decide_review approval', () => {
   })
 
   it('the approval names the choice and the item summary cached by list_reviews (or the id)', async () => {
-    expect(decideReviewTool.describeApproval!({ id: 'not-listed', choice: 'reject' }).command).toBe('reject — not-listed')
+    expect((await decideReviewTool.describeApproval!({ id: 'not-listed', choice: 'reject' }, { approvalNonce: 'n' })).command).toBe('reject — not-listed')
     await listReviewsTool.handler({ limit: 20 }, ctx)
-    const req = decideReviewTool.describeApproval!({ id: IMPROVEMENT_ID, choice: 'approve' })
+    const req = await decideReviewTool.describeApproval!({ id: IMPROVEMENT_ID, choice: 'approve' }, { approvalNonce: 'n' })
     expect(req).toMatchObject({ tool: 'decide_review', command: 'approve — skill.edit weekly-report: Tony asked for bullets' })
     // Nothing to "always allow": an empty pattern is never persisted.
     expect(req.proposedPattern).toBe('')

@@ -158,9 +158,9 @@ describe('download', () => {
 
 describe('fix round 1', () => {
   it('M2: a value shorter than 4 characters cannot be opted in (clear message); opting it out is fine', async () => {
-    const e = await sandboxRoute(ev('session', { body: { name: 'SHORT', sandbox: true } })).catch(x => x)
+    const e = await sandboxRoute(ev('session', { body: { name: 'SHORT', sandbox: true } })).catch((x: any) => x)
     expect(e).toMatchObject({ statusCode: 400 })
-    expect(e.data.message).toMatch(/shorter than 4 characters/)
+    expect((e as { data: { message: string } }).data.message).toMatch(/shorter than 4 characters/)
     expect(setSecretSandbox).not.toHaveBeenCalled()
     await sandboxRoute(ev('session', { body: { name: 'SHORT', sandbox: false } }))
     expect(setSecretSandbox).toHaveBeenCalledWith('SHORT', false)
@@ -183,9 +183,9 @@ describe('fix round 1', () => {
     const { VIEW_TIMEOUT_MS } = await import('../server/utils/workspaces-http')
     expect(VIEW_TIMEOUT_MS).toBeGreaterThanOrEqual(75_000) // cycle 86: the script ≤ 60s (no container to start)
     sendCommand.mockRejectedValue(new CommandTimeoutError('workspace-view', 1, VIEW_TIMEOUT_MS, true))
-    const e = await filesRoute(ev('session')).catch(x => x)
+    const e = await filesRoute(ev('session')).catch((x: any) => x)
     expect(e).toMatchObject({ statusCode: 504 })
-    expect(e.data.message).toMatch(/still running/)
+    expect((e as { data: { message: string } }).data.message).toMatch(/still running/)
   })
   it('M10: GET …/home creates the home workspace only for a web session; a token reads it or gets 404', async () => {
     db.rows = []

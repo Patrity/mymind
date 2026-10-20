@@ -19,7 +19,7 @@ type H = (e: unknown) => Promise<unknown>
 const get = (await import('../server/api/settings/self-improvement.get')).default as H
 const put = (await import('../server/api/settings/self-improvement.put')).default as H
 
-const evt = (client: { type?: string } | undefined, body: unknown = {}) => ({ context: { client }, body })
+const evt = (client: { type?: string, [k: string]: unknown } | undefined, body: unknown = {}) => ({ context: { client }, body })
 const session = { type: 'session', userId: 'u1' }
 
 beforeEach(() => {

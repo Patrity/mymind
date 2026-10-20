@@ -29,7 +29,7 @@ const sourcePut = (await import('../server/api/profile/source.put')).default as 
 const revisionsGet = (await import('../server/api/profile/revisions.get')).default as H
 const revertPost = (await import('../server/api/profile/revert.post')).default as H
 
-const evt = (client: { type?: string } | undefined, body: unknown = {}) => ({ context: { client }, body })
+const evt = (client: { type?: string, [k: string]: unknown } | undefined, body: unknown = {}) => ({ context: { client }, body })
 const session = { type: 'session', userId: 'u1' }
 
 const SOURCE = { content: 'Likes terse answers.', contentHash: 'h1', updatedBy: 'human', updatedAt: '2026-01-01T00:00:00.000Z' }
