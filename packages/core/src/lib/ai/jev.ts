@@ -78,25 +78,40 @@ export async function jevConfig(): Promise<JevConfig | null> {
  * Retries only on 429, honouring `retry-after` when present and otherwise backing off
  * exponentially. Every other failure throws — a 4xx means the request shape is wrong and
  * retrying would just repeat it. Non-OK replies throw `JevHttpError` (carries `status`); each
- * attempt is bounded by JEV_TIMEOUT_MS (a timeout throws the AbortSignal's TimeoutError).
+ * attempt is bounded by `opts.timeoutMs` (default JEV_TIMEOUT_MS; a timeout throws the
+ * AbortSignal's TimeoutError). An inline caller that must fail open fast — the write-time secret
+ * gate — passes a short timeout; the scorer keeps the default.
  */
+export interface AskJevOpts {
+  timeoutMs?: number
+  /**
+   * Total fetches allowed, counting the first (default 6 = one try + five 429 retries). An inline
+   * caller with a hard budget — the secret gate — passes 1 so a rate-limited key fails fast
+   * instead of backing off for 15 s+ (D3 A2).
+   */
+  maxAttempts?: number
+}
+
+export const JEV_DEFAULT_MAX_ATTEMPTS = 6
+
 export async function askJev(
   state: string,
   questions: Record<string, { type: string, instructions: string }>,
   cfg: JevConfig,
+  opts: AskJevOpts = {},
   attempt = 0
 ): Promise<JevResponse> {
   const res = await fetch(`${cfg.baseURL}/systemone`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${cfg.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ state, model: cfg.model, questions }),
-    signal: AbortSignal.timeout(JEV_TIMEOUT_MS)
+    signal: AbortSignal.timeout(opts.timeoutMs ?? JEV_TIMEOUT_MS)
   })
 
-  if (res.status === 429 && attempt < 5) {
+  if (res.status === 429 && attempt + 1 < (opts.maxAttempts ?? JEV_DEFAULT_MAX_ATTEMPTS)) {
     const retryAfter = Number(res.headers.get('retry-after') ?? 0) * 1000
     await new Promise(r => setTimeout(r, retryAfter || 2 ** attempt * 500))
-    return askJev(state, questions, cfg, attempt + 1)
+    return askJev(state, questions, cfg, opts, attempt + 1)
   }
   if (!res.ok) throw new JevHttpError(res.status, await res.text())
 
