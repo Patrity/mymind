@@ -7,19 +7,38 @@
 // useAsyncData on hash(value) at setup time — for streaming text that's the hash
 // of the first delta, so two messages starting with the same token collide on one
 // asyncData record and render each other's content (live-verified on /agent).
+//
+// Cycle 88: every caller renders STORED content (documents, triage cards, shared docs, config
+// previews, clipboard pastes) that may be attacker-influenced, so the parsed tree goes through
+// hardenMdcBody (app/lib/markdown/stored-harden.ts) before it renders: no remote images (they
+// become links), no raw-HTML/MDC components that fetch, no style/on* attributes. The frontmatter
+// `data` is NOT passed to the renderer — `mdc.components` in frontmatter can remap tags.
+import type { MDCRoot } from '@nuxtjs/mdc'
+import { hardenMdcBody, type MdcNode } from '~/lib/markdown/stored-harden'
+
 defineProps<{
   source: string
   inline?: boolean
   cacheKey?: string
 }>()
+
+const origin = useRequestURL().origin
+const harden = (body: MDCRoot) => hardenMdcBody(body as MdcNode, { origin }) as MDCRoot
 </script>
 
 <template>
   <div :class="inline ? 'mm-md mm-md-inline' : 'mm-md'">
     <MDC
+      v-slot="{ body }"
       :value="source"
       :cache-key="cacheKey"
-    />
+    >
+      <MDCRenderer
+        v-if="body"
+        :body="harden(body)"
+        :data="{}"
+      />
+    </MDC>
   </div>
 </template>
 
@@ -114,6 +133,27 @@ defineProps<{
   border: none;
   border-top: 1px solid var(--ui-border);
   margin: 0.8em 0;
+}
+.mm-md .mm-md-blocked-img {
+  font-size: 0.85em;
+  color: var(--ui-text-muted);
+}
+/* Shiki token colours: the highlighter's own <style> block is dropped with every other <style>
+   (hardenMdcBody), so its fixed theme rules live here; the per-token colours are inline
+   --shiki-* variables, which hardenMdcBody keeps. */
+.mm-md .shiki span {
+  color: var(--shiki-default);
+  background: var(--shiki-default-bg);
+  font-style: var(--shiki-default-font-style);
+  font-weight: var(--shiki-default-font-weight);
+  text-decoration: var(--shiki-default-text-decoration);
+}
+.dark .mm-md .shiki span {
+  color: var(--shiki-dark);
+  background: var(--shiki-dark-bg);
+  font-style: var(--shiki-dark-font-style);
+  font-weight: var(--shiki-dark-font-weight);
+  text-decoration: var(--shiki-dark-text-decoration);
 }
 .mm-md-inline p {
   display: inline;

@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url'
+import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vitest/config'
 
 // Minimal config: keep vitest's default test discovery but also exclude
@@ -6,6 +7,9 @@ import { defineConfig } from 'vitest/config'
 // (which carry their own duplicate `test/` dirs) don't get double-discovered
 // and inflate/confuse the suite. Mirrors vitest's default exclude list + that path.
 export default defineConfig({
+  // Cycle 88: compiles .vue files so the stored-markdown hardening tests can mount the REAL MdView
+  // → @nuxtjs/mdc MDC/MDCRenderer chain (both ship as SFCs) instead of a mock.
+  plugins: [vue()],
   resolve: {
     // Nuxt configures these aliases (`~~`/`@@` -> rootDir, `~`/`@` -> srcDir='app') for its
     // own Vite build, but plain `vitest run` never boots Nuxt, so a unit test that imports a
