@@ -409,10 +409,12 @@ describe('runTurn', () => {
         yield { type: 'text-delta', text: 'ok' } as const
         yield { type: 'done' } as const
       }
-      const out = await runTurn(run, { runAgent: agent as never, assemble: noAssemble as never, hub: new StreamHub() })
+      const assembleInputs: Array<{ summaryApplies?: boolean }> = []
+      const assemble = async (i: { summaryApplies?: boolean }) => { assembleInputs.push(i); return noAssemble() }
+      const out = await runTurn(run, { runAgent: agent as never, assemble: assemble as never, hub: new StreamHub() })
       const [conv] = await useDb().select({ atRoot: conversations.branchAtRoot }).from(conversations).where(eq(conversations.id, conversationId))
       const user = (await rows(conversationId)).find(r => r.id === out.userMessageId)!
-      return { history: seen[0]!, atRoot: conv!.atRoot, userParent: user.parentId, tip: tip!.leaf }
+      return { history: seen[0]!, atRoot: conv!.atRoot, userParent: user.parentId, tip: tip!.leaf, summaryApplies: assembleInputs[0]?.summaryApplies }
     }
 
     it('a channel turn (no originating socket) reads and extends the old branch, leaving the edit pending', async () => {
@@ -420,6 +422,8 @@ describe('runTurn', () => {
       expect(r.history.some(c => c.includes('Q1'))).toBe(true)          // not amnesia
       expect(r.userParent).toBe(r.tip)                                   // chained from the old tip
       expect(r.atRoot).toBe(true)                                        // the web edit is still pending
+      // M1: the history load's summaryApplies is threaded into assembly (no second thread walk).
+      expect(r.summaryApplies).toBe(true)
     })
 
     it('the web turn (originating socket) starts the new root with no prior history', async () => {
@@ -427,6 +431,7 @@ describe('runTurn', () => {
       expect(r.history.some(c => c.includes('Q1'))).toBe(false)
       expect(r.userParent).toBeNull()
       expect(r.atRoot).toBe(false)
+      expect(r.summaryApplies).toBe(false)                               // a pending root's path has no summary
     })
   })
 

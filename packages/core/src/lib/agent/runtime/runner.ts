@@ -9,7 +9,7 @@ import { handleTurn, type TurnDeps, type VoiceEvent } from '../../voice/orchestr
 import { createTurnStream } from '../../voice/turn-stream'
 import { buildTurnPersistPayload } from '../../voice/turn-persist'
 import { partialTurnMessages } from '../../voice/turn-partial'
-import { appendMessages, getAgentHistory, captureTurnLeaf, type NewConvMessage } from '../../../services/conversations'
+import { appendMessages, loadAgentHistory, captureTurnLeaf, type NewConvMessage } from '../../../services/conversations'
 import { publishChange } from '../../../utils/live-bus'
 import { recordEvent } from '../../observability/record'
 import { assembleContext } from '../assemble'
@@ -244,13 +244,13 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // takes the same rescue path as a failing model (the question still persists).
     const [conv] = await useDb().select({ kind: conversations.kind, title: conversations.title, activeToolsets: conversations.activeToolsets })
       .from(conversations).where(eq(conversations.id, conversationId)).limit(1)
-    const fullHistory = await getAgentHistory(conversationId, { ignorePendingRoot })
+    const { messages: fullHistory, summaryApplies } = await loadAgentHistory(conversationId, { ignorePendingRoot })
     // A light-context run (a job's `context: light`) keeps only the last few turns — sliced here,
     // BEFORE costing, so the budget and droppedTurns below describe what the model really sees.
     const allTurns = groupTurns(fullHistory)
     const turns = input.context === 'light' ? allTurns.slice(-LIGHT_CONTEXT_TURNS) : allTurns
     const assembled = await (deps.assemble ?? assembleContext)({
-      userText, conversationId, skill: input.skill, conversationKind: conv?.kind === 'main' ? 'main' : 'thread',
+      userText, conversationId, summaryApplies, skill: input.skill, conversationKind: conv?.kind === 'main' ? 'main' : 'thread',
       turns: costTurns(turns), budget: RUNTIME_CONTEXT_BUDGET
     })
     // Budget telemetry — `used`/`droppedTurns` compared against the turn's own persisted

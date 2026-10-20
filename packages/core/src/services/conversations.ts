@@ -518,6 +518,12 @@ export async function hydrateAttachments(
 }
 
 export async function getAgentHistory(id: string, opts: { ignorePendingRoot?: boolean } = {}): Promise<AgentMessage[]> {
+  return (await loadAgentHistory(id, opts)).messages
+}
+
+/** getAgentHistory plus the path's `summaryApplies`, so a turn's context assembly can decide the
+ *  summary tier without walking the whole thread a second time (review M1). */
+export async function loadAgentHistory(id: string, opts: { ignorePendingRoot?: boolean } = {}): Promise<{ messages: AgentMessage[], summaryApplies: boolean }> {
   // Same active-path walk as `getConversation` — see test/conversation-path.db.test.ts — but
   // WITH `sinceEpoch: true`. This is the one deliberate divergence between the two read paths:
   // `/clear` (server/services/conversation-clear.ts) sets `conversations.context_epoch_at`, and
@@ -529,20 +535,23 @@ export async function getAgentHistory(id: string, opts: { ignorePendingRoot?: bo
   // tier (assembleContext), not verbatim.
   //
   // `ignorePendingRoot`: a non-UI turn reads the branch the thread was on (PENDING ROOT rule 2).
-  const { rows } = await loadActivePath(id, { sinceEpoch: true, sinceSummary: true, ignorePendingRoot: opts.ignorePendingRoot })
+  const { rows, summaryApplies } = await loadActivePath(id, { sinceEpoch: true, sinceSummary: true, ignorePendingRoot: opts.ignorePendingRoot })
 
   const msgs = rows.map(rowToAgentMessage)
 
   // A missing blob, an unreadable file, or any other thrown error must never break resume —
   // fall back to the un-hydrated (plain-text) messages rather than propagating.
   try {
-    return await hydrateAttachments(
-      msgs,
-      rows,
-      (a: AttachmentRef) => (a.kind === 'image' ? getImageBytes(a.id) : getFileBytes(a.id))
-    )
+    return {
+      messages: await hydrateAttachments(
+        msgs,
+        rows,
+        (a: AttachmentRef) => (a.kind === 'image' ? getImageBytes(a.id) : getFileBytes(a.id))
+      ),
+      summaryApplies
+    }
   } catch {
-    return msgs
+    return { messages: msgs, summaryApplies }
   }
 }
 
