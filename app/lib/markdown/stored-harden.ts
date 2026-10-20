@@ -95,6 +95,8 @@ export const LOCAL_ICON_COLLECTIONS = ['lucide', 'simple-icons']
 const ICON_RE = new RegExp(`^(?:i-(?:${LOCAL_ICON_COLLECTIONS.join('|')})-|(?:${LOCAL_ICON_COLLECTIONS.join('|')}):)[a-z0-9]+(?:-[a-z0-9]+)*$`)
 /** Whether an icon name resolves from a locally bundled collection (never the Iconify API). */
 export const isLocalIcon: Rule = v => typeof v === 'string' && ICON_RE.test(v)
+/** The icon every code fence with a filename gets (instead of a vscode-icons name). */
+export const CODE_FILE_ICON = 'i-lucide-file-code'
 
 /** MDC components the app registers (Nuxt UI prose) that load nothing remote, with their
  *  vetted props (camelCase; kebab-case attributes are matched too). `to` is a click-only link. */
@@ -195,6 +197,10 @@ function hardenNodes(nodes: MdcNode[] | undefined, opts: HardenOptions): MdcNode
       else if (isDataOrAria(k) && (typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number')) clean[k] = v
     }
     if (name === 'img') clean.src = String(props.src).trim()
+    // ProsePre / ProseCodeGroup → UCodeIcon builds `i-vscode-icons-file-type-<ext>` from the
+    // filename unless an icon is given; that collection is not bundled. Pin a local icon so no
+    // remote name is ever built (nuxt.config `icon.fallbackToApi: false` is the app-wide backstop).
+    if (name === 'pre' && 'filename' in clean) clean.icon = CODE_FILE_ICON
     if (name === 'a') {
       if (!('href' in clean)) { out.push(...hardenNodes(n.children, opts)); continue }
       clean.rel = 'noopener noreferrer'

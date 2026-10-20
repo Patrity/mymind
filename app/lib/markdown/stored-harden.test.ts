@@ -75,6 +75,8 @@ function leaks(el: HTMLElement): string[] {
       else if (name === 'as') out.push(`${tag}[as]=${a.value}`)
     }
     if (tag === 'icon' && !ORACLE_LOCAL_ICON.test(n.getAttribute('name') ?? '')) out.push(`<icon> without a local name`)
+    // ProsePre/CodeGroup → UCodeIcon derives an i-vscode-icons-* name from `filename` unless `icon` is local.
+    if (tag === 'pre' && n.hasAttribute('filename') && !ORACLE_LOCAL_ICON.test(n.getAttribute('icon') ?? '')) out.push(`pre[filename]=${n.getAttribute('filename')} without a local icon (vscode-icons fetch)`)
     if (/^(?:u-?button|u-?link|nuxt-?link|u-?modal|client-?only)$/.test(tag)) out.push(`<${tag}> (unvetted registered component)`)
     if (tag === 'img' && !ORACLE_SAFE_IMG.test(n.getAttribute('src') ?? '')) out.push(`img[src]=${n.getAttribute('src')}`)
     if (tag === 'a' && n.hasAttribute('href') && !/\bnoopener\b/.test(n.getAttribute('rel') ?? '')) out.push(`a without rel=noopener: ${n.getAttribute('href')}`)
@@ -217,6 +219,16 @@ describe('isAllowedStoredImage / isSafeHref / hardenMdcBody', () => {
       { type: 'element', tag: 'p', props: { toString: 'x', constructor: 'y' }, children: [] }
     ] })
     expect(out.children).toEqual([{ type: 'text', value: 't' }, { type: 'element', tag: 'p', props: {}, children: [] }])
+  })
+  it('a code fence filename keeps its label but always gets a local icon (never a vscode-icons name)', () => {
+    const out = hardenMdcBody<MdcNode>({ type: 'root', children: [
+      { type: 'element', tag: 'pre', props: { filename: 'notes.SECRET', icon: 'i-mdi-x', language: 'ts' }, children: [] },
+      { type: 'element', tag: 'pre', props: { language: 'ts' }, children: [] }
+    ] })
+    expect(out.children!.map(c => c.props)).toEqual([
+      { filename: 'notes.SECRET', icon: 'i-lucide-file-code', language: 'ts' },
+      { language: 'ts' }
+    ])
   })
   it('keeps shiki colour variables, drops any other style', () => {
     const out = hardenMdcBody({ type: 'root', children: [

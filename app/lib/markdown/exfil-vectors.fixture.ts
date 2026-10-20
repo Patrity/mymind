@@ -56,5 +56,8 @@ export const STORED_VECTORS: Record<string, string> = {
   'traversal on allowed prefix': `![t](/api/images/../../evil.example/x)`,
   'absolute other-origin /api/i': `![o](${E}/api/i/slug)`,
   '<base href>': `<base href="${E}/">\n\n![rel](/api/images/x/raw)`,
-  '<meta refresh>': `<meta http-equiv="refresh" content="0;url=${E}/meta">`
+  '<meta refresh>': `<meta http-equiv="refresh" content="0;url=${E}/meta">`,
+  // UCodeIcon would build `i-vscode-icons-file-type-<ext>` from the filename → Iconify API fetch.
+  '```ts [filename] fence (vscode-icons fetch)': '```ts [notes.SECRETVALUE]\nconst x = 1\n```',
+  '::code-group fence filenames': '::code-group\n```ts [a.SECRET]\nx\n```\n```js [b.zz]\ny\n```\n::'
 }
