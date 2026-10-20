@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { pgTable, uuid, text, jsonb, boolean, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core'
 import { halfvec } from '../types/halfvec'
+import { tsvector } from '../types/tsvector'
 
 export const documents = pgTable('documents', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
@@ -26,6 +27,10 @@ export const documents = pgTable('documents', {
   publicSlug: text('public_slug'),
   ocrId: uuid('ocr_id'),
   embedding: halfvec(2560), // schema only in cycle 1; stays null
+  /** Lexical-lane source (migration 0090): maintained by Postgres, GIN-indexed, queried with
+   *  websearch_to_tsquery — see lib/search/lexical.ts. */
+  // `left(…, 200000)`: tsvector hard limit is 1 MB; documents can be large.
+  tsv: tsvector('tsv').generatedAlwaysAs(sql`to_tsvector('english', left(coalesce(title, '') || ' ' || content, 200000))`),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
@@ -36,6 +41,7 @@ export const documents = pgTable('documents', {
   tagsIdx: index('documents_tags_gin').using('gin', t.tags),
   projectIdx: index('documents_project_idx').on(t.project),
   projectIdIdx: index('documents_project_id_idx').on(t.projectId),
+  tsvIdx: index('documents_tsv_gin').using('gin', t.tsv),
   triagedAtIdx: index('documents_triaged_at_idx').on(t.triagedAt)
 }))
 

@@ -4,6 +4,8 @@ import { sessions, messages } from '../db/schema'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
 import { getSearchConfig } from '../lib/search/config'
+import { withHnswSession } from '../lib/search/hnsw'
+import { runLexicalLane, ftsMatch, ftsRank } from '../lib/search/lexical'
 import { snippetAround } from './session-read'
 import type { SessionResult, MessageResult } from '../shared/types/search'
 
@@ -13,35 +15,46 @@ export async function searchSessions(q: string, opts: { limit?: number; project?
   const { limit = 5, project, includeSidechain: _includeSidechain = true } = opts
   const db = useDb()
 
-  // Lane 1: trigram — ILIKE filter + similarity ordering
-  const trgRows = await db.select({ id: sessions.id }).from(sessions)
-    .where(and(
-      sql`(${sessions.title} ilike ${'%' + q + '%'} or ${sessions.summary} ilike ${'%' + q + '%'})`,
-      project ? eq(sessions.project, project) : undefined
-    ))
-    .orderBy(sql`greatest(coalesce(similarity(${sessions.title}, ${q}), 0), coalesce(similarity(${sessions.summary}, ${q}), 0)) desc`)
-    .limit(50)
+  const cfg = await getSearchConfig()
+  const projectFilter = project ? eq(sessions.project, project) : undefined
+
+  // Lane 1: lexical — sessions.tsv FTS (title + summary), ILIKE + trigram as the fallback
+  const tsv = sql`${sessions.tsv}`
+  const { ids: lexicalIds } = await runLexicalLane({
+    q, enabled: cfg.lexicalFts,
+    fts: async () => (await db.select({ id: sessions.id }).from(sessions)
+      .where(and(ftsMatch(tsv, q), projectFilter))
+      .orderBy(ftsRank(tsv, q))
+      .limit(50)).map(r => r.id),
+    fallback: async () => (await db.select({ id: sessions.id }).from(sessions)
+      .where(and(
+        sql`(${sessions.title} ilike ${'%' + q + '%'} or ${sessions.summary} ilike ${'%' + q + '%'})`,
+        projectFilter
+      ))
+      .orderBy(sql`greatest(coalesce(similarity(${sessions.title}, ${q}), 0), coalesce(similarity(${sessions.summary}, ${q}), 0)) desc`)
+      .limit(50)).map(r => r.id)
+  })
 
   // Lane 2: vector — cosine distance via HNSW index, with fallback
   let vecIds: string[] = []
   try {
-    const { cosineFloor } = await getSearchConfig()
     const qv = await embedOne(q)
     const lit = `[${qv.join(',')}]`
-    const vRows = await db.select({
-      id: sessions.id,
-      distance: sql<number>`${sessions.summaryEmbedding} <=> ${lit}::halfvec`
-    }).from(sessions)
-      .where(and(isNotNull(sessions.summaryEmbedding), project ? eq(sessions.project, project) : undefined))
-      .orderBy(sql`${sessions.summaryEmbedding} <=> ${lit}::halfvec`)
-      .limit(50)
-    vecIds = vRows.filter(r => r.distance <= cosineFloor).map(r => r.id)
+    const vRows = await withHnswSession(db, { limit: 50, filtered: !!projectFilter, efSearchMin: cfg.hnswEfSearchMin, iterativeScan: cfg.hnswIterativeScan }, tx =>
+      tx.select({
+        id: sessions.id,
+        distance: sql<number>`${sessions.summaryEmbedding} <=> ${lit}::halfvec`
+      }).from(sessions)
+        .where(and(isNotNull(sessions.summaryEmbedding), projectFilter))
+        .orderBy(sql`${sessions.summaryEmbedding} <=> ${lit}::halfvec`)
+        .limit(50))
+    vecIds = vRows.filter(r => r.distance <= cfg.cosineFloor).map(r => r.id)
   } catch (err) {
-    console.warn('[searchSessions] vector lane failed, falling back to trigram-only:', err)
+    console.warn('[searchSessions] vector lane failed, falling back to lexical-only:', err)
   }
 
   // Fuse with RRF
-  const fusedIds = rrfFuse([trgRows.map(r => r.id), vecIds]).slice(0, limit)
+  const fusedIds = rrfFuse([lexicalIds, vecIds]).slice(0, limit)
   if (!fusedIds.length) return []
 
   // Hydrate and re-order (mirrors searchMemories: inArray hydration)
@@ -73,32 +86,43 @@ export async function searchMessages(q: string, opts: { limit?: number; project?
     projectSessionIds ? inArray(messages.sessionId, projectSessionIds) : undefined
   )
 
-  // Lane 1: trigram — ILIKE filter + similarity ordering
-  const trgRows = await db.select({ id: messages.id }).from(messages)
-    .where(and(ilike(messages.content, `%${q}%`), scope))
-    .orderBy(sql`similarity(${messages.content}, ${q}) desc`)
-    .limit(50)
+  const filtered = !includeSidechain || !!session || !!projectSessionIds
+  const cfg = await getSearchConfig()
+
+  // Lane 1: lexical — messages.tsv FTS, ILIKE + trigram as the fallback
+  const tsv = sql`${messages.tsv}`
+  const { ids: lexicalIds } = await runLexicalLane({
+    q, enabled: cfg.lexicalFts,
+    fts: async () => (await db.select({ id: messages.id }).from(messages)
+      .where(and(ftsMatch(tsv, q), scope))
+      .orderBy(ftsRank(tsv, q))
+      .limit(50)).map(r => r.id),
+    fallback: async () => (await db.select({ id: messages.id }).from(messages)
+      .where(and(ilike(messages.content, `%${q}%`), scope))
+      .orderBy(sql`similarity(${messages.content}, ${q}) desc`)
+      .limit(50)).map(r => r.id)
+  })
 
   // Lane 2: vector — cosine distance via HNSW index, with fallback
   let vecIds: string[] = []
   try {
-    const { cosineFloor } = await getSearchConfig()
     const qv = await embedOne(q)
     const lit = `[${qv.join(',')}]`
-    const vRows = await db.select({
-      id: messages.id,
-      distance: sql<number>`${messages.embedding} <=> ${lit}::halfvec`
-    }).from(messages)
-      .where(and(isNotNull(messages.embedding), scope))
-      .orderBy(sql`${messages.embedding} <=> ${lit}::halfvec`)
-      .limit(50)
-    vecIds = vRows.filter(r => r.distance <= cosineFloor).map(r => r.id)
+    const vRows = await withHnswSession(db, { limit: 50, filtered, efSearchMin: cfg.hnswEfSearchMin, iterativeScan: cfg.hnswIterativeScan }, tx =>
+      tx.select({
+        id: messages.id,
+        distance: sql<number>`${messages.embedding} <=> ${lit}::halfvec`
+      }).from(messages)
+        .where(and(isNotNull(messages.embedding), scope))
+        .orderBy(sql`${messages.embedding} <=> ${lit}::halfvec`)
+        .limit(50))
+    vecIds = vRows.filter(r => r.distance <= cfg.cosineFloor).map(r => r.id)
   } catch (err) {
-    console.warn('[searchMessages] vector lane failed, falling back to trigram-only:', err)
+    console.warn('[searchMessages] vector lane failed, falling back to lexical-only:', err)
   }
 
   // Fuse with RRF
-  const fusedIds = rrfFuse([trgRows.map(r => r.id), vecIds]).slice(0, limit)
+  const fusedIds = rrfFuse([lexicalIds, vecIds]).slice(0, limit)
   if (!fusedIds.length) return []
 
   // Hydrate and re-order (mirrors searchMemories: inArray hydration)

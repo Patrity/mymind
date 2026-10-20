@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { pgTable, uuid, text, real, jsonb, timestamp, index, uniqueIndex, boolean, integer, check } from 'drizzle-orm/pg-core'
 import { halfvec } from '../types/halfvec'
+import { tsvector } from '../types/tsvector'
 
 export const memories = pgTable('memories', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
@@ -9,6 +10,9 @@ export const memories = pgTable('memories', {
   tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
   source: text('source'),
   embedding: halfvec(2560),
+  /** Lexical-lane source (migration 0090): maintained by Postgres, GIN-indexed, queried with
+   *  websearch_to_tsquery — see lib/search/lexical.ts. */
+  tsv: tsvector('tsv').generatedAlwaysAs(sql`to_tsvector('english', content)`),
   contentHash: text('content_hash').notNull(),
   confidence: real('confidence'),
   /** Does this fact travel across projects? `project` above records where it was LEARNED
@@ -74,6 +78,7 @@ export const memories = pgTable('memories', {
   index('memories_scope_idx').on(t.scope),
   index('memories_tags_gin').using('gin', t.tags),
   uniqueIndex('memories_content_hash_live_uidx').on(t.contentHash).where(sql`${t.archivedAt} is null`),
+  index('memories_tsv_gin').using('gin', t.tsv),
   index('memories_project_id_idx').on(t.projectId),
   check('memories_resident_implies_global', sql`not ${t.resident} or ${t.applicability} = 'global'`),
   index('memories_resident_idx').on(t.resident).where(sql`${t.resident}`)
