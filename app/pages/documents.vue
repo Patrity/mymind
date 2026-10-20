@@ -38,10 +38,18 @@ function onSelectFolder(path: string) {
 // Phone layout: below `lg` the tree and the editor can't sit side by side, so one shows at a
 // time (the tree was simply `hidden`, leaving no way to pick a document). Picking a document
 // flips to the editor; the editor header's "Files" button flips back. `lg`+ ignores this.
+// The flip happens in `openDocument` (the pick itself), not only in a watch on `selectedId`:
+// tapping the document that is ALREADY open doesn't change the id, so a watch never fires and
+// the phone stayed on the tree (review M2). The watch still covers deep-links / cookie restore,
+// and sends the phone back to the tree when the open document goes away (deleted → null).
 const mobilePane = ref<'tree' | 'editor'>('tree')
 watch(selectedId, (id) => {
-  if (id) mobilePane.value = 'editor'
+  mobilePane.value = id ? 'editor' : 'tree'
 }, { immediate: true })
+function openDocument(id: string) {
+  selectedId.value = id
+  mobilePane.value = 'editor'
+}
 
 // Last-open cookie — persists selected doc across sessions
 const lastDoc = useCookie<string | null>('mm.lastDoc', { default: () => null })
@@ -95,7 +103,7 @@ function onSearchInput(val: string) {
 }
 
 function selectSearchResult(id: string) {
-  selectedId.value = id
+  openDocument(id)
   // Clear search
   searchQuery.value = ''
   searchResults.value = []
@@ -262,7 +270,7 @@ onUnmounted(() => {
           ref="treeRef"
           :tree="treeData"
           :selected-id="selectedId"
-          @select="selectedId = $event"
+          @select="openDocument($event)"
           @refresh="refetchTree"
           @new-document="openNewDocumentAt"
         />
