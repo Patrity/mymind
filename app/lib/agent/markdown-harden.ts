@@ -18,8 +18,9 @@
 // Code-block previewers are OFF (```html would render in an iframe). Link favicons are OFF (fetched without a click). Links stay clickable — a click is Tony's
 // choice and the library confirms external links.
 //
-// Not done here (follow-up): an app-wide CSP `img-src`/`style-src` backstop, and the same
-// hardening for MdView/MDC (documents, triage, shared docs) — see the 79b handover residuals.
+// Not done here (follow-up): an app-wide CSP `img-src`/`style-src` backstop. The stored-content
+// renderers (MdView/MDC, clipboard HTML) got the equivalent policy in cycle 88:
+// app/lib/markdown/stored-harden.ts.
 
 import type { ComarkPlugin, LinkOptions } from 'vue-stream-markdown'
 
