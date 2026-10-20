@@ -15,6 +15,7 @@ import { generateImage, editImage } from '../imagegen/comfy'
 import { createGeneratedImage, deleteImage, serveUrl, resolveSourceImageId, getImageBytes } from '../../services/images'
 import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSkill, getSkillSource, restoreSkill } from '../../services/skills'
 import { skillsEnabled } from './skills-config'
+import { gateSecret, withSecretReviewTag, SECRET_REVIEW_TAG } from '../memory/secret-gate'
 import { jobTools } from './tools/jobs'
 import { channelTools } from './tools/channels'
 import { gmailTools } from './tools/gmail'
@@ -132,15 +133,20 @@ export const agentTools: AgentTool[] = [
       confidence: z.number().min(0).max(1).optional()
     },
     handler: async (a) => {
+      // Write-time secret gate (D3 A4): same policy as quick_capture — a flagged fact is stored
+      // redacted, tagged and held for review; the gate fails open, so a Clef outage never blocks a save.
+      const gate = await gateSecret(a.content as string)
+      const tags = a.tags as string[] | undefined
       const m = await createMemory({
-        content: a.content as string, scope: a.scope as undefined,
-        project: (a.project as string) ?? null, tags: a.tags as undefined, source: (a.source as string) ?? 'voice',
-        confidence: (a.confidence as number | undefined) ?? null
+        content: gate.text, scope: a.scope as undefined,
+        project: (a.project as string) ?? null, tags: gate.flagged ? withSecretReviewTag(tags) : tags, source: (a.source as string) ?? 'voice',
+        confidence: (a.confidence as number | undefined) ?? null,
+        ...(gate.flagged ? { holdForReview: true } : {})
       })
       publishChange({ resource: 'memory', action: 'created', id: (m as { id: string }).id })
       return {
-        result: m,
-        summary: `saved memory`,
+        result: { ...(m as object), ...(gate.flagged ? { secretFlagged: true } : {}) },
+        summary: `saved memory${gate.flagged ? ' (credential redacted, held for review)' : ''}`,
         undo: async () => { await archiveMemory((m as { id: string }).id) }
       }
     }
@@ -1169,10 +1175,17 @@ export const agentTools: AgentTool[] = [
     handler: async (a) => {
       const title = (a.title as string) ?? null
       const slug = title ? title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').slice(0, 64) || nanoid(8) : nanoid(10)
-      const doc = await createDoc({ path: `/input/${slug}.md`, title, content: a.text as string })
+      // Write-time secret gate (stack review 2026-10-19 D1): a pasted credential is stored redacted
+      // and the note tagged for review; the gate fails open, so a Clef outage never blocks capture.
+      const gate = await gateSecret(a.text as string)
+      const doc = await createDoc({
+        path: `/input/${slug}.md`, title, content: gate.text,
+        ...(gate.flagged ? { tags: [SECRET_REVIEW_TAG] } : {})
+      })
       publishChange({ resource: 'document', action: 'created', id: doc.id })
       return {
-        result: docReceipt(doc, { before: 0 }), summary: `captured note${title ? ` "${title}"` : ''}`,
+        result: { ...docReceipt(doc, { before: 0 }), ...(gate.flagged ? { secretFlagged: true } : {}) },
+        summary: `captured note${title ? ` "${title}"` : ''}${gate.flagged ? ' (credential redacted, flagged for review)' : ''}`,
         // createDoc has no soft-delete service exposed here; undo is best-effort no-op marker.
         undo: undefined
       }

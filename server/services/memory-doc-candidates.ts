@@ -13,6 +13,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
 import { toolEvents } from '@mymind/core/db/schema'
 import { createDoc } from '@mymind/core/services/documents'
+import { gateSecret, SECRET_REVIEW_TAG } from '@mymind/core/lib/memory/secret-gate'
 import { nearestDocument, triageCapture } from '@mymind/core/services/triage'
 import { publishChange } from '@mymind/core/utils/live-bus'
 import { slugify } from '@mymind/core/shared/utils/slugify'
@@ -110,13 +111,18 @@ export async function fileDocCandidate(
     const slug = c.targetDocHint
       ? (slugify(c.targetDocHint).slice(0, 64) || nanoid(8))
       : nanoid(10)
-    const body = `${c.text}\n\n— From memory extraction (project: ${c.project ?? '(no project)'}; suggested doc: ${c.targetDocHint ?? 'none'})`
+    // The same write-time secret gate as quick_capture / POST /api/capture/note (D3 A4): a transcript
+    // that pasted a key can surface as a doc candidate instead of a memory, and this path filed it raw.
+    // Flagged ⇒ redacted text + the review tag; the gate fails open, so filing never blocks on Clef.
+    const gate = await gateSecret(c.text)
+    const body = `${gate.text}\n\n— From memory extraction (project: ${c.project ?? '(no project)'}; suggested doc: ${c.targetDocHint ?? 'none'})`
+    const tags = gate.flagged ? { tags: [SECRET_REVIEW_TAG] } : {}
 
-    const title = captureTitle(c.text)
-    const doc = await createDoc({ path: `/input/${slug}.md`, title, content: body })
+    const title = captureTitle(gate.text)
+    const doc = await createDoc({ path: `/input/${slug}.md`, title, content: body, ...tags })
       .catch((err) => {
         if (!isUniqueViolation(err)) throw err
-        return createDoc({ path: `/input/${slug.slice(0, 57)}-${nanoid(6)}.md`, title, content: body })
+        return createDoc({ path: `/input/${slug.slice(0, 57)}-${nanoid(6)}.md`, title, content: body, ...tags })
       })
     publishChange({ resource: 'document', action: 'created', id: doc.id })
 
