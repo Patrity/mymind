@@ -6,7 +6,10 @@ import { describe, expect, it, vi } from 'vitest'
 describe('nuxt.config icon options', () => {
   it('disables the Iconify API fallback (server and client)', async () => {
     vi.stubGlobal('defineNuxtConfig', (c: unknown) => c)
-    const cfg = (await import('../../../nuxt.config')).default as { icon?: { fallbackToApi?: unknown } }
+    // A variable specifier, so the test tsconfig does not type-check nuxt.config.ts (whose
+    // defineNuxtConfig global only exists in Nuxt's own generated types).
+    const path = '../../../nuxt.config'
+    const cfg = (await import(/* @vite-ignore */ path)).default as { icon?: { fallbackToApi?: unknown } }
     expect(cfg.icon?.fallbackToApi).toBe(false)
   })
 })
