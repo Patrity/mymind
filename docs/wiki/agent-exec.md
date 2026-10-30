@@ -120,6 +120,12 @@ Hostname-addressed LAN targets (e.g. `http://nas.local`) are classified `externa
 
 ### Allowlist-first decision (`execAutoApproveDecision`)
 
+> **Not on the live path (verified 2026-10-30).** The exec tool has no `autoApprove`, so nothing
+> calls `execAutoApproveDecision` at runtime. The only allowlist check is `approvalFor`
+> (`runtime/approvals.ts`), which calls `matchesApproval` directly — none of the
+> catastrophic/LAN/host/curl branches below run there. Tainted runs skip the allowlist
+> entirely (`ai-tools.ts`, 79b I2). Below is the pure function as written and tested.
+
 ```
 isCatastrophic?               → allow=false (prompt human; handler hard-blocks before spawning even if approved)
 outbound = lan?               → allow silently
@@ -131,7 +137,7 @@ else                          → prompt (approval channel)
 
 **External host-set check:** `execAutoApproveDecision` never runs glob matching against outbound commands. Instead it builds a set of approved hostnames from `host:<hostname>` patterns and checks that every host extracted from the command is a member. This prevents substring-embedding attacks where a malicious URL (e.g. `attacker.io/https://approved.host/`) could satisfy a path-glob.
 
-`matchesApproval(command, patterns)` uses anchored glob matching: `*` compiles to `[^;&|` + `` ` `` + `$()<>\n\r]*` — shell metacharacters that chain commands. Patterns are anchored `^…$` so a `git *` pattern can never match `git status && rm -rf /`. Bare `*` is rejected by `validatePattern`. **Outbound-tool heads (`curl`, `wget`) are also rejected by `validatePattern`** — the only way to allowlist outbound traffic is via `host:<hostname>`.
+`matchesApproval(command, patterns)` uses anchored glob matching: `*` compiles to `[^;&|` + `` ` `` + `$()<>\n\r]*` — shell metacharacters that chain commands. Patterns are anchored `^…$` so a `git *` pattern can never match `git status && rm -rf /`. Bare `*` is rejected by `validatePattern`. Metacharacters inside a **quoted** argument are masked so the wildcard can span them (`docker *` matches `psql -c "select 1;"`) — but `$` and backtick stay live inside **double** quotes, because bash still expands `$(…)`/`` `…` ``/`${…}` there; only single quotes (and a backslash-escape inside double quotes) make them inert. **Outbound-tool heads (`curl`, `wget`) are also rejected by `validatePattern`** — the only way to allowlist outbound traffic is via `host:<hostname>`.
 
 `proposedPattern(command)` derives the suggested allowlist entry: `host:<hostname>` for external outbound commands; `<first-token> *` for everything else.
 
