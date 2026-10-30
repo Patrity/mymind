@@ -62,10 +62,14 @@ export const PROMPT_COMMAND_MAX = 300
  *  to open the draft before approving, so he never approves text he thinks he has read in full. */
 export const GMAIL_SEND_PROMPT_MAX = 1800
 
-/** The cut-off notice shared by the gmail and calendar prompts. */
+/** The cut-off notice shared by every prompt that cuts its command. */
+function cutNotice(command: string, max: number, advice: string): string {
+  return `[showing ${max.toLocaleString('en-US')} of ${command.length.toLocaleString('en-US')} chars — ${advice}]`
+}
+
 function truncatedPrompt(command: string, max: number, advice: string): string {
   if (command.length <= max) return command
-  return `${command.slice(0, max)}…\n[showing ${max.toLocaleString('en-US')} of ${command.length.toLocaleString('en-US')} chars — ${advice}]`
+  return `${command.slice(0, max)}…\n${cutNotice(command, max, advice)}`
 }
 
 function gmailSendPromptBody(command: string): string {
@@ -124,7 +128,7 @@ export function verdictLine(v: ApprovalVerdictDTO | null | undefined): string | 
  * calendar_rsvp (cycle 79, Task 5) likewise: their own card title ("Invite guests?", "Send
  * RSVP?") over the multi-line event card, no backticks, CALENDAR_PROMPT_MAX. Any other titled
  * card (fix wave I3 / 79b outbound-after-a-Google-read) gets its title + body under TITLED_PROMPT_MAX.
- * Every cut states "showing N of M chars" (fix wave I2).
+ * Every cut — exec, decide_review and the fallback included — states "showing N of M chars".
  */
 export function approvalPromptText(req: ApprovalRequest, verdict?: string | null): string {
   // Cycle 84: the judge's line sits just above the 👍/👎 line.
@@ -138,12 +142,18 @@ export function approvalPromptText(req: ApprovalRequest, verdict?: string | null
   if (req.title && req.tool !== 'exec' && req.tool !== 'decide_review') {
     return `${req.title}?\n\n${truncatedPrompt(req.command, TITLED_PROMPT_MAX, 'deny unless you can see the whole request')}\n\n${v}👍 to approve · 👎 to deny`
   }
-  const cmd = req.command.length > PROMPT_COMMAND_MAX ? `${req.command.slice(0, PROMPT_COMMAND_MAX - 1)}…` : req.command
+  // A cut states it, like every other branch — the tail of a long command is where an injected
+  // `&& curl …` would sit, and a 👍 approves the whole string, not the part that was texted.
+  const cut = req.command.length > PROMPT_COMMAND_MAX
+  const cmd = cut ? `${req.command.slice(0, PROMPT_COMMAND_MAX)}…` : req.command
+  const notice = cut
+    ? `${cutNotice(req.command, PROMPT_COMMAND_MAX, `deny unless you can see the whole ${req.tool === 'decide_review' ? 'decision' : 'command'}`)}\n`
+    : ''
   // 79b (I2): exec in a tainted run carries a title — say so before the command.
   const ask = req.tool === 'exec' ? `${req.title ? `${req.title} — run` : 'Run'} \`${cmd}\`?`
     : req.tool === 'decide_review' ? `Approve review decision: ${cmd}?`
       : `Allow ${req.tool}: \`${cmd}\`?`
-  return `${ask}\n${v}👍 to approve · 👎 to deny`
+  return `${ask}\n${notice}${v}👍 to approve · 👎 to deny`
 }
 
 /** pending → `to`, only if still pending. True when this call made the transition. */
