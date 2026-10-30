@@ -156,7 +156,7 @@ describe('imessageApprovalChannel', () => {
     expect(row!.expiresAt.getTime() - row!.createdAt.getTime()).toBeGreaterThanOrEqual(400)
   })
 
-  it('a long command is texted cut to 300 chars with an ellipsis (T9)', async () => {
+  it('a long command is texted cut to 300 chars with an ellipsis and a cut notice (T9, issue #2)', async () => {
     const run = await newRun()
     const long = `cat <<'EOF'\n${'x'.repeat(1000)}\nEOF`
     const sentBefore = fake.sent.length
@@ -164,9 +164,10 @@ describe('imessageApprovalChannel', () => {
     const { promptGuid } = await promptFor(run)
     const msg = fake.sent.slice(sentBefore)[0]!.message!
     const cmd = /^Run `([\s\S]*)`\?\n/.exec(msg)![1]!
-    expect(cmd).toHaveLength(300)
+    expect(cmd).toHaveLength(301)
     expect(cmd.endsWith('…')).toBe(true)
-    expect(long.startsWith(cmd.slice(0, 299))).toBe(true)
+    expect(long.startsWith(cmd.slice(0, 300))).toBe(true)
+    expect(msg).toContain(`[showing 300 of ${long.length.toLocaleString('en-US')} chars — deny unless you can see the whole command]`)
     await resolveTapback(tapback(promptGuid, { tapback: 'dislike' }))
     expect(await p).toMatchObject({ approved: false })
   })
